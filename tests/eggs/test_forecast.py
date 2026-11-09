@@ -207,6 +207,7 @@ def test_actor_rows_bucket_by_status(cal, cfg):
     assert len(em.actors) == 1
     row = em.actors[0]
     assert row.actor == "CH - CỬA HÀNG"
+    assert row.actor_code == "CH"
     assert row.total == 9
     assert row.dev == 3
     assert row.qc == 2
@@ -220,17 +221,23 @@ def test_story_without_component_grouped_separately(cal, cfg):
     # Story without component or with invalid component -> under "(chưa gán Actor)"
     story_no_comp = _make_issue(key="S-NO-COMP", issue_type="story", status="in_progress", components=())
     story_ch = _make_issue(key="S-CH", issue_type="story", status="in_progress", components=("CH - CỬA HÀNG",))
+    story_kt = _make_issue(key="S-KT", issue_type="story", status="in_progress", components=("KT - KỸ THUẬT",))
 
     flows = {
         "S-NO-COMP": FlowMetrics(key="S-NO-COMP", due=None, forecast_end=None, slip_days=None, unscheduled=0, at_risk=False),
         "S-CH": FlowMetrics(key="S-CH", due=None, forecast_end=None, slip_days=None, unscheduled=0, at_risk=False),
+        "S-KT": FlowMetrics(key="S-KT", due=None, forecast_end=None, slip_days=None, unscheduled=0, at_risk=False),
     }
     epic = _make_issue(key="EPIC-1", issue_type="epic")
-    em = epic_metrics(epic, [story_no_comp, story_ch], flows, other_items=[], escalations={}, cal=cal)
+    em = epic_metrics(epic, [story_no_comp, story_kt, story_ch], flows, other_items=[], escalations={}, cal=cal)
 
-    actors = [a.actor for a in em.actors]
-    assert "CH - CỬA HÀNG" in actors
-    assert "(chưa gán Actor)" in actors
+    assert len(em.actors) == 3
+    assert em.actors[0].actor == "CH - CỬA HÀNG"
+    assert em.actors[0].actor_code == "CH"
+    assert em.actors[1].actor == "KT - KỸ THUẬT"
+    assert em.actors[1].actor_code == "KT"
+    assert em.actors[2].actor == "(chưa gán Actor)"
+    assert em.actors[2].actor_code is None
 
 
 def test_unknown_eta_when_l2(cal, cfg):
@@ -246,3 +253,16 @@ def test_unknown_eta_when_l2(cal, cfg):
     l2_esc = {"S-1": Escalation(level=2, owner="cuong.huynh", since=date(2026, 11, 10))}
     em_l2 = epic_metrics(epic, [story], flows, other_items=[], escalations=l2_esc, cal=cal)
     assert em_l2.unknown_eta is True
+
+    # With L2 escalation on a child passed in children parameter -> unknown_eta is True
+    child = _make_issue(key="DEV-CHILD-1", issue_type="dev_task")
+    l2_esc_child = {"DEV-CHILD-1": Escalation(level=2, owner="cuong.huynh", since=date(2026, 11, 10))}
+    em_child_l2 = epic_metrics(epic, [story], flows, other_items=[], escalations=l2_esc_child, cal=cal, children=[child])
+    assert em_child_l2.unknown_eta is True
+
+    # NEGATIVE test: an L2 escalation on an issue of ANOTHER epic in the same project -> unknown_eta is False
+    # (Project is "EPIC", another issue is "EPIC-999")
+    l2_esc_other = {"EPIC-999": Escalation(level=2, owner="cuong.huynh", since=date(2026, 11, 10))}
+    em_other = epic_metrics(epic, [story], flows, other_items=[], escalations=l2_esc_other, cal=cal, children=[child])
+    assert em_other.unknown_eta is False
+

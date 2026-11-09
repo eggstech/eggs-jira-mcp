@@ -69,14 +69,25 @@ def escalate(
     else:
         l1_candidate = epic_assignee
 
+    if (
+        l1_candidate is not None
+        and (
+            l1_candidate == l0_owner
+            or (issue.reschedule_requester and l1_candidate == issue.reschedule_requester)
+        )
+    ):
+        l1_candidate = cfg.lead_user
+
     l1_owner = resolve_owner(l1_candidate)
+    if l1_owner == l0_owner or (issue.reschedule_requester and l1_owner == issue.reschedule_requester):
+        l1_owner = cfg.lead_user
 
     # L2 owner
     l2_owner = cfg.lead_user
 
     # Level determination
     if flags == frozenset({"BLOCKED"}):
-        if issue.blocked_by == "Nội bộ":
+        if issue.blocked_by == cfg.blocked_internal_value:
             block_since = issue.blocked_since if issue.blocked_since is not None else since
             block_days = cal.working_days_between(block_since, today)
             if block_days >= cfg.thresholds.internal_block_escalate_after:

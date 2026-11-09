@@ -152,6 +152,40 @@ def test_load_example_config():
     assert cfg.flagged_impediment_value == "Impediment"
     assert "epic_link" in cfg.fields
     assert "flagged" in cfg.fields
+    assert cfg.reschedule_pending_value == "Chờ duyệt"
+    assert cfg.blocked_internal_value == "Nội bộ"
+
+
+def test_load_config_custom_pending_and_internal_values(tmp_path):
+    yaml_content = """
+lead_user: cuong.huynh
+reschedule_pending_value: "Custom Pending"
+blocked_internal_value: "Custom Internal"
+projects:
+  PROJ:
+    default_lead_ba: cuong.huynh
+"""
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(yaml_content)
+    cfg = load_config(str(cfg_file))
+    assert cfg.reschedule_pending_value == "Custom Pending"
+    assert cfg.blocked_internal_value == "Custom Internal"
+
+
+def test_load_config_legacy_epic_unscheduled_window_shim_removed(tmp_path):
+    yaml_content = """
+lead_user: cuong.huynh
+thresholds:
+  epic_unscheduled_window: 10
+projects:
+  PROJ:
+    default_lead_ba: cuong.huynh
+"""
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(yaml_content)
+    cfg = load_config(str(cfg_file))
+    # Since legacy shim is removed, unscheduled_window defaults to 5, ignoring epic_unscheduled_window
+    assert cfg.thresholds.unscheduled_window == 5
 
 
 def test_load_config_unresolved_env_var_raises(tmp_path):

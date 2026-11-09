@@ -171,6 +171,61 @@ def test_self_requested_approval_goes_to_default_lead_ba(cal, cfg):
     assert esc.owner == "default.lead.ba"
 
 
+def test_approval_pending_requester_is_epic_assignee_l1_is_lead_user(cal, cfg):
+    # APPROVAL_PENDING where requester == epic assignee -> L0 = default_lead_ba, L1 = lead_user (not the requester)
+    epic = _make_issue(key="PROJ-EPIC", issue_type="epic", assignee="ba.lead")
+    task = _make_issue(
+        key="PROJ-1",
+        issue_type="dev_task",
+        status="in_progress",
+        reschedule_status="Chờ duyệt",
+        reschedule_requester="ba.lead",
+        health_since=date(2026, 11, 16),
+    )
+    flags = frozenset({"APPROVAL_PENDING"})
+    # At 0 days (2026-11-16): L0 = default_lead_ba
+    esc_l0 = escalate(task, flags, story=None, epic=epic, today=date(2026, 11, 16), cal=cal, cfg=cfg)
+    assert esc_l0 is not None
+    assert esc_l0.level == 0
+    assert esc_l0.owner == "default.lead.ba"
+
+    # At 1 working day (2026-11-17): L1 = lead_user (not ba.lead / the requester)
+    esc_l1 = escalate(task, flags, story=None, epic=epic, today=date(2026, 11, 17), cal=cal, cfg=cfg)
+    assert esc_l1 is not None
+    assert esc_l1.level == 1
+    assert esc_l1.owner == cfg.lead_user
+
+
+def test_default_lead_ba_equals_epic_assignee_l1_and_l2_are_lead_user(cal):
+    # default_lead_ba == epic assignee case -> L1 = lead_user; L2 = lead_user
+    cfg = EggsConfig(
+        lead_user="cuong.huynh",
+        projects={"PROJ": ProjectConfig(key="PROJ", default_lead_ba="same.person")},
+    )
+    epic = _make_issue(key="PROJ-EPIC", issue_type="epic", assignee="same.person")
+    task = _make_issue(
+        key="PROJ-1",
+        issue_type="dev_task",
+        status="in_progress",
+        assignee="same.person",
+        health_since=date(2026, 11, 13),
+    )
+    flags = frozenset({"OVERDUE"})
+
+    # At 1 working day (Mon Nov 16): level 1 -> L1 = lead_user
+    esc_l1 = escalate(task, flags, story=None, epic=epic, today=date(2026, 11, 16), cal=cal, cfg=cfg)
+    assert esc_l1 is not None
+    assert esc_l1.level == 1
+    assert esc_l1.owner == "cuong.huynh"
+
+    # At 2 working days (Tue Nov 17): level 2 -> L2 = lead_user
+    esc_l2 = escalate(task, flags, story=None, epic=epic, today=date(2026, 11, 17), cal=cal, cfg=cfg)
+    assert esc_l2 is not None
+    assert esc_l2.level == 2
+    assert esc_l2.owner == "cuong.huynh"
+
+
+
 def test_missing_owner_falls_back_chain(cal, cfg):
     # Missing assignee falls back to epic assignee -> default_lead_ba -> lead_user
     task_no_assignee = _make_issue(key="PROJ-1", issue_type="dev_task", status="todo", assignee=None)
@@ -247,6 +302,42 @@ def test_internal_block_escalates_after_two_days(cal, cfg):
     assert esc_wed is not None
     assert esc_wed.level == 1
     assert esc_wed.owner == "epic.owner"
+
+
+def test_internal_block_uses_configured_value(cal):
+    custom_cfg = EggsConfig(
+        lead_user="cuong.huynh",
+        blocked_internal_value="Internal",
+    )
+    since_date = date(2026, 11, 13)
+    epic = _make_issue(key="PROJ-EPIC", issue_type="epic", assignee="epic.owner")
+    task_custom = _make_issue(
+        key="PROJ-CUSTOM",
+        blocked=True,
+        blocked_by="Internal",
+        blocked_since=since_date,
+        health_since=since_date,
+    )
+    task_old = _make_issue(
+        key="PROJ-OLD",
+        blocked=True,
+        blocked_by="Nội bộ",
+        blocked_since=since_date,
+        health_since=since_date,
+    )
+    flags = frozenset({"BLOCKED"})
+    today = date(2026, 11, 17)  # 2 working days
+
+    # With configured value "Internal", task_custom escalates to level 1
+    esc_custom = escalate(task_custom, flags, story=None, epic=epic, today=today, cal=cal, cfg=custom_cfg)
+    assert esc_custom is not None
+    assert esc_custom.level == 1
+
+    # Old hard-coded "Nội bộ" should NOT escalate to level 1 under custom_cfg
+    esc_old = escalate(task_old, flags, story=None, epic=epic, today=today, cal=cal, cfg=custom_cfg)
+    assert esc_old is not None
+    assert esc_old.level == 0
+
 
 
 def test_new_flag_uses_today_as_since(cal, cfg):

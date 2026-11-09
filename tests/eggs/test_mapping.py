@@ -243,6 +243,27 @@ def test_unknown_or_none_custom_fields_map_gracefully(base_config):
     assert issue.due_date is None
     assert issue.estimate_seconds is None
     assert issue.health_flags == frozenset()
+
+
+def test_mapping_retired_parent_type_maps_to_none(base_config):
+    raw = {
+        "key": "SUB-1",
+        "fields": {
+            "summary": "Sub under retired Task parent",
+            "project": {"key": "ROCKY"},
+            "issuetype": {"name": "Dev Task", "subtask": True},
+            "status": {"name": "DEV To Do"},
+            "parent": {
+                "key": "TASK-1",
+                "fields": {
+                    "issuetype": {"name": "Task", "subtask": False},
+                },
+            },
+        },
+    }
+    issue = issue_from_json(raw, base_config)
+    assert issue.parent_type is None
+
     assert issue.escalation_level == 0
     assert issue.escalation_owner is None
     assert issue.health_since is None

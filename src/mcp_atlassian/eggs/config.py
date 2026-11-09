@@ -34,6 +34,8 @@ class EggsConfig:
     timezone: str = "Asia/Ho_Chi_Minh"
     frozen_label: str = "legacy-frozen"
     flagged_impediment_value: str = "Impediment"
+    reschedule_pending_value: str = "Chờ duyệt"
+    blocked_internal_value: str = "Nội bộ"
     fields: dict[str, str] = field(default_factory=dict)
     statuses: dict[str, str] = field(default_factory=dict)
     issue_types: dict[str, list[str]] = field(default_factory=dict)
@@ -109,10 +111,7 @@ def load_config(path: str | None = None) -> EggsConfig:
     thresholds_data = data.get("thresholds", {})
     thresholds = Thresholds(
         stale_working_days=thresholds_data.get("stale_working_days", 2),
-        unscheduled_window=thresholds_data.get(
-            "unscheduled_window",
-            thresholds_data.get("epic_unscheduled_window", 5),
-        ),
+        unscheduled_window=thresholds_data.get("unscheduled_window", 5),
         interrupt_window=thresholds_data.get("interrupt_window", 5),
         escalate_l1_after=thresholds_data.get("escalate_l1_after", 1),
         escalate_l2_after=thresholds_data.get("escalate_l2_after", 2),
@@ -151,6 +150,8 @@ def load_config(path: str | None = None) -> EggsConfig:
         timezone=data.get("timezone", "Asia/Ho_Chi_Minh"),
         frozen_label=data.get("frozen_label", "legacy-frozen"),
         flagged_impediment_value=data.get("flagged_impediment_value", "Impediment"),
+        reschedule_pending_value=data.get("reschedule_pending_value", "Chờ duyệt"),
+        blocked_internal_value=data.get("blocked_internal_value", "Nội bộ"),
         fields=data.get("fields", {}),
         statuses=data.get("statuses", {}),
         issue_types=data.get("issue_types", {}),

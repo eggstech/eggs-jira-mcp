@@ -10,9 +10,9 @@ from .model import Issue, Worklog
 def detect_interruptions(
     issues: list[Issue],
     since: datetime,
+    today: date,
     cal: WorkCalendar,
     cfg: EggsConfig,
-    today: date | None = None,
 ) -> dict[str, str]:
     """Detect interruptions across work items.
 
@@ -23,9 +23,6 @@ def detect_interruptions(
     status_changed_at, or has no baseline_end;
     a bug_sub never interrupts if the same assignee owns a dev_task under the same parent Story.
     """
-    if today is None:
-        today = since.date()
-
     interruptions: dict[str, str] = {}
 
     # Index dev_tasks by (assignee, parent_key) to detect own-flow bugs
@@ -63,6 +60,14 @@ def detect_interruptions(
         peer_issues = by_assignee.get(x.assignee, [])
         for y in peer_issues:
             if y.key == x.key:
+                continue
+
+            # Items that themselves entered in_progress after since never get flagged by each other
+            if (
+                y.status == "in_progress"
+                and y.status_changed_at is not None
+                and y.status_changed_at >= since
+            ):
                 continue
 
             # Check if Y is active/scheduled within window
@@ -134,12 +139,12 @@ def compute_flags(
         if issue.blocked:
             item_flags.add("BLOCKED")
 
-        if issue.reschedule_status == "Chờ duyệt":
+        if issue.reschedule_status == cfg.reschedule_pending_value:
             item_flags.add("APPROVAL_PENDING")
 
         if issue.is_work_item:
             # OVERDUE
-            is_approval_pending = issue.reschedule_status == "Chờ duyệt"
+            is_approval_pending = issue.reschedule_status == cfg.reschedule_pending_value
             if issue.planned_end is not None and issue.planned_end < today and not is_approval_pending:
                 item_flags.add("OVERDUE")
 
@@ -161,7 +166,7 @@ def compute_flags(
                         item_flags.add("STALE")
 
             # UNSCHEDULED
-            if issue.status == "todo" and issue.planned_end is None:
+            if issue.type == "dev_task" and issue.status == "todo" and issue.planned_end is None:
                 parent_story = stories.get(issue.parent_key) if issue.parent_key else None
                 if parent_story and parent_story.due_date is not None:
                     days_to_due = cal.working_days_between(today, parent_story.due_date)

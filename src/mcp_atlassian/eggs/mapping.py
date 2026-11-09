@@ -154,8 +154,9 @@ def issue_from_json(raw: dict, cfg: EggsConfig) -> Issue:
     parent_is_subtask = bool(parent_issuetype.get("subtask", False))
     parent_type = (
         cfg.type_logical(raw_parent_type, is_subtask=parent_is_subtask)
-        or (raw_parent_type.lower() if raw_parent_type else None)
-    ) if raw_parent_type else None
+        if raw_parent_type
+        else None
+    )
 
     # Helper to retrieve custom field value
     def get_cf(logical_name: str) -> Any:

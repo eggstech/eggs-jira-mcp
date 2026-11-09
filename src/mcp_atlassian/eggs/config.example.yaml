@@ -7,6 +7,8 @@ kit_min_version: 0.1.0
 timezone: Asia/Ho_Chi_Minh
 frozen_label: legacy-frozen
 flagged_impediment_value: Impediment
+reschedule_pending_value: "Chờ duyệt"
+blocked_internal_value: "Nội bộ"
 
 # Working calendar & thresholds
 thresholds:

@@ -145,6 +145,41 @@ def test_overdue_not_when_reschedule_pending(cal, cfg):
     assert "APPROVAL_PENDING" not in flags["DEV-2"]
 
 
+def test_reschedule_pending_uses_configured_value(cal):
+    custom_cfg = EggsConfig(
+        lead_user="cuong.huynh",
+        reschedule_pending_value="Pending Approval",
+    )
+    # Issue with custom value should be recognized as APPROVAL_PENDING
+    custom_issue = _make_issue(
+        key="DEV-CUSTOM",
+        status="in_progress",
+        planned_end=date(2026, 11, 17),
+        reschedule_status="Pending Approval",
+    )
+    # Issue with old hard-coded value should NOT be recognized as APPROVAL_PENDING
+    old_issue = _make_issue(
+        key="DEV-OLD",
+        status="in_progress",
+        planned_end=date(2026, 11, 17),
+        reschedule_status="Chờ duyệt",
+    )
+    flags = compute_flags(
+        issues=[custom_issue, old_issue],
+        worklogs=[],
+        stories={},
+        today=TODAY,
+        cal=cal,
+        cfg=custom_cfg,
+        interruptions={},
+    )
+    assert "APPROVAL_PENDING" in flags["DEV-CUSTOM"]
+    assert "OVERDUE" not in flags["DEV-CUSTOM"]
+    assert "APPROVAL_PENDING" not in flags["DEV-OLD"]
+    assert "OVERDUE" in flags["DEV-OLD"]
+
+
+
 def test_stale_after_two_working_days(cal, cfg):
     # Status changed to in_progress on Monday Nov 16 at 09:00.
     # Today is Wednesday Nov 18.
@@ -273,6 +308,68 @@ def test_unscheduled_dev_task_story_due_soon(cal, cfg):
     assert "UNSCHEDULED" not in flags_far["DEV-2"]
 
 
+def test_unscheduled_todo_branch_applies_only_to_dev_task(cal, cfg):
+    story = _make_issue(
+        key="STORY-1",
+        issue_type="story",
+        status="ready_for_dev",
+        due_date=date(2026, 11, 20),
+    )
+    adhoc_task = _make_issue(
+        key="ADHOC-1",
+        issue_type="adhoc",
+        status="todo",
+        planned_end=None,
+        parent_key="STORY-1",
+    )
+    bug_task = _make_issue(
+        key="BUG-1",
+        issue_type="bug",
+        status="todo",
+        planned_end=None,
+        parent_key="STORY-1",
+    )
+    flags = compute_flags(
+        issues=[adhoc_task, bug_task],
+        worklogs=[],
+        stories={"STORY-1": story},
+        today=TODAY,
+        cal=cal,
+        cfg=cfg,
+        interruptions={},
+    )
+    assert "UNSCHEDULED" not in flags["ADHOC-1"]
+    assert "UNSCHEDULED" not in flags["BUG-1"]
+
+
+def test_unscheduled_dev_task_when_story_due_in_past(cal, cfg):
+    # Story due date in the past still counts as within the window for its todo dev_tasks
+    story = _make_issue(
+        key="STORY-PAST",
+        issue_type="story",
+        status="ready_for_dev",
+        due_date=date(2026, 11, 10),  # In the past relative to TODAY (Nov 18)
+    )
+    dev_task = _make_issue(
+        key="DEV-PAST",
+        issue_type="dev_task",
+        status="todo",
+        planned_end=None,
+        parent_key="STORY-PAST",
+    )
+    flags = compute_flags(
+        issues=[dev_task],
+        worklogs=[],
+        stories={"STORY-PAST": story},
+        today=TODAY,
+        cal=cal,
+        cfg=cfg,
+        interruptions={},
+    )
+    assert "UNSCHEDULED" in flags["DEV-PAST"]
+
+
+
 def test_unscheduled_migrated_in_progress(cal, cfg):
     # An issue that is past todo (e.g. in_progress) without baseline_end -> UNSCHEDULED
     migrated_task = _make_issue(
@@ -354,9 +451,9 @@ def test_own_flow_bug_is_not_interruption(cal, cfg):
     interruptions = detect_interruptions(
         issues=[dev_task, flow_bug],
         since=datetime(2026, 11, 16, 0, 0, tzinfo=TZ),
+        today=TODAY,
         cal=cal,
         cfg=cfg,
-        today=TODAY,
     )
     assert "DEV-1" not in interruptions
     assert len(interruptions) == 0
@@ -386,9 +483,9 @@ def test_adhoc_interrupts_other_projects_same_person(cal, cfg):
     interruptions = detect_interruptions(
         issues=[proja_task, projb_adhoc],
         since=datetime(2026, 11, 16, 0, 0, tzinfo=TZ),
+        today=TODAY,
         cal=cal,
         cfg=cfg,
-        today=TODAY,
     )
     assert interruptions.get("PROJA-1") == "PROJB-99"
 
@@ -403,6 +500,68 @@ def test_adhoc_interrupts_other_projects_same_person(cal, cfg):
         interruptions=interruptions,
     )
     assert "NEED_RESCHEDULE" in flags["PROJA-1"]
+
+
+def test_detect_interruptions_both_entered_after_since_do_not_flag(cal, cfg):
+    # Two tasks for same assignee both entered in_progress after since.
+    # Neither should flag the other as an interruption.
+    since = datetime(2026, 11, 16, 0, 0, tzinfo=TZ)
+    task1 = _make_issue(
+        key="ADHOC-1",
+        issue_type="adhoc",
+        status="in_progress",
+        assignee="dev.a",
+        status_changed_at=datetime(2026, 11, 17, 10, 0, tzinfo=TZ),
+    )
+    task2 = _make_issue(
+        key="ADHOC-2",
+        issue_type="adhoc",
+        status="in_progress",
+        assignee="dev.a",
+        status_changed_at=datetime(2026, 11, 17, 14, 0, tzinfo=TZ),
+    )
+    interruptions = detect_interruptions([task1, task2], since, TODAY, cal, cfg)
+    assert interruptions == {}
+
+
+def test_own_flow_bug_resolved_owned_dev_task_exempts(cal, cfg):
+    # Owner's dev_task Done, bug_sub under same story started -> no interruption
+    since = datetime(2026, 11, 16, 0, 0, tzinfo=TZ)
+    dev_task_done = _make_issue(
+        key="DEV-1",
+        issue_type="dev_task",
+        status="done",
+        assignee="dev.a",
+        parent_key="STORY-1",
+        planned_end=date(2026, 11, 15),
+    )
+    other_active_task = _make_issue(
+        key="DEV-OTHER",
+        issue_type="dev_task",
+        status="in_progress",
+        assignee="dev.a",
+        parent_key="STORY-2",
+        status_changed_at=datetime(2026, 11, 10, 9, 0, tzinfo=TZ),
+        planned_end=date(2026, 11, 20),
+    )
+    flow_bug = _make_issue(
+        key="BUG-1",
+        issue_type="bug_sub",
+        status="in_progress",
+        assignee="dev.a",
+        parent_key="STORY-1",
+        status_changed_at=datetime(2026, 11, 17, 10, 0, tzinfo=TZ),
+    )
+    interruptions = detect_interruptions([dev_task_done, other_active_task, flow_bug], since, TODAY, cal, cfg)
+    assert interruptions == {}
+
+
+def test_detect_interruptions_today_required(cal, cfg):
+    since = datetime(2026, 11, 16, 0, 0, tzinfo=TZ)
+    with pytest.raises(TypeError):
+        # Missing required argument today
+        detect_interruptions(issues=[], since=since, cal=cal, cfg=cfg)  # type: ignore
+
 
 
 def test_need_reschedule_persists_until_cleared(cal, cfg):
@@ -529,9 +688,9 @@ def test_missing_assignee_and_dates_does_not_crash(cal, cfg):
     interruptions = detect_interruptions(
         issues=[issue],
         since=datetime(2026, 11, 16, 0, 0, tzinfo=TZ),
+        today=TODAY,
         cal=cal,
         cfg=cfg,
-        today=TODAY,
     )
     assert interruptions == {}
 

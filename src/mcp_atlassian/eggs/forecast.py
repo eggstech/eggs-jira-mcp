@@ -22,6 +22,7 @@ class FlowMetrics:
 @dataclass(frozen=True)
 class ActorRow:
     actor: str
+    actor_code: str | None
     total: int
     dev: int
     qc: int
@@ -101,6 +102,7 @@ def epic_metrics(
     other_items: list[Issue],
     escalations: dict[str, Escalation],
     cal: WorkCalendar,
+    children: list[Issue] = (),
 ) -> EpicMetrics:
     """Calculate metrics and forecast for an epic."""
     due = epic.due_date
@@ -134,15 +136,19 @@ def epic_metrics(
             unscheduled += 1
 
     # unknown_eta if any issue in the epic has an L2 escalation
-    known_epic_keys = {epic.key} | {s.key for s in stories} | {item.key for item in other_items}
+    known_epic_keys = (
+        {epic.key}
+        | {s.key for s in stories}
+        | {item.key for item in other_items}
+        | {c.key for c in children}
+    )
     unknown_eta = any(
-        esc.level == 2 for k, esc in escalations.items()
-        if (k in known_epic_keys or not known_epic_keys or (k.split("-")[0] == epic.project if "-" in k else True))
+        esc.level == 2 for k, esc in escalations.items() if k in known_epic_keys
     )
 
     # Group stories by Actor
     actors_map: dict[str, dict[str, int]] = {}
-    actor_code_map: dict[str, str] = {}
+    actor_code_map: dict[str, str | None] = {}
 
     for s in stories:
         if s.status == "cancelled":
@@ -153,7 +159,7 @@ def epic_metrics(
             actor_code = s.actor_code
         else:
             actor_name = "(chưa gán Actor)"
-            actor_code = "ZZZ"
+            actor_code = None
 
         actor_code_map[actor_name] = actor_code
 
@@ -186,15 +192,16 @@ def epic_metrics(
         if f and f.at_risk:
             counts["at_risk"] += 1
 
-    # Sort actors: by actor code, with "(chưa gán Actor)" at the end
+    # Sort actors: by actor code, with the unassigned bucket last
     sorted_actor_names = sorted(
         actors_map.keys(),
-        key=lambda name: (1 if name == "(chưa gán Actor)" else 0, actor_code_map.get(name, name)),
+        key=lambda name: (1 if actor_code_map.get(name) is None else 0, actor_code_map.get(name) or ""),
     )
 
     actor_rows = [
         ActorRow(
             actor=name,
+            actor_code=actor_code_map.get(name),
             total=actors_map[name]["total"],
             dev=actors_map[name]["dev"],
             qc=actors_map[name]["qc"],
