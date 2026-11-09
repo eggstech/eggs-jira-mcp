@@ -29,6 +29,8 @@
 
 ## Behavior notes
 
+- **Past-due Story within unscheduled window:**
+  A past-due Story still counts as within the UNSCHEDULED window for its todo dev_tasks.
 - **Overdue items count as within interrupt window:**
   When checking if an unresolved work item has its planned end date within `interrupt_window` working days, overdue items (`planned_end < today`) return 0 working days from `cal.working_days_between(today, y.planned_end)` and thus count as within the window.
 - **Resolved owned dev_tasks count for exemption:**

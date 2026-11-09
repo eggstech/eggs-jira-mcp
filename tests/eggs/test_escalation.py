@@ -171,6 +171,29 @@ def test_self_requested_approval_goes_to_default_lead_ba(cal, cfg):
     assert esc.owner == "default.lead.ba"
 
 
+def test_approval_pending_requester_is_epic_assignee_and_no_default_lead_ba(cal):
+    # APPROVAL_PENDING where reschedule_requester == epic assignee AND project default_lead_ba is None
+    # -> L0 owner must NOT be the requester; use cfg.lead_user
+    cfg = EggsConfig(
+        lead_user="cuong.huynh",
+        projects={"PROJ": ProjectConfig(key="PROJ", default_lead_ba="")},
+    )
+    epic = _make_issue(key="PROJ-EPIC", issue_type="epic", assignee="ba.lead")
+    task = _make_issue(
+        key="PROJ-1",
+        issue_type="dev_task",
+        status="in_progress",
+        reschedule_status="Chờ duyệt",
+        reschedule_requester="ba.lead",
+    )
+    flags = frozenset({"APPROVAL_PENDING"})
+
+    esc = escalate(task, flags, story=None, epic=epic, today=TODAY, cal=cal, cfg=cfg)
+    assert esc is not None
+    assert esc.level == 0
+    assert esc.owner == "cuong.huynh"
+
+
 def test_approval_pending_requester_is_epic_assignee_l1_is_lead_user(cal, cfg):
     # APPROVAL_PENDING where requester == epic assignee -> L0 = default_lead_ba, L1 = lead_user (not the requester)
     epic = _make_issue(key="PROJ-EPIC", issue_type="epic", assignee="ba.lead")

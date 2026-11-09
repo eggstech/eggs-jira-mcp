@@ -244,6 +244,11 @@ def test_unknown_or_none_custom_fields_map_gracefully(base_config):
     assert issue.due_date is None
     assert issue.estimate_seconds is None
     assert issue.health_flags == frozenset()
+    assert issue.escalation_level == 0
+    assert issue.escalation_owner is None
+    assert issue.health_since is None
+    assert issue.status_changed_at is None
+    assert issue.frozen is False
 
 
 def test_mapping_retired_parent_type_maps_to_none(base_config):
@@ -264,12 +269,6 @@ def test_mapping_retired_parent_type_maps_to_none(base_config):
     }
     issue = issue_from_json(raw, base_config)
     assert issue.parent_type is None
-
-    assert issue.escalation_level == 0
-    assert issue.escalation_owner is None
-    assert issue.health_since is None
-    assert issue.status_changed_at is None
-    assert issue.frozen is False
 
 
 def test_legacy_frozen_label_or_frozen_project(base_config):

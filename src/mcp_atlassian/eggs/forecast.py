@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 
@@ -102,7 +103,7 @@ def epic_metrics(
     other_items: list[Issue],
     escalations: dict[str, Escalation],
     cal: WorkCalendar,
-    children: list[Issue] = (),
+    children: Sequence[Issue] = (),
 ) -> EpicMetrics:
     """Calculate metrics and forecast for an epic."""
     due = epic.due_date

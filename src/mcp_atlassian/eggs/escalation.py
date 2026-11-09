@@ -47,7 +47,12 @@ def escalate(
     if "APPROVAL_PENDING" in flags:
         if epic_assignee and issue.reschedule_requester and epic_assignee == issue.reschedule_requester:
             proj_cfg = cfg.projects.get(issue.project)
-            l0_candidate = proj_cfg.default_lead_ba if proj_cfg else None
+            default_lead = (
+                proj_cfg.default_lead_ba.strip()
+                if (proj_cfg and proj_cfg.default_lead_ba and proj_cfg.default_lead_ba.strip())
+                else None
+            )
+            l0_candidate = default_lead or cfg.lead_user
         else:
             l0_candidate = epic_assignee
     elif issue.is_work_item:
@@ -68,7 +73,12 @@ def escalate(
     # L1 owner candidate: epic assignee; if L0 owner was epic assignee -> default_lead_ba
     if epic_assignee and l0_owner == epic_assignee:
         proj_cfg = cfg.projects.get(issue.project)
-        l1_candidate = proj_cfg.default_lead_ba if proj_cfg else None
+        default_lead = (
+            proj_cfg.default_lead_ba.strip()
+            if (proj_cfg and proj_cfg.default_lead_ba and proj_cfg.default_lead_ba.strip())
+            else None
+        )
+        l1_candidate = default_lead or cfg.lead_user
     else:
         l1_candidate = epic_assignee
 
@@ -82,8 +92,6 @@ def escalate(
         l1_candidate = cfg.lead_user
 
     l1_owner = resolve_owner(l1_candidate)
-    if l1_owner == l0_owner or (issue.reschedule_requester and l1_owner == issue.reschedule_requester):
-        l1_owner = cfg.lead_user
 
     # L2 owner
     l2_owner = cfg.lead_user
