@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
-import time
 
 from .config import EggsConfig
 from .gateway import JiraGateway
@@ -12,7 +12,9 @@ from .gateway import JiraGateway
 class Identity:
     username: str
     display_name: str
-    roles: dict[str, set[str]]  # project key -> set of logical roles (e.g. {"dev", "qc"})
+    roles: dict[
+        str, set[str]
+    ]  # project key -> set of logical roles (e.g. {"dev", "qc"})
     is_lead: bool
 
 
@@ -65,7 +67,9 @@ class IdentityCache:
         del self._project_roles[project]
         return None
 
-    def set_project_role_members(self, project: str, members: dict[str, list[str]]) -> None:
+    def set_project_role_members(
+        self, project: str, members: dict[str, list[str]]
+    ) -> None:
         self._project_roles[project] = (members, self.clock())
 
     def clear(self) -> None:
@@ -90,6 +94,15 @@ def resolve_identity(
     display_name = me.get("displayName") or username
     is_lead = username == cfg.lead_user
 
+    # Bot user is ignored by identity
+    if username == cfg.bot_user:
+        return Identity(
+            username=username,
+            display_name=display_name,
+            roles={},
+            is_lead=False,
+        )
+
     roles: dict[str, set[str]] = {}
     cached_roles = cache.get_user_roles(username) if cache is not None else None
     if cached_roles is not None:
@@ -108,12 +121,17 @@ def resolve_identity(
 
             user_proj_roles: set[str] = set()
             norm_user = username.strip().lower()
-            for logical_role, jira_role_name in cfg.roles.items():
+            for logical_role, jira_role_names in cfg.roles.items():
+                names = (
+                    [jira_role_names]
+                    if isinstance(jira_role_names, str)
+                    else jira_role_names
+                )
                 matched_members: list[str] = []
                 for r_name, u_list in members.items():
-                    if r_name.strip().lower() == jira_role_name.strip().lower():
-                        matched_members = u_list
-                        break
+                    for target_name in names:
+                        if r_name.strip().lower() == target_name.strip().lower():
+                            matched_members.extend(u_list)
                 if any(u.strip().lower() == norm_user for u in matched_members):
                     user_proj_roles.add(logical_role)
 

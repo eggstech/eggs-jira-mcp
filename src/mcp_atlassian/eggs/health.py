@@ -19,9 +19,9 @@ def detect_interruptions(
     Returns dict mapping affected work-item key -> interrupting key.
     A work item that entered in_progress after `since` interrupts the same assignee's
     other unresolved work items that are in_progress or have planned_end within
-    interrupt_window working days, when it is bug/adhoc, or was created after those items'
-    status_changed_at, or has no baseline_end;
-    a bug_sub never interrupts if the same assignee owns a dev_task under the same parent Story.
+    interrupt_window working days, when it is bug/adhoc, or was created after those
+    items' status_changed_at, or has no baseline_end; a bug_sub never interrupts
+    if the same assignee owns a dev_task under the same parent Story.
     """
     interruptions: dict[str, str] = {}
 
@@ -42,8 +42,13 @@ def detect_interruptions(
             and iss.status_changed_at
             and iss.status_changed_at >= since
         ):
-            # A bug_sub never interrupts if the same assignee owns a dev_task under the same parent Story
-            if iss.type == "bug_sub" and iss.parent_key and (iss.assignee, iss.parent_key) in owned_dev_tasks:
+            # A bug_sub never interrupts if the same assignee owns a dev_task
+            # under the same parent Story
+            if (
+                iss.type == "bug_sub"
+                and iss.parent_key
+                and (iss.assignee, iss.parent_key) in owned_dev_tasks
+            ):
                 continue
             interrupting_candidates.append(iss)
 
@@ -62,7 +67,8 @@ def detect_interruptions(
             if y.key == x.key:
                 continue
 
-            # Items that themselves entered in_progress after since never get flagged by each other
+            # Items that themselves entered in_progress after since
+            # never get flagged by each other
             if (
                 y.status == "in_progress"
                 and y.status_changed_at is not None
@@ -112,8 +118,10 @@ def compute_flags(
     Work items:
       - OVERDUE: planned_end < today, unresolved, not 'Chờ duyệt'
       - STALE: status in (in_progress, ready_for_qc, testing) and
-               working_days_between(max(status_changed_at, last worklog), today) >= stale_working_days
-      - UNSCHEDULED: (status todo and no planned_end and parent Story due within unscheduled_window)
+               working_days_between(max(status_changed_at, last worklog),
+                                    today) >= stale_working_days
+      - UNSCHEDULED: (status todo and no planned_end and parent Story due
+                      within unscheduled_window)
                      or (status past todo and no baseline_end)
       - APPROVAL_PENDING: reschedule_status == 'Chờ duyệt'
       - BLOCKED: issue.blocked is True
@@ -155,8 +163,14 @@ def compute_flags(
 
         if issue.is_work_item:
             # OVERDUE
-            is_approval_pending = issue.reschedule_status == cfg.reschedule_pending_value
-            if issue.planned_end is not None and issue.planned_end < today and not is_approval_pending:
+            is_approval_pending = (
+                issue.reschedule_status == cfg.reschedule_pending_value
+            )
+            if (
+                issue.planned_end is not None
+                and issue.planned_end < today
+                and not is_approval_pending
+            ):
                 item_flags.add("OVERDUE")
 
             # STALE
@@ -177,13 +191,22 @@ def compute_flags(
                         item_flags.add("STALE")
 
             # UNSCHEDULED
-            if issue.type == "dev_task" and issue.status == "todo" and issue.planned_end is None:
-                parent_story = stories.get(issue.parent_key) if issue.parent_key else None
+            if (
+                issue.type == "dev_task"
+                and issue.status == "todo"
+                and issue.planned_end is None
+            ):
+                parent_story = (
+                    stories.get(issue.parent_key) if issue.parent_key else None
+                )
                 if parent_story and parent_story.due_date is not None:
                     days_to_due = cal.working_days_between(today, parent_story.due_date)
                     if days_to_due <= cfg.thresholds.unscheduled_window:
                         item_flags.add("UNSCHEDULED")
-            elif issue.status in {"in_progress", "ready_for_qc", "testing"} and issue.baseline_end is None:
+            elif (
+                issue.status in {"in_progress", "ready_for_qc", "testing"}
+                and issue.baseline_end is None
+            ):
                 item_flags.add("UNSCHEDULED")
 
             # NEED_RESCHEDULE
@@ -206,7 +229,9 @@ def people_not_updated(
     today: date,
     cal: WorkCalendar,
 ) -> list[str]:
-    """Find people with in_progress work items who logged no work on the previous working day."""
+    """Find people with in_progress work items who logged no work
+    on the previous working day.
+    """
     prev_working_day = cal.previous_working_day(today)
 
     active_assignees: set[str] = set()

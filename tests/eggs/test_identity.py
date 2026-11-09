@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import pytest
-
 from mcp_atlassian.eggs.config import EggsConfig, ProjectConfig
-from mcp_atlassian.eggs.identity import Identity, IdentityCache, resolve_identity
+from mcp_atlassian.eggs.identity import IdentityCache, resolve_identity
 from tests.eggs.fakes import FakeGateway
 
 
@@ -11,11 +9,12 @@ def test_identity_roles_per_project():
     # Dev in RFID, QC in CP
     cfg = EggsConfig(
         lead_user="cuong.huynh",
+        jira_url="https://jira.eggstech.io.vn",
         projects={
-            "RFID": ProjectConfig(key="RFID", default_lead_ba="cuong.huynh"),
-            "CP": ProjectConfig(key="CP", default_lead_ba="cuong.huynh"),
+            "RFID": ProjectConfig(key="RFID", default_lead_ba="cuong.huynh", triage_owner="cuong.huynh"),
+            "CP": ProjectConfig(key="CP", default_lead_ba="cuong.huynh", triage_owner="cuong.huynh"),
         },
-        roles={"lead_ba": "Lead-BA", "qc": "QC", "dev": "Developers"},
+        roles={"lead_ba": ["Lead-BA"], "qc": ["QC"], "dev": ["Developers"]},
     )
     gateway = FakeGateway(
         me={"name": "alice", "displayName": "Alice Smith"},
@@ -40,10 +39,11 @@ def test_identity_cached_within_ttl():
     # Second call makes no gateway call; after 601 s it does
     cfg = EggsConfig(
         lead_user="cuong.huynh",
+        jira_url="https://jira.eggstech.io.vn",
         projects={
-            "RFID": ProjectConfig(key="RFID", default_lead_ba="cuong.huynh"),
+            "RFID": ProjectConfig(key="RFID", default_lead_ba="cuong.huynh", triage_owner="cuong.huynh"),
         },
-        roles={"lead_ba": "Lead-BA", "qc": "QC", "dev": "Developers"},
+        roles={"lead_ba": ["Lead-BA"], "qc": ["QC"], "dev": ["Developers"]},
     )
     gateway = FakeGateway(
         me={"name": "alice", "displayName": "Alice Smith"},
@@ -80,10 +80,11 @@ def test_identity_cached_within_ttl():
 def test_identity_without_role_is_empty():
     cfg = EggsConfig(
         lead_user="cuong.huynh",
+        jira_url="https://jira.eggstech.io.vn",
         projects={
-            "RFID": ProjectConfig(key="RFID", default_lead_ba="cuong.huynh"),
+            "RFID": ProjectConfig(key="RFID", default_lead_ba="cuong.huynh", triage_owner="cuong.huynh"),
         },
-        roles={"lead_ba": "Lead-BA", "qc": "QC", "dev": "Developers"},
+        roles={"lead_ba": ["Lead-BA"], "qc": ["QC"], "dev": ["Developers"]},
     )
     gateway = FakeGateway(
         me={"name": "stranger", "displayName": "Stranger User"},
@@ -98,3 +99,52 @@ def test_identity_without_role_is_empty():
     assert identity.display_name == "Stranger User"
     assert identity.roles == {}
     assert identity.is_lead is False
+
+
+def test_identity_administrators_count_as_lead_ba():
+    cfg = EggsConfig(
+        lead_user="cuong.huynh",
+        jira_url="https://jira.eggstech.io.vn",
+        projects={
+            "RFID": ProjectConfig(key="RFID", default_lead_ba="cuong.huynh", triage_owner="cuong.huynh"),
+        },
+        roles={
+            "lead_ba": ["Business Analysts", "Administrators"],
+            "qc": ["Testers"],
+            "dev": ["Developers"],
+        },
+    )
+    gateway = FakeGateway(
+        me={"name": "admin_user", "displayName": "Admin User"},
+        role_members={
+            "RFID": {"Administrators": ["admin_user"], "Developers": ["alice"]},
+        },
+    )
+    identity = resolve_identity(gateway, cfg)
+    assert identity.username == "admin_user"
+    assert "lead_ba" in identity.roles.get("RFID", set())
+
+
+def test_identity_ignores_bot_user():
+    cfg = EggsConfig(
+        lead_user="cuong.huynh",
+        jira_url="https://jira.eggstech.io.vn",
+        bot_user="eggs-bot",
+        projects={
+            "RFID": ProjectConfig(key="RFID", default_lead_ba="cuong.huynh", triage_owner="cuong.huynh"),
+        },
+        roles={
+            "lead_ba": ["Business Analysts", "Administrators"],
+            "qc": ["Testers"],
+            "dev": ["Developers"],
+        },
+    )
+    gateway = FakeGateway(
+        me={"name": "eggs-bot", "displayName": "U Guardian"},
+        role_members={
+            "RFID": {"Administrators": ["eggs-bot"]},
+        },
+    )
+    identity = resolve_identity(gateway, cfg)
+    assert identity.roles == {}
+

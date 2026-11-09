@@ -1,7 +1,8 @@
-from datetime import date, datetime
 import json
+from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
+
 import pytest
 
 from mcp_atlassian.eggs.config import EggsConfig, ProjectConfig
@@ -12,13 +13,14 @@ from mcp_atlassian.eggs.mapping import (
     parse_jira_dt,
     status_changed_at,
 )
-from mcp_atlassian.eggs.model import Issue, Worklog
+from mcp_atlassian.eggs.model import Issue
 
 
 @pytest.fixture
 def base_config():
     return EggsConfig(
         lead_user="cuong.huynh",
+        jira_url="https://jira.eggstech.io.vn",
         fields={
             "planned_start": "customfield_10108",
             "planned_end": "customfield_10109",
@@ -59,8 +61,8 @@ def base_config():
             "bug": ["Bug stand-alone"],
         },
         projects={
-            "HMKLOYAL": ProjectConfig(key="HMKLOYAL", default_lead_ba="cuong.huynh", frozen=False),
-            "BUL": ProjectConfig(key="BUL", default_lead_ba="cuong.huynh", frozen=True),
+            "HMKLOYAL": ProjectConfig(key="HMKLOYAL", default_lead_ba="cuong.huynh", triage_owner="cuong.huynh", frozen=False),
+            "BUL": ProjectConfig(key="BUL", default_lead_ba="cuong.huynh", triage_owner="cuong.huynh", frozen=True),
         },
     )
 
@@ -433,6 +435,7 @@ def test_issue_fields_for_write_clear_and_validation(base_config):
     # 4. Field with None id in cfg.fields raises ValueError naming the logical field
     cfg_with_null = EggsConfig(
         lead_user="someone",
+        jira_url="https://jira.eggstech.io.vn",
         fields={"unconfigured_cf": None},
         statuses={},
         issue_types={},
@@ -448,12 +451,13 @@ def test_issue_fields_for_write_clear_and_validation(base_config):
 def test_frozen_label_and_impediment_value_from_config():
     custom_cfg = EggsConfig(
         lead_user="someone",
+        jira_url="https://jira.eggstech.io.vn",
         frozen_label="custom-frozen",
         flagged_impediment_value="Blocker",
         fields={"flagged": "customfield_flagged"},
         statuses={},
         issue_types={},
-        projects={"P": ProjectConfig(key="P", default_lead_ba="ba", frozen=False)},
+        projects={"P": ProjectConfig(key="P", default_lead_ba="ba", triage_owner="ba", frozen=False)},
     )
     raw_issue = {
         "id": "1",
@@ -473,6 +477,7 @@ def test_frozen_label_and_impediment_value_from_config():
 def test_user_report_type_and_fields_mapped(base_config):
     cfg_with_report = EggsConfig(
         lead_user="cuong.huynh",
+        jira_url="https://jira.eggstech.io.vn",
         fields={
             **base_config.fields,
             "report_source": "customfield_report_source",
@@ -506,6 +511,19 @@ def test_user_report_type_and_fields_mapped(base_config):
     assert issue.reported_by == "Support Team"
     assert issue.reported_at == datetime(2026, 11, 17, 7, 45, tzinfo=ZoneInfo("Asia/Ho_Chi_Minh"))
     assert issue.resolution == "Is a Bug"
+
+
+def test_reported_at_written_as_jira_offset_format():
+    cfg = EggsConfig(
+        lead_user="cuong.huynh",
+        jira_url="https://jira.eggstech.io.vn",
+        timezone="Asia/Ho_Chi_Minh",
+        fields={"reported_at": "customfield_reported_at"},
+    )
+    dt = datetime(2026, 11, 17, 8, 30, 0, tzinfo=ZoneInfo("Asia/Ho_Chi_Minh"))
+    payload = issue_fields_for_write(cfg, reported_at=dt)
+    assert payload["customfield_reported_at"] == "2026-11-17T08:30:00.000+0700"
+
 
 
 

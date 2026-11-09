@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime
 import logging
+from datetime import datetime
 from typing import Any
 
 from .gateway import JiraError, JiraGateway
@@ -19,7 +19,7 @@ class AtlassianGateway(JiraGateway):
         self.cfg = cfg
 
     def search(
-        self, jql: str, fields: list[str], expand_changelog: bool = False
+        self, jql: str, fields: list[str], *, expand_changelog: bool = False
     ) -> list[dict]:
         """Search issues using JQL with pagination support."""
         issues: list[dict] = []
@@ -50,14 +50,19 @@ class AtlassianGateway(JiraGateway):
         """Fetch raw issue JSON by key."""
         res = self.client.get(f"rest/api/2/issue/{key}")
         if not isinstance(res, dict):
-            raise JiraError(f"Failed to fetch issue {key}")
+            msg = f"Failed to fetch issue {key}"
+            raise JiraError(msg)
         return res
 
     def get_transitions(self, key: str) -> list[dict]:
         """Fetch available transitions for an issue: [{'id': ..., 'name': ...}]."""
         res = self.client.get(f"rest/api/2/issue/{key}/transitions")
         transitions = res.get("transitions", []) if isinstance(res, dict) else []
-        return [{"id": str(t["id"]), "name": t["name"]} for t in transitions if "id" in t and "name" in t]
+        return [
+            {"id": str(t["id"]), "name": t["name"]}
+            for t in transitions
+            if "id" in t and "name" in t
+        ]
 
     def transition(
         self,
@@ -73,7 +78,8 @@ class AtlassianGateway(JiraGateway):
             None,
         )
         if not matched:
-            raise JiraError(f"Transition '{transition_name}' not available for {key}")
+            msg = f"Transition '{transition_name}' not available for {key}"
+            raise JiraError(msg)
 
         payload: dict[str, Any] = {"transition": {"id": matched["id"]}}
         if fields:
@@ -87,6 +93,7 @@ class AtlassianGateway(JiraGateway):
         self,
         key: str,
         fields: dict,
+        *,
         override_screen_security: bool = False,
     ) -> None:
         """Update fields on an issue."""
@@ -128,7 +135,8 @@ class AtlassianGateway(JiraGateway):
         """Create a new issue and return its key."""
         res = self.client.post("rest/api/2/issue", data={"fields": fields})
         if not isinstance(res, dict) or "key" not in res:
-            raise JiraError(f"Failed to create issue: {res}")
+            msg = f"Failed to create issue: {res}"
+            raise JiraError(msg)
         return res["key"]
 
     def link(self, link_type: str, inward_key: str, outward_key: str) -> None:
@@ -217,7 +225,8 @@ class AtlassianGateway(JiraGateway):
             )
             if not resolved_key:
                 logger.warning(
-                    "Skipping worklog %s: issueId %s could not be resolved to an issue key",
+                    "Skipping worklog %s: issueId %s could not be resolved "
+                    "to an issue key",
                     item.get("id"),
                     item.get("issueId"),
                 )
@@ -268,7 +277,9 @@ class AtlassianGateway(JiraGateway):
         return ""
 
     def myself(self) -> dict:
-        """Fetch info about the current authenticated user: {'name': ..., 'displayName': ...}."""
+        """Fetch info about the current authenticated user:
+        {'name': ..., 'displayName': ...}.
+        """
         res = self.client.get("rest/api/2/myself")
         if isinstance(res, dict):
             return res
@@ -297,7 +308,7 @@ class AtlassianGateway(JiraGateway):
 
             try:
                 role_data = self.client.get(path)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logger.warning("Failed to fetch role data for %s: %s", path, e)
                 continue
 
@@ -321,8 +332,12 @@ class AtlassianGateway(JiraGateway):
                                     if isinstance(u, dict) and u.get("name"):
                                         usernames.append(u["name"])
                                 continue
-                        except Exception:
-                            pass
+                        except Exception as e:  # noqa: BLE001
+                            logger.debug(
+                                "Failed to resolve group members for %s: %s",
+                                group_name,
+                                e,
+                            )
                 name = actor.get("name")
                 if name:
                     usernames.append(name)

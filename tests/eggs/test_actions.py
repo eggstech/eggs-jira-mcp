@@ -1,12 +1,11 @@
 from datetime import date, datetime
-from typing import Literal
 from zoneinfo import ZoneInfo
+
 import pytest
 
-from mcp_atlassian.eggs.actions import ActionResult, Actions, EndDayEntry
+from mcp_atlassian.eggs.actions import Actions, EndDayEntry
 from mcp_atlassian.eggs.calendar import WorkCalendar
-from mcp_atlassian.eggs.config import EggsConfig, ProjectConfig, Thresholds
-from mcp_atlassian.eggs.model import Issue
+from mcp_atlassian.eggs.config import EggsConfig, ProjectConfig
 from tests.eggs.fakes import FakeGateway
 
 TZ = ZoneInfo("Asia/Ho_Chi_Minh")
@@ -17,8 +16,18 @@ TODAY = date(2026, 11, 18)
 def cfg():
     return EggsConfig(
         lead_user="cuong.huynh",
+        jira_url="https://jira.eggstech.io.vn",
         timezone="Asia/Ho_Chi_Minh",
         ops_epic_prefix="[OPS]",
+        ops_epic_summary="[OPS] Vận hành & Hotfix {month:02d}/{year}",
+        hotfix_prefix="[HOTFIX]",
+        reschedule_interrupt_value="Chen ngang",
+        link_types={
+            "interrupts": "is interrupted by",
+            "causes": "causes",
+            "relates": "relates to",
+            "duplicates": "duplicates",
+        },
         fields={
             "planned_start": "customfield_10108",
             "planned_end": "customfield_10109",
@@ -62,6 +71,7 @@ def cfg():
             "schedule": "Schedule",
             "start": "Start",
             "submit_qc": "Submit QC",
+            "finish": "Done",
             "start_test": "Start Test",
             "qc_pass": "QC Pass",
             "qc_fail": "QC Fail",
@@ -178,6 +188,7 @@ def test_request_reschedule_past_date_refused(cfg, cal):
             "issuetype": {"name": "Dev Task", "subtask": True},
             "status": {"name": "Dev In Progress"},
             "customfield_10109": "2026-11-20",
+            "customfield_baseline_end": "2026-11-20",
         },
     }
     gateway = FakeGateway(
@@ -199,6 +210,7 @@ def test_chen_ngang_requires_interrupted_by(cfg, cal):
             "project": {"key": "HMKPOS"},
             "issuetype": {"name": "Dev Task", "subtask": True},
             "status": {"name": "Dev In Progress"},
+            "customfield_baseline_end": "2026-11-20",
         },
     }
     gateway = FakeGateway(
@@ -206,11 +218,11 @@ def test_chen_ngang_requires_interrupted_by(cfg, cal):
         transitions={"HMKPOS-101": ["Request Reschedule"]},
     )
     actions = _make_actions(gateway, cfg, cal)
-    # Reason mentions chen ngang but interrupted_by is None
+    # Reason matches reschedule_interrupt_value ("Chen ngang") but interrupted_by is None
     res = actions.request_reschedule(
         "HMKPOS-101",
         new_end=date(2026, 11, 25),
-        reason="Việc chen ngang",
+        reason=cfg.reschedule_interrupt_value,
         interrupted_by=None,
     )
     assert res.ok is False
@@ -384,11 +396,10 @@ def test_uat_signoff_refuses_when_actor_story_not_in_uat(cfg, cal):
 
 def test_triage_open_creates_report_in_ops_epic_assigned_to_triage_owner(cfg, cal):
     # Current month OPS epic
-    month_str = TODAY.strftime("%m/%Y")
     ops_epic = {
         "key": "HMKPOS-OPS",
         "fields": {
-            "summary": f"[OPS] Operations {month_str}",
+            "summary": cfg.ops_epic_summary.format(month=TODAY.month, year=TODAY.year),
             "project": {"key": "HMKPOS"},
             "issuetype": {"name": "Epic", "subtask": False},
             "status": {"name": "Dev In Progress"},
@@ -481,11 +492,10 @@ def test_triage_close_bug_under_story_links_and_resolves(cfg, cal):
 
 
 def test_triage_close_bug_production_goes_to_ops(cfg, cal):
-    month_str = TODAY.strftime("%m/%Y")
     ops_epic = {
         "key": "HMKPOS-OPS",
         "fields": {
-            "summary": f"[OPS] Operations {month_str}",
+            "summary": cfg.ops_epic_summary.format(month=TODAY.month, year=TODAY.year),
             "project": {"key": "HMKPOS"},
             "issuetype": {"name": "Epic", "subtask": False},
             "status": {"name": "Dev In Progress"},
@@ -584,7 +594,7 @@ def test_triage_close_refuses_bug_under_done_story(cfg, cal):
 @pytest.mark.parametrize(
     "method_name,kwargs",
     [
-        ("schedule", {"key": "HMKPOS-101", "start": TODAY, "end": TODAY, "estimate": "1d"}),
+        ("schedule", {"key": "HMKPOS-102", "start": TODAY, "end": TODAY, "estimate": "1d"}),
         ("start", {"key": "HMKPOS-101"}),
         ("log_work", {"key": "HMKPOS-101", "time_spent": "1h", "note": "Dev note"}),
         ("submit_qc", {"key": "HMKPOS-101", "time_spent": "1h", "note": "Ready"}),
@@ -606,11 +616,10 @@ def test_triage_close_refuses_bug_under_done_story(cfg, cal):
 )
 def test_dry_run_makes_no_writes(cfg, cal, method_name, kwargs):
     # Setup test fixtures
-    month_str = TODAY.strftime("%m/%Y")
     ops_epic = {
         "key": "HMKPOS-OPS",
         "fields": {
-            "summary": f"[OPS] Operations {month_str}",
+            "summary": cfg.ops_epic_summary.format(month=TODAY.month, year=TODAY.year),
             "project": {"key": "HMKPOS"},
             "issuetype": {"name": "Epic", "subtask": False},
             "status": {"name": "Dev In Progress"},
@@ -623,7 +632,24 @@ def test_dry_run_makes_no_writes(cfg, cal, method_name, kwargs):
             "project": {"key": "HMKPOS"},
             "issuetype": {"name": "Dev Task", "subtask": True},
             "status": {"name": "DEV To Do"},
+            "customfield_10108": "2026-11-18",
             "customfield_10109": "2026-11-20",
+            "customfield_baseline_end": "2026-11-20",
+            "customfield_reschedule_status": "Chờ duyệt",
+            "customfield_reschedule_requester": "requester.user",
+            "parent": {
+                "key": "HMKPOS-100",
+                "fields": {"issuetype": {"name": "Story", "subtask": False}},
+            },
+        },
+    }
+    raw_task_unscheduled = {
+        "key": "HMKPOS-102",
+        "fields": {
+            "summary": "Task Unscheduled",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Dev Task", "subtask": True},
+            "status": {"name": "DEV To Do"},
             "parent": {
                 "key": "HMKPOS-100",
                 "fields": {"issuetype": {"name": "Story", "subtask": False}},
@@ -651,15 +677,32 @@ def test_dry_run_makes_no_writes(cfg, cal, method_name, kwargs):
         },
     }
 
+    all_task_transitions = [
+        "Schedule",
+        "Start",
+        "Submit QC",
+        "QC Pass",
+        "QC Fail",
+        "Block",
+        "Unblock",
+        "Request Reschedule",
+        "Approve Reschedule",
+        "Reject Reschedule",
+        "Cancel",
+        "Start Test",
+        "Done",
+    ]
     gateway = FakeGateway(
         issues={
             "HMKPOS-OPS": ops_epic,
             "HMKPOS-100": raw_story,
             "HMKPOS-101": raw_task,
+            "HMKPOS-102": raw_task_unscheduled,
             "HMKPOS-REP1": raw_rep,
         },
         transitions={
-            "HMKPOS-101": ["Schedule", "Start", "Submit QC", "QC Pass", "QC Fail", "Block", "Unblock", "Request Reschedule", "Approve Reschedule", "Cancel"],
+            "HMKPOS-101": all_task_transitions,
+            "HMKPOS-102": all_task_transitions,
             "HMKPOS-100": ["Client UAT", "Request Reschedule"],
             "HMKPOS-REP1": ["Close Report", "Start Triage"],
         },
@@ -675,3 +718,836 @@ def test_dry_run_makes_no_writes(cfg, cal, method_name, kwargs):
     write_methods = {"transition", "update_fields", "add_comment", "add_worklog", "create_issue", "link"}
     actual_write_calls = [c for c in gateway.calls if c[0] in write_methods]
     assert actual_write_calls == [], f"dry_run on {method_name} wrote to gateway: {actual_write_calls}"
+
+
+def test_actions_today_fn_uses_cfg_timezone(cfg, cal, monkeypatch):
+    from datetime import timezone
+    fixed_utc = datetime(2026, 11, 16, 18, 30, 0, tzinfo=timezone.utc)
+
+    class MockDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is not None:
+                return fixed_utc.astimezone(tz)
+            return fixed_utc
+
+    monkeypatch.setattr("mcp_atlassian.eggs.actions.datetime", MockDatetime)
+    gateway = FakeGateway()
+    actions = Actions(gateway, cfg, cal)
+    # At 18:30 UTC, Vietnam is UTC+7 -> 01:30 on Nov 17 -> date(2026, 11, 17)
+    assert actions._today() == date(2026, 11, 17)
+
+
+def test_schedule_refused_when_baseline_exists(cfg, cal):
+    raw_task = {
+        "key": "HMKPOS-101",
+        "fields": {
+            "summary": "Task with baseline",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Dev Task", "subtask": True},
+            "status": {"name": "DEV To Do"},
+            "customfield_baseline_end": "2026-11-20",
+        },
+    }
+    gateway = FakeGateway(
+        issues={"HMKPOS-101": raw_task},
+        transitions={"HMKPOS-101": ["Schedule"]},
+    )
+    actions = _make_actions(gateway, cfg, cal)
+    res = actions.schedule("HMKPOS-101", start=TODAY, end=date(2026, 11, 25), estimate="2d")
+    assert res.ok is False
+    assert "baseline" in res.message.lower() or "dời lịch" in res.message.lower()
+
+
+def test_schedule_requires_estimate_and_future_end(cfg, cal):
+    raw_task = {
+        "key": "HMKPOS-101",
+        "fields": {
+            "summary": "Task without dates",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Dev Task", "subtask": True},
+            "status": {"name": "DEV To Do"},
+        },
+    }
+    gateway = FakeGateway(
+        issues={"HMKPOS-101": raw_task},
+        transitions={"HMKPOS-101": ["Schedule"]},
+    )
+    actions = _make_actions(gateway, cfg, cal)
+
+    # Empty estimate
+    res_no_est = actions.schedule("HMKPOS-101", start=TODAY, end=date(2026, 11, 25), estimate="")
+    assert res_no_est.ok is False
+    assert "estimate" in res_no_est.message.lower()
+
+    # Past end date
+    res_past = actions.schedule("HMKPOS-101", start=date(2026, 11, 10), end=date(2026, 11, 12), estimate="1d")
+    assert res_past.ok is False
+
+    # End before start
+    res_order = actions.schedule("HMKPOS-101", start=date(2026, 11, 25), end=date(2026, 11, 20), estimate="1d")
+    assert res_order.ok is False
+
+
+def test_schedule_sends_dates_and_estimate_in_transition(cfg, cal):
+    raw_task = {
+        "key": "HMKPOS-101",
+        "fields": {
+            "summary": "Task without dates",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Dev Task", "subtask": True},
+            "status": {"name": "DEV To Do"},
+        },
+    }
+    gateway = FakeGateway(
+        issues={"HMKPOS-101": raw_task},
+        transitions={"HMKPOS-101": ["Schedule"]},
+    )
+    actions = _make_actions(gateway, cfg, cal)
+    res = actions.schedule("HMKPOS-101", start=TODAY, end=date(2026, 11, 25), estimate="2d")
+    assert res.ok is True
+
+    # Exactly get_issue, get_transitions, transition
+    trans_calls = [c for c in gateway.calls if c[0] == "transition"]
+    assert len(trans_calls) == 1
+    t_call = trans_calls[0]
+    assert t_call[1][0] == "HMKPOS-101"
+    assert t_call[1][1] == "Schedule"
+    fields = t_call[2]["fields"]
+    assert fields["customfield_10108"] == "2026-11-18"
+    assert fields["customfield_10109"] == "2026-11-25"
+    assert fields["timetracking"] == {"originalEstimate": "2d"}
+    assert "customfield_baseline_end" not in fields
+    assert not any(c[0] == "update_fields" for c in gateway.calls)
+
+
+def test_start_with_dates_schedules_then_starts(cfg, cal):
+    # When start is called with dates on an item without baseline_end:
+    raw_task = {
+        "key": "HMKPOS-101",
+        "fields": {
+            "summary": "Task without baseline",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Dev Task", "subtask": True},
+            "status": {"name": "DEV To Do"},
+        },
+    }
+    gateway = FakeGateway(
+        issues={"HMKPOS-101": raw_task},
+        transitions={"HMKPOS-101": ["Schedule", "Start"]},
+    )
+    actions = _make_actions(gateway, cfg, cal)
+    res = actions.start("HMKPOS-101", start=TODAY, end=date(2026, 11, 25), estimate="2d")
+    assert res.ok is True
+
+    # Transition sequence: Schedule then Start
+    trans_calls = [c for c in gateway.calls if c[0] == "transition"]
+    assert len(trans_calls) == 2
+    assert trans_calls[0][1][1] == "Schedule"
+    assert trans_calls[1][1][1] == "Start"
+    assert trans_calls[1][2]["fields"] is None or trans_calls[1][2]["fields"] == {}
+
+    # When start is called with dates on an item WITH baseline_end:
+    raw_task_with_baseline = {
+        "key": "HMKPOS-102",
+        "fields": {
+            "summary": "Task with baseline",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Dev Task", "subtask": True},
+            "status": {"name": "DEV To Do"},
+            "customfield_baseline_end": "2026-11-20",
+        },
+    }
+    gateway2 = FakeGateway(
+        issues={"HMKPOS-102": raw_task_with_baseline},
+        transitions={"HMKPOS-102": ["Start"]},
+    )
+    actions2 = _make_actions(gateway2, cfg, cal)
+    res2 = actions2.start("HMKPOS-102", start=TODAY, end=date(2026, 11, 25), estimate="2d")
+    assert res2.ok is False
+    assert "dời lịch" in res2.message.lower() or "request_reschedule" in res2.message.lower()
+
+
+def test_unavailable_transition_writes_nothing(cfg, cal):
+    # Attempting to block a Done item where Block transition is unavailable
+    done_task = {
+        "key": "HMKPOS-101",
+        "fields": {
+            "summary": "Done Task",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Dev Task", "subtask": True},
+            "status": {"name": "Done"},
+        },
+    }
+    gateway = FakeGateway(
+        issues={"HMKPOS-101": done_task},
+        transitions={"HMKPOS-101": ["Reopen"]},  # Block not available!
+    )
+    actions = _make_actions(gateway, cfg, cal)
+    res = actions.block("HMKPOS-101", reason="Blocked", blocked_by="Nội bộ")
+    assert res.ok is False
+    assert "Reopen" in res.message  # Lists available transition names
+    # Zero mutating calls
+    write_methods = {"transition", "update_fields", "add_comment", "add_worklog", "create_issue", "link"}
+    actual_write_calls = [c for c in gateway.calls if c[0] in write_methods]
+    assert actual_write_calls == []
+
+    # Same check in dry-run
+    res_dry = actions.block("HMKPOS-101", reason="Blocked", blocked_by="Nội bộ", dry_run=True)
+    assert res_dry.ok is False
+    assert "Reopen" in res_dry.message
+
+
+def test_actions_never_call_update_fields(cfg, cal):
+    # Setup happy path fixtures and run ALL write methods
+    data = _base_fixtures(cfg)
+    data["issues"]["HMKPOS-100"]["fields"]["status"]["name"] = "Wait For Review"
+    gw = FakeGateway(issues=data["issues"], transitions=data["transitions"], user="approver.user")
+    actions = _make_actions(gw, cfg, cal)
+
+    # 1. schedule
+    actions.schedule("HMKPOS-102", start=TODAY, end=date(2026, 11, 20), estimate="2d")
+    # 2. start
+    actions.start("HMKPOS-101")
+    # 3. log_work
+    actions.log_work("HMKPOS-101", time_spent="1h", note="Work note")
+    # 4. submit_qc
+    actions.submit_qc("HMKPOS-101", time_spent="1h", note="Ready for QC")
+    # 5. finish
+    actions.finish("HMKPOS-101", time_spent="1h", note="Done task")
+    # 6. block
+    actions.block("HMKPOS-101", reason="Blocked", blocked_by="Nội bộ")
+    # 7. unblock
+    actions.unblock("HMKPOS-101", note="Unblocked")
+    # 8. request_reschedule
+    actions.request_reschedule("HMKPOS-101", new_end=date(2026, 11, 25), reason="Delay")
+    # 9. confirm_no_impact
+    actions.confirm_no_impact("HMKPOS-101", note="No impact")
+    # 10. end_day
+    actions.end_day([EndDayEntry(key="HMKPOS-101", time_spent="1h", note="Done", move_to=None)])
+    # 11. qc_start
+    actions.qc_start("HMKPOS-101")
+    # 12. qc_pass
+    actions.qc_pass("HMKPOS-101", time_spent="1h", note="Pass")
+    # 13. qc_fail
+    actions.qc_fail("HMKPOS-101", time_spent="1h", reason="Bug")
+    # 14. flow_reschedule
+    actions.flow_reschedule("HMKPOS-100", new_due=date(2026, 11, 25), reason="Delay")
+    # 15. uat start
+    data["issues"]["HMKPOS-100"]["fields"]["status"]["name"] = "Ready For UAT"
+    actions.uat("HMKPOS-EPIC", actor="CH - CỬA HÀNG", action="start", note="Start")
+    # 16. uat signoff
+    data["issues"]["HMKPOS-100"]["fields"]["status"]["name"] = "Wait For Review"
+    actions.uat("HMKPOS-EPIC", actor="CH - CỬA HÀNG", action="signoff", note="Signoff")
+    # 17. uat fail
+    actions.uat("HMKPOS-EPIC", actor="CH - CỬA HÀNG", action="fail", note="Fail", story_keys=["HMKPOS-100"], bugs={"HMKPOS-100": ["Bug"]})
+    # 18. decide_reschedule approve
+    actions.decide_reschedule("HMKPOS-101", approve=True, note="Approved")
+    # 19. decide_reschedule reject
+    actions.decide_reschedule("HMKPOS-101", approve=False, note="Rejected")
+    # 20. cancel
+    actions.cancel("HMKPOS-101", reason="Cancelled")
+    # 21. triage_open
+    actions.triage_open("HMKPOS", text="Bug report", source_url="url", reported_by="User")
+    # 22. triage_close
+    actions.triage_close("HMKPOS-REP1", verdict="guidance", note="Guide", time_spent="15m")
+
+    # Assert FakeGateway recorded ZERO update_fields across EVERY happy path
+    update_calls = [c for c in gw.calls if c[0] == "update_fields"]
+    assert update_calls == []
+
+
+# ---------------------------------------------------------------------------
+# Exact Call Sequence Tests for ALL Public Actions Methods (Item 3)
+# ---------------------------------------------------------------------------
+
+def _base_fixtures(cfg):
+    ops_summary = cfg.ops_epic_summary.format(month=TODAY.month, year=TODAY.year)
+    ops_epic = {
+        "key": "HMKPOS-OPS",
+        "fields": {
+            "summary": ops_summary,
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Epic", "subtask": False},
+            "status": {"name": "Dev In Progress"},
+        },
+    }
+    feature_epic = {
+        "key": "HMKPOS-EPIC",
+        "fields": {
+            "summary": "Feature Epic",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Epic", "subtask": False},
+            "status": {"name": "Dev In Progress"},
+        },
+    }
+    raw_story = {
+        "key": "HMKPOS-100",
+        "fields": {
+            "summary": "Story 100",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Story", "subtask": False},
+            "status": {"name": "Ready For UAT"},
+            "components": [{"name": "CH - CỬA HÀNG"}],
+            "customfield_epic_link": "HMKPOS-EPIC",
+        },
+    }
+    raw_task_scheduled = {
+        "key": "HMKPOS-101",
+        "fields": {
+            "summary": "Task 101 Scheduled",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Dev Task", "subtask": True},
+            "status": {"name": "DEV To Do"},
+            "customfield_10108": "2026-11-18",
+            "customfield_10109": "2026-11-20",
+            "customfield_baseline_end": "2026-11-20",
+            "customfield_proposed_end": "2026-11-25",
+            "customfield_reschedule_reason": "Extra requirement",
+            "customfield_reschedule_status": "Chờ duyệt",
+            "customfield_reschedule_requester": "requester.user",
+            "parent": {
+                "key": "HMKPOS-100",
+                "fields": {"issuetype": {"name": "Story", "subtask": False}},
+            },
+        },
+    }
+    raw_task_unscheduled = {
+        "key": "HMKPOS-102",
+        "fields": {
+            "summary": "Task 102 Unscheduled",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Dev Task", "subtask": True},
+            "status": {"name": "DEV To Do"},
+            "parent": {
+                "key": "HMKPOS-100",
+                "fields": {"issuetype": {"name": "Story", "subtask": False}},
+            },
+        },
+    }
+    raw_report = {
+        "key": "HMKPOS-REP1",
+        "fields": {
+            "summary": "User Report 1",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "User Report", "subtask": False},
+            "status": {"name": "Analyzing"},
+        },
+    }
+    all_transitions = [
+        "Schedule", "Start", "Submit QC", "Done", "Start Test", "QC Pass",
+        "QC Fail", "Cancel", "Request Reschedule", "Approve Reschedule",
+        "Reject Reschedule", "Block", "Unblock", "Confirm No Impact",
+        "Client UAT", "UAT Sign-off", "UAT Fail", "Start Triage", "Close Report",
+    ]
+    return {
+        "issues": {
+            "HMKPOS-OPS": ops_epic,
+            "HMKPOS-EPIC": feature_epic,
+            "HMKPOS-100": raw_story,
+            "HMKPOS-101": raw_task_scheduled,
+            "HMKPOS-102": raw_task_unscheduled,
+            "HMKPOS-REP1": raw_report,
+        },
+        "transitions": {
+            "HMKPOS-OPS": all_transitions,
+            "HMKPOS-EPIC": all_transitions,
+            "HMKPOS-100": all_transitions,
+            "HMKPOS-101": all_transitions,
+            "HMKPOS-102": all_transitions,
+            "HMKPOS-1000": all_transitions,
+            "HMKPOS-1001": all_transitions,
+            "HMKPOS-REP1": all_transitions,
+        },
+    }
+
+
+def test_happy_path_exact_call_sequence_schedule(cfg, cal):
+    data = _base_fixtures(cfg)
+    gw = FakeGateway(issues=data["issues"], transitions=data["transitions"])
+    actions = _make_actions(gw, cfg, cal)
+    res = actions.schedule("HMKPOS-102", start=TODAY, end=date(2026, 11, 20), estimate="2d")
+    assert res.ok is True
+    assert [c[0] for c in gw.calls] == ["get_issue", "get_transitions", "transition"]
+    assert gw.calls[2][1] == ("HMKPOS-102", "Schedule")
+    assert gw.calls[2][2]["fields"] == {
+        "customfield_10108": "2026-11-18",
+        "customfield_10109": "2026-11-20",
+        "timetracking": {"originalEstimate": "2d"},
+    }
+
+
+def test_happy_path_exact_call_sequence_start(cfg, cal):
+    data = _base_fixtures(cfg)
+    gw = FakeGateway(issues=data["issues"], transitions=data["transitions"])
+    actions = _make_actions(gw, cfg, cal)
+    res = actions.start("HMKPOS-101")
+    assert res.ok is True
+    assert [c[0] for c in gw.calls] == ["get_issue", "get_transitions", "transition"]
+    assert gw.calls[2][1] == ("HMKPOS-101", "Start")
+    assert gw.calls[2][2]["fields"] is None
+
+
+def test_happy_path_exact_call_sequence_log_work(cfg, cal):
+    data = _base_fixtures(cfg)
+    gw = FakeGateway(issues=data["issues"], transitions=data["transitions"])
+    actions = _make_actions(gw, cfg, cal)
+    res = actions.log_work("HMKPOS-101", time_spent="1h", note="Work note")
+    assert res.ok is True
+    assert [c[0] for c in gw.calls] == ["add_worklog"]
+    assert gw.calls[0][1] == ("HMKPOS-101", "1h", "Work note")
+
+
+def test_happy_path_exact_call_sequence_submit_qc(cfg, cal):
+    data = _base_fixtures(cfg)
+    gw = FakeGateway(issues=data["issues"], transitions=data["transitions"])
+    actions = _make_actions(gw, cfg, cal)
+    res = actions.submit_qc("HMKPOS-101", time_spent="1h", note="Ready for QC")
+    assert res.ok is True
+    assert [c[0] for c in gw.calls] == ["get_issue", "get_transitions", "add_worklog", "transition"]
+    assert gw.calls[2][1] == ("HMKPOS-101", "1h", "Ready for QC")
+    assert gw.calls[3][1] == ("HMKPOS-101", "Submit QC")
+
+
+def test_happy_path_exact_call_sequence_finish(cfg, cal):
+    data = _base_fixtures(cfg)
+    gw = FakeGateway(issues=data["issues"], transitions=data["transitions"])
+    actions = _make_actions(gw, cfg, cal)
+    res = actions.finish("HMKPOS-101", time_spent="1h", note="Completed task")
+    assert res.ok is True
+    assert [c[0] for c in gw.calls] == ["get_issue", "get_transitions", "add_worklog", "transition"]
+    assert gw.calls[2][1] == ("HMKPOS-101", "1h", "Completed task")
+    assert gw.calls[3][1] == ("HMKPOS-101", "Done")
+
+
+def test_happy_path_exact_call_sequence_block(cfg, cal):
+    data = _base_fixtures(cfg)
+    gw = FakeGateway(issues=data["issues"], transitions=data["transitions"])
+    actions = _make_actions(gw, cfg, cal)
+    res = actions.block("HMKPOS-101", reason="Wait for API", blocked_by="Nội bộ")
+    assert res.ok is True
+    assert [c[0] for c in gw.calls] == ["get_issue", "get_transitions", "transition"]
+    assert gw.calls[2][1] == ("HMKPOS-101", "Block")
+    assert gw.calls[2][2]["fields"]["customfield_flagged"] == "Impediment"
+    assert gw.calls[2][2]["fields"]["customfield_blocked_by"] == {"value": "Nội bộ"}
+
+
+def test_happy_path_exact_call_sequence_unblock(cfg, cal):
+    data = _base_fixtures(cfg)
+    gw = FakeGateway(issues=data["issues"], transitions=data["transitions"])
+    actions = _make_actions(gw, cfg, cal)
+    res = actions.unblock("HMKPOS-101", note="Resolved API issue")
+    assert res.ok is True
+    assert [c[0] for c in gw.calls] == ["get_issue", "get_transitions", "transition"]
+    assert gw.calls[2][1] == ("HMKPOS-101", "Unblock")
+    assert gw.calls[2][2]["fields"]["customfield_flagged"] is None
+    assert gw.calls[2][2]["fields"]["customfield_blocked_by"] is None
+
+
+def test_happy_path_exact_call_sequence_request_reschedule(cfg, cal):
+    data = _base_fixtures(cfg)
+    gw = FakeGateway(issues=data["issues"], transitions=data["transitions"])
+    actions = _make_actions(gw, cfg, cal)
+    res = actions.request_reschedule("HMKPOS-101", new_end=date(2026, 11, 25), reason="Extra requirement")
+    assert res.ok is True
+    assert [c[0] for c in gw.calls] == ["get_issue", "get_transitions", "current_user", "transition"]
+    assert gw.calls[3][1] == ("HMKPOS-101", "Request Reschedule")
+    assert gw.calls[3][2]["fields"]["customfield_proposed_end"] == "2026-11-25"
+
+
+def test_happy_path_exact_call_sequence_confirm_no_impact(cfg, cal):
+    data = _base_fixtures(cfg)
+    gw = FakeGateway(issues=data["issues"], transitions=data["transitions"])
+    actions = _make_actions(gw, cfg, cal)
+    res = actions.confirm_no_impact("HMKPOS-101", note="Overtime to keep schedule")
+    assert res.ok is True
+    assert [c[0] for c in gw.calls] == ["get_issue", "get_transitions", "transition"]
+    assert gw.calls[2][1] == ("HMKPOS-101", "Confirm No Impact")
+    assert gw.calls[2][2]["comment"] == "Overtime to keep schedule"
+
+
+def test_happy_path_exact_call_sequence_end_day(cfg, cal):
+    data = _base_fixtures(cfg)
+    gw = FakeGateway(issues=data["issues"], transitions=data["transitions"])
+    actions = _make_actions(gw, cfg, cal)
+    entries = [EndDayEntry(key="HMKPOS-101", time_spent="2h", note="End day summary", move_to=None)]
+    res = actions.end_day(entries)
+    assert res.ok is True
+    assert [c[0] for c in gw.calls] == ["add_worklog"]
+    assert gw.calls[0][1] == ("HMKPOS-101", "2h", "End day summary")
+
+
+def test_happy_path_exact_call_sequence_qc_start(cfg, cal):
+    data = _base_fixtures(cfg)
+    gw = FakeGateway(issues=data["issues"], transitions=data["transitions"])
+    actions = _make_actions(gw, cfg, cal)
+    res = actions.qc_start("HMKPOS-101")
+    assert res.ok is True
+    assert [c[0] for c in gw.calls] == ["get_issue", "get_transitions", "transition"]
+    assert gw.calls[2][1] == ("HMKPOS-101", "Start Test")
+
+
+def test_happy_path_exact_call_sequence_qc_pass(cfg, cal):
+    data = _base_fixtures(cfg)
+    gw = FakeGateway(issues=data["issues"], transitions=data["transitions"])
+    actions = _make_actions(gw, cfg, cal)
+    res = actions.qc_pass("HMKPOS-101", time_spent="1h", note="All tests pass")
+    assert res.ok is True
+    assert [c[0] for c in gw.calls] == ["get_issue", "get_transitions", "add_worklog", "transition"]
+    assert gw.calls[2][1] == ("HMKPOS-101", "1h", "All tests pass")
+    assert gw.calls[3][1] == ("HMKPOS-101", "QC Pass")
+
+
+def test_happy_path_exact_call_sequence_qc_fail_work_item(cfg, cal):
+    data = _base_fixtures(cfg)
+    gw = FakeGateway(issues=data["issues"], transitions=data["transitions"])
+    actions = _make_actions(gw, cfg, cal)
+    res = actions.qc_fail("HMKPOS-101", time_spent="1h", reason="Found regression")
+    assert res.ok is True
+    assert [c[0] for c in gw.calls] == ["get_issue", "get_issue", "get_transitions", "add_worklog", "transition"]
+    assert gw.calls[3][1] == ("HMKPOS-101", "1h", "Found regression")
+    assert gw.calls[4][1] == ("HMKPOS-101", "QC Fail")
+
+
+def test_happy_path_exact_call_sequence_flow_reschedule(cfg, cal):
+    data = _base_fixtures(cfg)
+    gw = FakeGateway(issues=data["issues"], transitions=data["transitions"])
+    actions = _make_actions(gw, cfg, cal)
+    res = actions.flow_reschedule("HMKPOS-100", new_due=date(2026, 11, 25), reason="Customer delay")
+    assert res.ok is True
+    assert [c[0] for c in gw.calls] == ["get_issue", "get_transitions", "current_user", "transition"]
+    assert gw.calls[3][1] == ("HMKPOS-100", "Request Reschedule")
+    assert gw.calls[3][2]["fields"]["customfield_proposed_end"] == "2026-11-25"
+
+
+def test_happy_path_exact_call_sequence_uat_start(cfg, cal):
+    data = _base_fixtures(cfg)
+    gw = FakeGateway(issues=data["issues"], transitions=data["transitions"])
+    actions = _make_actions(gw, cfg, cal)
+    res = actions.uat("HMKPOS-EPIC", actor="CH - CỬA HÀNG", action="start", note="Starting UAT")
+    assert res.ok is True
+    assert [c[0] for c in gw.calls] == ["search", "get_transitions", "transition"]
+    assert gw.calls[2][1] == ("HMKPOS-100", "Client UAT")
+
+
+def test_happy_path_exact_call_sequence_uat_signoff(cfg, cal):
+    data = _base_fixtures(cfg)
+    data["issues"]["HMKPOS-100"]["fields"]["status"]["name"] = "Wait For Review"
+    gw = FakeGateway(issues=data["issues"], transitions=data["transitions"])
+    actions = _make_actions(gw, cfg, cal)
+    res = actions.uat("HMKPOS-EPIC", actor="CH - CỬA HÀNG", action="signoff", note="Client signoff accepted")
+    assert res.ok is True
+    assert [c[0] for c in gw.calls] == ["search", "get_transitions", "transition"]
+    assert gw.calls[2][1] == ("HMKPOS-100", "UAT Sign-off")
+    assert gw.calls[2][2]["comment"] == "Client signoff accepted"
+
+
+def test_happy_path_exact_call_sequence_uat_fail(cfg, cal):
+    data = _base_fixtures(cfg)
+    data["issues"]["HMKPOS-100"]["fields"]["status"]["name"] = "Wait For Review"
+    gw = FakeGateway(issues=data["issues"], transitions=data["transitions"])
+    actions = _make_actions(gw, cfg, cal)
+    res = actions.uat(
+        "HMKPOS-EPIC",
+        actor="CH - CỬA HÀNG",
+        action="fail",
+        note="UI bug on checkout",
+        story_keys=["HMKPOS-100"],
+        bugs={"HMKPOS-100": ["Button misalignment"]},
+    )
+    assert res.ok is True
+    assert [c[0] for c in gw.calls] == [
+        "search", "get_transitions", "create_issue", "transition"
+    ]
+    assert gw.calls[2][1][0]["summary"] == "[CH][BUG] Button misalignment"
+    assert gw.calls[3][1] == ("HMKPOS-100", "UAT Fail")
+
+
+def test_happy_path_exact_call_sequence_decide_reschedule_approve(cfg, cal):
+    data = _base_fixtures(cfg)
+    gw = FakeGateway(issues=data["issues"], transitions=data["transitions"], user="approver.user")
+    actions = _make_actions(gw, cfg, cal)
+    res = actions.decide_reschedule("HMKPOS-101", approve=True, note="Approved")
+    assert res.ok is True
+    assert [c[0] for c in gw.calls] == ["get_issue", "current_user", "get_transitions", "transition"]
+    assert gw.calls[3][1] == ("HMKPOS-101", "Approve Reschedule")
+    assert gw.calls[3][2]["fields"]["customfield_10109"] == "2026-11-25"
+
+
+def test_happy_path_exact_call_sequence_decide_reschedule_reject(cfg, cal):
+    data = _base_fixtures(cfg)
+    gw = FakeGateway(issues=data["issues"], transitions=data["transitions"], user="approver.user")
+    actions = _make_actions(gw, cfg, cal)
+    res = actions.decide_reschedule("HMKPOS-101", approve=False, note="Rejected deadline cannot be moved")
+    assert res.ok is True
+    assert [c[0] for c in gw.calls] == ["get_issue", "current_user", "get_transitions", "transition"]
+    assert gw.calls[3][1] == ("HMKPOS-101", "Reject Reschedule")
+    assert gw.calls[3][2]["fields"]["customfield_reschedule_status"] is None
+
+
+def test_happy_path_exact_call_sequence_cancel(cfg, cal):
+    data = _base_fixtures(cfg)
+    gw = FakeGateway(issues=data["issues"], transitions=data["transitions"])
+    actions = _make_actions(gw, cfg, cal)
+    res = actions.cancel("HMKPOS-101", reason="Project scope changed")
+    assert res.ok is True
+    assert [c[0] for c in gw.calls] == ["get_issue", "get_transitions", "transition"]
+    assert gw.calls[2][1] == ("HMKPOS-101", "Cancel")
+    assert gw.calls[2][2]["comment"] == "Hủy: Project scope changed"
+
+
+def test_happy_path_exact_call_sequence_triage_open(cfg, cal):
+    data = _base_fixtures(cfg)
+    gw = FakeGateway(issues=data["issues"], transitions=data["transitions"])
+    actions = _make_actions(gw, cfg, cal)
+    res = actions.triage_open(
+        project="HMKPOS",
+        text="Cannot checkout error 500",
+        source_url="https://chat.google.com/room/1",
+        reported_by="Store Manager",
+    )
+    assert res.ok is True
+    assert [c[0] for c in gw.calls] == ["search", "create_issue", "get_transitions", "transition"]
+    assert gw.calls[1][1][0]["summary"] == "Cannot checkout error 500"
+    assert gw.calls[3][1] == ("HMKPOS-1001", "Start Triage")
+
+
+def test_happy_path_exact_call_sequence_triage_close(cfg, cal):
+    data = _base_fixtures(cfg)
+    gw = FakeGateway(issues=data["issues"], transitions=data["transitions"])
+    actions = _make_actions(gw, cfg, cal)
+    res = actions.triage_close(
+        key="HMKPOS-REP1",
+        verdict="guidance",
+        note="Explained how to login",
+        time_spent="15m",
+    )
+    assert res.ok is True
+    assert [c[0] for c in gw.calls] == ["get_issue", "get_transitions", "add_worklog", "transition"]
+    assert gw.calls[2][1] == ("HMKPOS-REP1", "15m", "Explained how to login")
+    assert gw.calls[3][1] == ("HMKPOS-REP1", "Close Report")
+    assert gw.calls[3][2]["fields"]["resolution"] == {"name": "User Guidance"}
+
+
+# ---------------------------------------------------------------------------
+# Pre-checks & Validation Tests (Items 4, 5, 6, 10)
+# ---------------------------------------------------------------------------
+
+def test_end_day_fails_if_any_sub_result_fails(cfg, cal):
+    data = _base_fixtures(cfg)
+    # HMKPOS-102 has no "Submit QC" transition
+    data["transitions"]["HMKPOS-102"] = ["Schedule"]
+    gw = FakeGateway(issues=data["issues"], transitions=data["transitions"])
+    actions = _make_actions(gw, cfg, cal)
+    entries = [
+        EndDayEntry(key="HMKPOS-101", time_spent="1h", note="Entry 1", move_to=None),
+        EndDayEntry(key="HMKPOS-102", time_spent="1h", note="Entry 2", move_to="ready_for_qc"),
+    ]
+    res = actions.end_day(entries)
+    assert res.ok is False
+    assert "HMKPOS-102" in res.message
+    # Pre-validation fails, so zero writes occurred
+    write_methods = {"transition", "update_fields", "add_comment", "add_worklog", "create_issue", "link"}
+    actual_writes = [c for c in gw.calls if c[0] in write_methods]
+    assert actual_writes == []
+
+
+def test_empty_or_whitespace_comment_refused(cfg, cal):
+    data = _base_fixtures(cfg)
+    gw = FakeGateway(issues=data["issues"], transitions=data["transitions"], user="approver.user")
+    actions = _make_actions(gw, cfg, cal)
+
+    # cancel requires non-empty reason
+    assert actions.cancel("HMKPOS-101", reason="   ").ok is False
+    assert actions.cancel("HMKPOS-101", reason="").ok is False
+
+    # qc_pass requires non-empty note
+    assert actions.qc_pass("HMKPOS-101", time_spent="1h", note="   ").ok is False
+    assert actions.qc_pass("HMKPOS-101", time_spent="1h", note="").ok is False
+
+    # qc_fail requires non-empty reason
+    assert actions.qc_fail("HMKPOS-101", time_spent="1h", reason="   ").ok is False
+    assert actions.qc_fail("HMKPOS-101", time_spent="1h", reason="").ok is False
+
+    # uat signoff requires non-empty note
+    data["issues"]["HMKPOS-100"]["fields"]["status"]["name"] = "Wait For Review"
+    assert actions.uat("HMKPOS-EPIC", actor="CH - CỬA HÀNG", action="signoff", note="   ").ok is False
+
+    # uat fail requires non-empty note
+    assert actions.uat(
+        "HMKPOS-EPIC",
+        actor="CH - CỬA HÀNG",
+        action="fail",
+        note="   ",
+        story_keys=["HMKPOS-100"],
+        bugs={"HMKPOS-100": ["Bug"]},
+    ).ok is False
+
+    # decide_reschedule reject requires non-empty note
+    assert actions.decide_reschedule("HMKPOS-101", approve=False, note="   ").ok is False
+
+    # confirm_no_impact requires non-empty note
+    assert actions.confirm_no_impact("HMKPOS-101", note="   ").ok is False
+
+
+def test_block_requires_reason_and_blocked_by(cfg, cal):
+    data = _base_fixtures(cfg)
+    gw = FakeGateway(issues=data["issues"], transitions=data["transitions"])
+    actions = _make_actions(gw, cfg, cal)
+
+    res1 = actions.block("HMKPOS-101", reason="", blocked_by="Nội bộ")
+    assert res1.ok is False
+    assert "lý do" in res1.message.lower() or "reason" in res1.message.lower()
+
+    res2 = actions.block("HMKPOS-101", reason="Wait for API", blocked_by="")
+    assert res2.ok is False
+    assert "blocked_by" in res2.message.lower() or "đối tượng" in res2.message.lower()
+
+
+def test_decide_reschedule_requires_pending_status(cfg, cal):
+    data = _base_fixtures(cfg)
+    data["issues"]["HMKPOS-101"]["fields"]["customfield_reschedule_status"] = None
+    gw = FakeGateway(issues=data["issues"], transitions=data["transitions"], user="approver.user")
+    actions = _make_actions(gw, cfg, cal)
+
+    res = actions.decide_reschedule("HMKPOS-101", approve=True, note="OK")
+    assert res.ok is False
+    assert "trạng thái" in res.message.lower() or "pending" in res.message.lower()
+
+
+def test_qc_fail_work_item_parent_not_story_refused(cfg, cal):
+    data = _base_fixtures(cfg)
+    # HMKPOS-101 parent is an Ad-hoc Task instead of Story
+    data["issues"]["HMKPOS-100"]["fields"]["issuetype"]["name"] = "Ad-hoc Task"
+    gw = FakeGateway(issues=data["issues"], transitions=data["transitions"])
+    actions = _make_actions(gw, cfg, cal)
+
+    res = actions.qc_fail("HMKPOS-101", time_spent="1h", reason="Bug found")
+    assert res.ok is False
+    assert "story" in res.message.lower()
+
+
+def test_searches_narrowed_by_epic_and_type(cfg, cal):
+    data = _base_fixtures(cfg)
+
+    def search_validator(jql: str, issue: dict) -> bool:
+        # Search must explicitly filter project and issuetype
+        assert "project =" in jql, f"JQL must filter project: {jql}"
+        assert "issuetype in" in jql, f"JQL must narrow issuetype: {jql}"
+        return True
+
+    gw = FakeGateway(issues=data["issues"], transitions=data["transitions"], search_filter=search_validator)
+    actions = _make_actions(gw, cfg, cal)
+
+    # triage_open searches for current OPS epic
+    res1 = actions.triage_open("HMKPOS", text="Bug report", source_url="url", reported_by="User")
+    assert res1.ok is True
+
+    # uat searches for stories under epic
+    res2 = actions.uat("HMKPOS-EPIC", actor="CH - CỬA HÀNG", action="start", note="Start UAT")
+    assert res2.ok is True
+
+
+def test_triage_close_second_call_refused_no_second_worklog(cfg, cal):
+    data = _base_fixtures(cfg)
+    gw = FakeGateway(
+        issues=data["issues"],
+        transitions=data["transitions"],
+        status_after={"Close Report": "Done"},
+    )
+    actions = _make_actions(gw, cfg, cal)
+
+    # First call succeeds
+    res1 = actions.triage_close("HMKPOS-REP1", verdict="guidance", note="Guide 1", time_spent="15m")
+    assert res1.ok is True
+    wl_calls_1 = [c for c in gw.calls if c[0] == "add_worklog"]
+    assert len(wl_calls_1) == 1
+
+    # Second call is refused because issue is now resolved
+    res2 = actions.triage_close("HMKPOS-REP1", verdict="guidance", note="Guide 2", time_spent="15m")
+    assert res2.ok is False
+    assert "đã được xử lý" in res2.message.lower() or "resolved" in res2.message.lower()
+    # Still only 1 worklog call
+    wl_calls_2 = [c for c in gw.calls if c[0] == "add_worklog"]
+    assert len(wl_calls_2) == 1
+
+
+def test_triage_close_prod_bug_missing_ops_epic_refused_even_in_dry_run(cfg, cal):
+    data = _base_fixtures(cfg)
+    # Delete OPS epic
+    del data["issues"]["HMKPOS-OPS"]
+    gw = FakeGateway(issues=data["issues"], transitions=data["transitions"])
+    actions = _make_actions(gw, cfg, cal)
+
+    # Production bug with bug_story_key=None needs OPS epic
+    res_dry = actions.triage_close(
+        "HMKPOS-REP1",
+        verdict="bug",
+        note="Prod bug",
+        time_spent="15m",
+        bug_story_key=None,
+        dry_run=True,
+    )
+    assert res_dry.ok is False
+    assert "ops" in res_dry.message.lower()
+
+    res_live = actions.triage_close(
+        "HMKPOS-REP1",
+        verdict="bug",
+        note="Prod bug",
+        time_spent="15m",
+        bug_story_key=None,
+        dry_run=False,
+    )
+    assert res_live.ok is False
+    assert "ops" in res_live.message.lower()
+
+
+def test_triage_close_link_target_type_validation(cfg, cal):
+    data = _base_fixtures(cfg)
+    gw = FakeGateway(issues=data["issues"], transitions=data["transitions"])
+    actions = _make_actions(gw, cfg, cal)
+
+    # Feature request linked to dev_task (instead of Story) is refused
+    res_feat = actions.triage_close("HMKPOS-REP1", verdict="feature", note="Feat", time_spent="15m", link_key="HMKPOS-101")
+    assert res_feat.ok is False
+    assert "story" in res_feat.message.lower()
+
+    # Data fix linked to Story (instead of Ad-hoc Task) is refused
+    res_data = actions.triage_close("HMKPOS-REP1", verdict="data_fix", note="Data fix", time_spent="15m", link_key="HMKPOS-100")
+    assert res_data.ok is False
+    assert "ad-hoc" in res_data.message.lower()
+
+    # Duplicate linked to Story (instead of Report) is refused
+    res_dup = actions.triage_close("HMKPOS-REP1", verdict="duplicate", note="Duplicate", time_spent="15m", link_key="HMKPOS-100")
+    assert res_dup.ok is False
+    assert "report" in res_dup.message.lower()
+
+
+def test_uat_actor_matching_and_story_keys_batch_refusal(cfg, cal):
+    data = _base_fixtures(cfg)
+    gw = FakeGateway(issues=data["issues"], transitions=data["transitions"])
+    actions = _make_actions(gw, cfg, cal)
+
+    # Actor code prefix: "CH - KHO" matches component "CH - CỬA HÀNG" (prefix CH)
+    res_match = actions.uat("HMKPOS-EPIC", actor="CH - KHO", action="start", note="Start UAT", dry_run=True)
+    assert res_match.ok is True
+
+    # Actor code prefix: "POS - THU NGÂN" does NOT match component "CH - CỬA HÀNG"
+    res_no_match = actions.uat("HMKPOS-EPIC", actor="POS - THU NGÂN", action="start", note="Start UAT", dry_run=True)
+    assert res_no_match.ok is False
+
+    # story_keys with invalid story refuses entire batch before any write
+    res_batch = actions.uat(
+        "HMKPOS-EPIC",
+        actor="CH - CỬA HÀNG",
+        action="start",
+        note="Start UAT",
+        story_keys=["HMKPOS-100", "HMKPOS-999"],
+    )
+    assert res_batch.ok is False
+    write_methods = {"transition", "update_fields", "add_comment", "add_worklog", "create_issue", "link"}
+    actual_writes = [c for c in gw.calls if c[0] in write_methods]
+    assert actual_writes == []
+
+

@@ -2,13 +2,18 @@
 # Copy to config.yaml and customize for your deployment.
 
 lead_user: cuong.huynh
+jira_url: https://jira.eggstech.io.vn
 lead_chat_webhook: null
 kit_min_version: 0.1.0
 timezone: Asia/Ho_Chi_Minh
 frozen_label: legacy-frozen
 flagged_impediment_value: Impediment
 reschedule_pending_value: "Chờ duyệt"
+reschedule_interrupt_value: "Chen ngang"
 blocked_internal_value: "Nội bộ"
+ops_epic_summary: "[OPS] Vận hành & Hotfix {month:02d}/{year}"
+hotfix_prefix: "[HOTFIX]"
+bot_user: eggs-bot
 
 # Working calendar & thresholds
 thresholds:
@@ -23,9 +28,19 @@ thresholds:
   end_day_hour: 17
 
 roles:
-  lead_ba: "Lead-BA"
-  qc: "QC"
-  dev: "Developers"
+  lead_ba:
+    - "Business Analysts"
+    - "Administrators"
+  qc:
+    - "Testers"
+  dev:
+    - "Developers"
+
+link_types:
+  interrupts: "is interrupted by"
+  causes: "causes"
+  relates: "relates to"
+  duplicates: "duplicates"
 
 # Fixed-date Vietnam public holidays for 2026.
 # NOTE: Lunar New Year (Tết Âm Lịch) and Hung Kings Commemoration (Giỗ Tổ Hùng Vương)
@@ -112,6 +127,7 @@ transitions:
   schedule: Schedule
   start: Start
   submit_qc: Submit QC
+  finish: Done
   start_test: Start Test
   qc_pass: QC Pass
   qc_fail: QC Fail
@@ -226,60 +242,72 @@ projects:
   BUL:
     key: BUL
     default_lead_ba: cuong.huynh
+    triage_owner: placeholder.user
     chat_webhook: null
     frozen: true
   HUE:
     key: HUE
     default_lead_ba: cuong.huynh
+    triage_owner: placeholder.user
     chat_webhook: null
     frozen: true
   HMKCHAT:
     key: HMKCHAT
     default_lead_ba: cuong.huynh
+    triage_owner: placeholder.user
     chat_webhook: null
     frozen: true
   SUP:
     key: SUP
     default_lead_ba: cuong.huynh
+    triage_owner: placeholder.user
     chat_webhook: null
     frozen: true
   KP:
     key: KP
     default_lead_ba: cuong.huynh
+    triage_owner: placeholder.user
     chat_webhook: null
     frozen: true
   MAP:
     key: MAP
     default_lead_ba: cuong.huynh
+    triage_owner: placeholder.user
     chat_webhook: null
     frozen: true
   MEW:
     key: MEW
     default_lead_ba: cuong.huynh
+    triage_owner: placeholder.user
     chat_webhook: null
     frozen: true
   RS:
     key: RS
     default_lead_ba: cuong.huynh
+    triage_owner: placeholder.user
     chat_webhook: null
     frozen: true
   SL:
     key: SL
     default_lead_ba: cuong.huynh
+    triage_owner: placeholder.user
     chat_webhook: null
     frozen: true
   UW:
     key: UW
     default_lead_ba: cuong.huynh
+    triage_owner: placeholder.user
     chat_webhook: null
     frozen: true
   VL:
     key: VL
     default_lead_ba: cuong.huynh
+    triage_owner: placeholder.user
     chat_webhook: null
     frozen: true
   ZBS:
     key: ZBS
     default_lead_ba: cuong.huynh
+    triage_owner: placeholder.user
     chat_webhook: null
     frozen: true

@@ -1,10 +1,11 @@
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
+
 import pytest
 
 from mcp_atlassian.eggs.calendar import WorkCalendar
 from mcp_atlassian.eggs.config import EggsConfig, ProjectConfig, Thresholds
-from mcp_atlassian.eggs.escalation import Escalation, escalate
+from mcp_atlassian.eggs.escalation import escalate
 from mcp_atlassian.eggs.model import Issue
 
 TZ = ZoneInfo("Asia/Ho_Chi_Minh")
@@ -20,6 +21,7 @@ def cal():
 def cfg():
     return EggsConfig(
         lead_user="cuong.huynh",
+        jira_url="https://jira.eggstech.io.vn",
         timezone="Asia/Ho_Chi_Minh",
         thresholds=Thresholds(
             stale_working_days=2,
@@ -34,6 +36,7 @@ def cfg():
             "PROJ": ProjectConfig(
                 key="PROJ",
                 default_lead_ba="default.lead.ba",
+                triage_owner="default.triage.owner",
             )
         },
     )
@@ -46,7 +49,7 @@ def _make_issue(
     assignee="dev.worker",
     qc_owner=None,
     health_since=None,
-    blocked=False,
+    blocked: bool = False,  # noqa: FBT001, FBT002
     blocked_by=None,
     blocked_since=None,
     reschedule_status=None,
@@ -176,7 +179,8 @@ def test_approval_pending_requester_is_epic_assignee_and_no_default_lead_ba(cal)
     # -> L0 owner must NOT be the requester; use cfg.lead_user
     cfg = EggsConfig(
         lead_user="cuong.huynh",
-        projects={"PROJ": ProjectConfig(key="PROJ", default_lead_ba="")},
+        jira_url="https://jira.eggstech.io.vn",
+        projects={"PROJ": ProjectConfig(key="PROJ", default_lead_ba="", triage_owner="default.triage.owner")},
     )
     epic = _make_issue(key="PROJ-EPIC", issue_type="epic", assignee="ba.lead")
     task = _make_issue(
@@ -223,7 +227,8 @@ def test_default_lead_ba_equals_epic_assignee_l1_and_l2_are_lead_user(cal):
     # default_lead_ba == epic assignee case -> L1 = lead_user; L2 = lead_user
     cfg = EggsConfig(
         lead_user="cuong.huynh",
-        projects={"PROJ": ProjectConfig(key="PROJ", default_lead_ba="same.person")},
+        jira_url="https://jira.eggstech.io.vn",
+        projects={"PROJ": ProjectConfig(key="PROJ", default_lead_ba="same.person", triage_owner="default.triage.owner")},
     )
     epic = _make_issue(key="PROJ-EPIC", issue_type="epic", assignee="same.person")
     task = _make_issue(
@@ -263,8 +268,9 @@ def test_missing_owner_falls_back_chain(cal, cfg):
     # Case 2: default_lead_ba also None -> falls back to lead_user
     cfg_no_default_ba = EggsConfig(
         lead_user="cuong.huynh",
+        jira_url="https://jira.eggstech.io.vn",
         thresholds=cfg.thresholds,
-        projects={"PROJ": ProjectConfig(key="PROJ", default_lead_ba="")},
+        projects={"PROJ": ProjectConfig(key="PROJ", default_lead_ba="", triage_owner="default.triage.owner")},
     )
     esc2 = escalate(task_no_assignee, flags, story=None, epic=epic_no_assignee, today=TODAY, cal=cal, cfg=cfg_no_default_ba)
     assert esc2 is not None
@@ -330,6 +336,7 @@ def test_internal_block_escalates_after_two_days(cal, cfg):
 def test_internal_block_uses_configured_value(cal):
     custom_cfg = EggsConfig(
         lead_user="cuong.huynh",
+        jira_url="https://jira.eggstech.io.vn",
         blocked_internal_value="Internal",
     )
     since_date = date(2026, 11, 13)
@@ -383,6 +390,7 @@ def test_new_flag_uses_today_as_since(cal, cfg):
 def test_report_l0_owner_falls_back_to_triage_owner(cal, cfg):
     cfg_with_triage = EggsConfig(
         lead_user="cuong.huynh",
+        jira_url="https://jira.eggstech.io.vn",
         thresholds=cfg.thresholds,
         projects={
             "PROJ": ProjectConfig(

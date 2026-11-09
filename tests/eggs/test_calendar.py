@@ -1,5 +1,5 @@
 from datetime import date
-import pytest
+
 from mcp_atlassian.eggs.calendar import WorkCalendar
 
 

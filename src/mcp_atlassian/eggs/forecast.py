@@ -44,7 +44,9 @@ class EpicMetrics:
     actors: list[ActorRow]
 
 
-def _calculate_slip_days(forecast_end: date | None, due: date | None, cal: WorkCalendar) -> int | None:
+def _calculate_slip_days(
+    forecast_end: date | None, due: date | None, cal: WorkCalendar
+) -> int | None:
     """Calculate signed working days slip: positive = late, negative = early."""
     if forecast_end is None or due is None:
         return None
@@ -65,16 +67,12 @@ def flow_metrics(
     """Calculate metrics and forecast for a single flow (Story)."""
     due = story.due_date
 
-    unresolved_children = [
-        c for c in children
-        if not c.is_resolved and not c.frozen
-    ]
+    unresolved_children = [c for c in children if not c.is_resolved and not c.frozen]
 
     unscheduled = sum(1 for c in unresolved_children if c.planned_end is None)
 
     planned_ends = [
-        c.planned_end for c in unresolved_children
-        if c.planned_end is not None
+        c.planned_end for c in unresolved_children if c.planned_end is not None
     ]
 
     if planned_ends:
@@ -108,7 +106,8 @@ def epic_metrics(
     """Calculate metrics and forecast for an epic."""
     due = epic.due_date
 
-    # Forecast end = max(flow forecasts, planned_end of unresolved adhoc/bug in the epic)
+    # Forecast end = max(flow forecasts,
+    # planned_end of unresolved adhoc/bug in the epic)
     dates_to_compare: list[date] = []
     for s in stories:
         f = flow.get(s.key)
@@ -196,7 +195,10 @@ def epic_metrics(
     # Sort actors: by actor code, with the unassigned bucket last
     sorted_actor_names = sorted(
         actors_map.keys(),
-        key=lambda name: (1 if actor_code_map.get(name) is None else 0, actor_code_map.get(name) or ""),
+        key=lambda name: (
+            1 if actor_code_map.get(name) is None else 0,
+            actor_code_map.get(name) or "",
+        ),
     )
 
     actor_rows = [

@@ -27,6 +27,9 @@
   - Upstream `.gitignore` contained unanchored `eggs/` which ignored `src/mcp_atlassian/eggs/` and `tests/eggs/`.
   - Changed to `/eggs/` with explicit whitelists `!src/mcp_atlassian/eggs/` and `!tests/eggs/`.
 
+- **Ruff line length (E501) in test files:**
+  - In `pyproject.toml` under `[tool.ruff.lint.per-file-ignores]`, `"tests/**/*.py"` includes `"E501"` (line length) per reviewer instruction item 11.
+
 ## Behavior notes
 
 - **Past-due Story within unscheduled window:**

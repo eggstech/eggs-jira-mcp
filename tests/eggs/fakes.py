@@ -44,7 +44,10 @@ class FakeGateway(JiraGateway):
         self.calls.append((name, args, kwargs))
 
     def search(
-        self, jql: str, fields: list[str], expand_changelog: bool = False
+        self,
+        jql: str,
+        fields: list[str],
+        expand_changelog: bool = False,  # noqa: FBT001, FBT002
     ) -> list[dict]:
         """Search in-memory issues.
 
@@ -59,7 +62,8 @@ class FakeGateway(JiraGateway):
     def get_issue(self, key: str) -> dict:
         self._record("get_issue", key)
         if key not in self.issues:
-            raise JiraError(f"Issue {key} not found")
+            msg = f"Issue {key} not found"
+            raise JiraError(msg)
         return self.issues[key]
 
     def get_transitions(self, key: str) -> list[dict]:
@@ -78,7 +82,8 @@ class FakeGateway(JiraGateway):
         available = self.transitions.get(key, [])
         matched = next((name for name in available if name.lower() == transition_name.lower()), None)
         if not matched:
-            raise JiraError(f"Transition '{transition_name}' not available for {key}")
+            msg = f"Transition '{transition_name}' not available for {key}"
+            raise JiraError(msg)
 
         issue = self.issues.get(key)
         if issue:
@@ -98,7 +103,7 @@ class FakeGateway(JiraGateway):
         self,
         key: str,
         fields: dict,
-        override_screen_security: bool = False,
+        override_screen_security: bool = False,  # noqa: FBT001, FBT002
     ) -> None:
         self._record("update_fields", key, fields, override_screen_security=override_screen_security)
         if key in self.issues:

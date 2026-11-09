@@ -1,13 +1,12 @@
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
+
 import pytest
 
 from mcp_atlassian.eggs.calendar import WorkCalendar
 from mcp_atlassian.eggs.config import EggsConfig, Thresholds
 from mcp_atlassian.eggs.escalation import Escalation
 from mcp_atlassian.eggs.forecast import (
-    ActorRow,
-    EpicMetrics,
     FlowMetrics,
     epic_metrics,
     flow_metrics,
@@ -26,6 +25,7 @@ def cal():
 def cfg():
     return EggsConfig(
         lead_user="cuong.huynh",
+        jira_url="https://jira.eggstech.io.vn",
         thresholds=Thresholds(
             qc_flow_buffer=1,
             unscheduled_window=5,

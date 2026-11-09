@@ -8,6 +8,7 @@ from .model import Worklog
 
 class JiraError(Exception):
     """Base exception for Jira gateway errors."""
+
     pass
 
 
@@ -16,7 +17,7 @@ class JiraGateway(Protocol):
     """Narrow protocol defining all Jira interactions required by eggs."""
 
     def search(
-        self, jql: str, fields: list[str], expand_changelog: bool = False
+        self, jql: str, fields: list[str], *, expand_changelog: bool = False
     ) -> list[dict]:
         """Search issues using JQL with pagination support."""
         ...
@@ -36,16 +37,21 @@ class JiraGateway(Protocol):
         fields: dict | None = None,
         comment: str | None = None,
     ) -> None:
-        """Perform transition on issue by name. Raises JiraError if transition is unavailable."""
+        """Perform transition on issue by name.
+        Raises JiraError if transition is unavailable.
+        """
         ...
 
     def update_fields(
         self,
         key: str,
         fields: dict,
+        *,
         override_screen_security: bool = False,
     ) -> None:
-        """Update fields on an issue. When override_screen_security=True, includes query params."""
+        """Update fields on an issue.
+        When override_screen_security=True, includes query params.
+        """
         ...
 
     def add_comment(self, key: str, body: str) -> None:
@@ -83,7 +89,9 @@ class JiraGateway(Protocol):
         ...
 
     def myself(self) -> dict:
-        """Fetch info about the current authenticated user: {'name': ..., 'displayName': ...}."""
+        """Fetch info about current authenticated user:
+        {'name': ..., 'displayName': ...}.
+        """
         ...
 
     def project_role_members(self, project: str) -> dict[str, list[str]]:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from datetime import date, datetime
 import re
+from datetime import date, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -14,7 +14,11 @@ def parse_jira_dt(value: Any, cfg: EggsConfig | None = None) -> datetime | None:
     if value is None:
         return None
 
-    tz_name = cfg.timezone if (cfg is not None and hasattr(cfg, "timezone")) else "Asia/Ho_Chi_Minh"
+    tz_name = (
+        cfg.timezone
+        if (cfg is not None and hasattr(cfg, "timezone"))
+        else "Asia/Ho_Chi_Minh"
+    )
     target_tz = ZoneInfo(tz_name)
 
     if isinstance(value, datetime):
@@ -46,7 +50,9 @@ def parse_jira_dt(value: Any, cfg: EggsConfig | None = None) -> datetime | None:
     return dt.astimezone(target_tz)
 
 
-def status_changed_at(raw_changelog: dict | None, cfg: EggsConfig | None = None) -> datetime | None:
+def status_changed_at(
+    raw_changelog: dict | None, cfg: EggsConfig | None = None
+) -> datetime | None:
     """Extract the timestamp of the latest status change from issue changelog."""
     if not raw_changelog or not isinstance(raw_changelog, dict):
         return None
@@ -128,7 +134,9 @@ def issue_from_json(raw: dict, cfg: EggsConfig) -> Issue:
     issuetype_data = fields.get("issuetype") or {}
     raw_type_name = issuetype_data.get("name") or ""
     is_subtask = bool(issuetype_data.get("subtask", False))
-    issue_type = cfg.type_logical(raw_type_name, is_subtask=is_subtask) or raw_type_name.lower()
+    issue_type = (
+        cfg.type_logical(raw_type_name, is_subtask=is_subtask) or raw_type_name.lower()
+    )
 
     status_data = fields.get("status") or {}
     raw_status_name = status_data.get("name") or ""
@@ -140,10 +148,14 @@ def issue_from_json(raw: dict, cfg: EggsConfig) -> Issue:
     created = parse_jira_dt(created_raw, cfg)
 
     due_date = _parse_date(fields.get("duedate"))
-    estimate_seconds = fields.get("timeoriginalestimate") or fields.get("aggregatetimeoriginalestimate")
+    estimate_seconds = fields.get("timeoriginalestimate") or fields.get(
+        "aggregatetimeoriginalestimate"
+    )
 
     labels = fields.get("labels") or []
-    is_project_frozen = bool(cfg.projects.get(project).frozen) if project in cfg.projects else False
+    is_project_frozen = (
+        bool(cfg.projects.get(project).frozen) if project in cfg.projects else False
+    )
     frozen = (cfg.frozen_label in labels) or is_project_frozen
 
     parent_data = fields.get("parent") or {}
@@ -200,19 +212,30 @@ def issue_from_json(raw: dict, cfg: EggsConfig) -> Issue:
     # Blocked status
     flagged_raw = fields.get("flagged") or get_cf("flagged")
     impediment_target = cfg.flagged_impediment_value.lower()
-    is_flagged = bool(flagged_raw and any(
-        (_parse_option(f) or "").lower() == impediment_target
-        for f in (flagged_raw if isinstance(flagged_raw, list) else [flagged_raw])
-    ))
+    is_flagged = bool(
+        flagged_raw
+        and any(
+            (_parse_option(f) or "").lower() == impediment_target
+            for f in (flagged_raw if isinstance(flagged_raw, list) else [flagged_raw])
+        )
+    )
     blocked = is_flagged or (blocked_by is not None)
 
     status_chg = status_changed_at(raw.get("changelog"), cfg)
 
     resolution = _parse_option(fields.get("resolution"))
     report_source_raw = get_cf("report_source")
-    report_source = _parse_option(report_source_raw) if isinstance(report_source_raw, dict) else (str(report_source_raw) if report_source_raw is not None else None)
+    report_source = (
+        _parse_option(report_source_raw)
+        if isinstance(report_source_raw, dict)
+        else (str(report_source_raw) if report_source_raw is not None else None)
+    )
     reported_by_raw = get_cf("reported_by")
-    reported_by = _parse_user(reported_by_raw) if isinstance(reported_by_raw, dict) else (str(reported_by_raw) if reported_by_raw is not None else None)
+    reported_by = (
+        _parse_user(reported_by_raw)
+        if isinstance(reported_by_raw, dict)
+        else (str(reported_by_raw) if reported_by_raw is not None else None)
+    )
     reported_at = parse_jira_dt(get_cf("reported_at"), cfg)
 
     return Issue(
@@ -255,21 +278,27 @@ def issue_from_json(raw: dict, cfg: EggsConfig) -> Issue:
 
 
 # Field types categorization for serialization
-_DATE_FIELDS = frozenset({
-    "planned_start", "planned_end", "baseline_end", "proposed_end",
-    "health_since", "blocked_since", "forecast_end", "due_date",
-    "reported_at",
-})
-_USER_FIELDS = frozenset({
-    "escalation_owner", "qc_owner", "reschedule_requester", "assignee"
-})
+_DATE_FIELDS = frozenset(
+    {
+        "planned_start",
+        "planned_end",
+        "baseline_end",
+        "proposed_end",
+        "health_since",
+        "blocked_since",
+        "forecast_end",
+        "due_date",
+        "reported_at",
+    }
+)
+_USER_FIELDS = frozenset(
+    {"escalation_owner", "qc_owner", "reschedule_requester", "assignee"}
+)
 _MULTI_USER_FIELDS = frozenset()
-_MULTI_SELECT_FIELDS = frozenset({
-    "health_flags"
-})
-_SELECT_FIELDS = frozenset({
-    "part", "reschedule_reason", "reschedule_status", "blocked_by"
-})
+_MULTI_SELECT_FIELDS = frozenset({"health_flags"})
+_SELECT_FIELDS = frozenset(
+    {"part", "reschedule_reason", "reschedule_status", "blocked_by"}
+)
 
 
 CLEAR = object()
@@ -289,12 +318,17 @@ def issue_fields_for_write(cfg: EggsConfig, **logical_values: Any) -> dict[str, 
             # Handle standard fields fallback if not explicitly in cfg.fields
             if logical_name == "due_date" and "due_date" not in cfg.fields:
                 field_id = "duedate"
-            elif logical_name in ("summary", "description", "assignee") and logical_name not in cfg.fields:
+            elif (
+                logical_name in ("summary", "description", "assignee")
+                and logical_name not in cfg.fields
+            ):
                 field_id = logical_name
             else:
-                raise ValueError(
-                    f"Logical field '{logical_name}' has no configured field ID in cfg.fields"
+                msg = (
+                    f"Logical field '{logical_name}' has no configured field ID "
+                    "in cfg.fields"
                 )
+                raise ValueError(msg)
 
         if value is CLEAR:
             payload[field_id] = None
@@ -302,7 +336,16 @@ def issue_fields_for_write(cfg: EggsConfig, **logical_values: Any) -> dict[str, 
 
         # Format value according to field type
         if logical_name in _DATE_FIELDS:
-            if isinstance(value, date):
+            if isinstance(value, datetime):
+                tz = (
+                    ZoneInfo(cfg.timezone)
+                    if (cfg is not None and hasattr(cfg, "timezone"))
+                    else ZoneInfo("Asia/Ho_Chi_Minh")
+                )
+                dt = value if value.tzinfo else value.replace(tzinfo=tz)
+                dt = dt.astimezone(tz)
+                payload[field_id] = dt.strftime("%Y-%m-%dT%H:%M:%S.000%z")
+            elif isinstance(value, date):
                 payload[field_id] = value.isoformat()
             else:
                 payload[field_id] = str(value)
@@ -315,7 +358,9 @@ def issue_fields_for_write(cfg: EggsConfig, **logical_values: Any) -> dict[str, 
 
         elif logical_name in _MULTI_USER_FIELDS:
             if isinstance(value, (list, tuple, set, frozenset)):
-                payload[field_id] = [{"name": u} if isinstance(u, str) else u for u in value]
+                payload[field_id] = [
+                    {"name": u} if isinstance(u, str) else u for u in value
+                ]
             else:
                 payload[field_id] = [{"name": str(value)}]
 

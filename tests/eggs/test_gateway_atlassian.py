@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
+
 import pytest
 
 from mcp_atlassian.eggs.gateway import JiraError, JiraGateway
@@ -168,14 +169,14 @@ def test_search_expand_changelog_passes_changelog(mock_client):
 
 def test_worklogs_since_requires_aware_datetime(mock_client):
     gateway = AtlassianGateway(mock_client)
-    naive_dt = datetime(2026, 11, 10, 8, 0)
+    naive_dt = datetime(2026, 11, 10, 8, 0)  # noqa: DTZ001
     with pytest.raises(ValueError, match="aware"):
         gateway.worklogs_since(naive_dt)
 
 
 def test_add_worklog_requires_aware_datetime(mock_client):
     gateway = AtlassianGateway(mock_client)
-    naive_dt = datetime(2026, 11, 10, 8, 0)
+    naive_dt = datetime(2026, 11, 10, 8, 0)  # noqa: DTZ001
     with pytest.raises(ValueError, match="aware"):
         gateway.add_worklog("PROJ-1", "1h", "did work", started=naive_dt)
 

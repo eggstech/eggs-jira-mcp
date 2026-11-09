@@ -41,15 +41,27 @@ def escalate(
             return proj_cfg.default_lead_ba.strip()
         return cfg.lead_user
 
-    epic_assignee = epic.assignee.strip() if (epic and epic.assignee and epic.assignee.strip()) else None
+    epic_assignee = (
+        epic.assignee.strip()
+        if (epic and epic.assignee and epic.assignee.strip())
+        else None
+    )
 
     # L0 owner candidate
     if "APPROVAL_PENDING" in flags:
-        if epic_assignee and issue.reschedule_requester and epic_assignee == issue.reschedule_requester:
+        if (
+            epic_assignee
+            and issue.reschedule_requester
+            and epic_assignee == issue.reschedule_requester
+        ):
             proj_cfg = cfg.projects.get(issue.project)
             default_lead = (
                 proj_cfg.default_lead_ba.strip()
-                if (proj_cfg and proj_cfg.default_lead_ba and proj_cfg.default_lead_ba.strip())
+                if (
+                    proj_cfg
+                    and proj_cfg.default_lead_ba
+                    and proj_cfg.default_lead_ba.strip()
+                )
                 else None
             )
             l0_candidate = default_lead or cfg.lead_user
@@ -70,24 +82,26 @@ def escalate(
 
     l0_owner = resolve_owner(l0_candidate)
 
-    # L1 owner candidate: epic assignee; if L0 owner was epic assignee -> default_lead_ba
+    # L1 owner candidate: epic assignee;
+    # if L0 owner was epic assignee -> default_lead_ba
     if epic_assignee and l0_owner == epic_assignee:
         proj_cfg = cfg.projects.get(issue.project)
         default_lead = (
             proj_cfg.default_lead_ba.strip()
-            if (proj_cfg and proj_cfg.default_lead_ba and proj_cfg.default_lead_ba.strip())
+            if (
+                proj_cfg
+                and proj_cfg.default_lead_ba
+                and proj_cfg.default_lead_ba.strip()
+            )
             else None
         )
         l1_candidate = default_lead or cfg.lead_user
     else:
         l1_candidate = epic_assignee
 
-    if (
-        l1_candidate is not None
-        and (
-            l1_candidate == l0_owner
-            or (issue.reschedule_requester and l1_candidate == issue.reschedule_requester)
-        )
+    if l1_candidate is not None and (
+        l1_candidate == l0_owner
+        or (issue.reschedule_requester and l1_candidate == issue.reschedule_requester)
     ):
         l1_candidate = cfg.lead_user
 
@@ -99,7 +113,9 @@ def escalate(
     # Level determination
     if flags == frozenset({"BLOCKED"}):
         if issue.blocked_by == cfg.blocked_internal_value:
-            block_since = issue.blocked_since if issue.blocked_since is not None else since
+            block_since = (
+                issue.blocked_since if issue.blocked_since is not None else since
+            )
             block_days = cal.working_days_between(block_since, today)
             if block_days >= cfg.thresholds.internal_block_escalate_after:
                 level = 1

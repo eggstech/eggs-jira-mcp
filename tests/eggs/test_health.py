@@ -1,5 +1,6 @@
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
+
 import pytest
 
 from mcp_atlassian.eggs.calendar import WorkCalendar
@@ -24,6 +25,7 @@ def cal():
 def cfg():
     return EggsConfig(
         lead_user="cuong.huynh",
+        jira_url="https://jira.eggstech.io.vn",
         timezone="Asia/Ho_Chi_Minh",
         thresholds=Thresholds(
             stale_working_days=2,
@@ -69,10 +71,10 @@ def _make_issue(
     parent_key=None,
     status_changed_at=None,
     reschedule_status=None,
-    blocked=False,
+    blocked: bool = False,  # noqa: FBT001, FBT002
     blocked_by=None,
     health_flags=frozenset(),
-    frozen=False,
+    frozen: bool = False,  # noqa: FBT001, FBT002
     created=None,
     components=(),
     part="BE",
@@ -148,6 +150,7 @@ def test_overdue_not_when_reschedule_pending(cal, cfg):
 def test_reschedule_pending_uses_configured_value(cal):
     custom_cfg = EggsConfig(
         lead_user="cuong.huynh",
+        jira_url="https://jira.eggstech.io.vn",
         reschedule_pending_value="Pending Approval",
     )
     # Issue with custom value should be recognized as APPROVAL_PENDING

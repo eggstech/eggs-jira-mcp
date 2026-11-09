@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Any, Callable, Literal
+from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
 from .calendar import WorkCalendar
@@ -41,7 +42,9 @@ class Actions:
         self.gateway = gateway
         self.cfg = cfg
         self.cal = cal
-        self.today_fn = today_fn or date.today
+        self.today_fn = today_fn or (
+            lambda: datetime.now(ZoneInfo(cfg.timezone)).date()
+        )
 
     def _today(self) -> date:
         return self.today_fn()
@@ -49,6 +52,32 @@ class Actions:
     def _get_issue(self, key: str) -> Issue:
         raw = self.gateway.get_issue(key)
         return issue_from_json(raw, self.cfg)
+
+    def _find_transition(
+        self, key: str, logical_trans_name: str
+    ) -> tuple[str | None, list[str]]:
+        target_name = self.cfg.transitions[logical_trans_name]
+        available = self.gateway.get_transitions(key)
+        avail_names = [t["name"] for t in available]
+        matched = next(
+            (name for name in avail_names if name.lower() == target_name.lower()), None
+        )
+        return matched, avail_names
+
+    def _unavailable_result(
+        self, key: str, logical_trans_name: str, avail_names: list[str]
+    ) -> ActionResult:
+        target_name = self.cfg.transitions[logical_trans_name]
+        avail_str = ", ".join(avail_names) if avail_names else "(không có)"
+        return ActionResult(
+            ok=False,
+            message=(
+                f"Transition '{target_name}' không khả dụng cho {key}. "
+                f"Các transition hiện có: {avail_str}."
+            ),
+            changes=[],
+            next_actions=[],
+        )
 
     # -------------------------------------------------------------------------
     # Work items
@@ -60,6 +89,7 @@ class Actions:
         start: date,
         end: date,
         estimate: str,
+        *,
         dry_run: bool = False,
     ) -> ActionResult:
         issue = self._get_issue(key)
@@ -70,21 +100,52 @@ class Actions:
                 changes=[],
                 next_actions=[],
             )
+        if issue.baseline_end is not None:
+            return ActionResult(
+                ok=False,
+                message=(
+                    f"Issue {key} đã có Baseline, "
+                    "hãy xin dời lịch (request_reschedule)."
+                ),
+                changes=[],
+                next_actions=["request_reschedule"],
+            )
+        if not estimate or not estimate.strip():
+            return ActionResult(
+                ok=False,
+                message="Estimate là bắt buộc và không được để trống.",
+                changes=[],
+                next_actions=[],
+            )
+        if end < self._today():
+            return ActionResult(
+                ok=False,
+                message=(
+                    f"Planned End ({end}) không được trước ngày hôm nay "
+                    f"({self._today()})."
+                ),
+                changes=[],
+                next_actions=[],
+            )
         if end < start:
             return ActionResult(
                 ok=False,
-                message=f"Planned End ({end}) không được trước Planned Start ({start}).",
+                message=(
+                    f"Planned End ({end}) không được trước Planned Start ({start})."
+                ),
                 changes=[],
                 next_actions=[],
             )
 
+        matched, avail = self._find_transition(key, "schedule")
+        if not matched:
+            return self._unavailable_result(key, "schedule", avail)
+
         changes = [
             f"Set Planned Start = {start}",
             f"Set Planned End = {end}",
-            f"Set Estimate = {estimate}",
+            f"Set Estimate = {estimate.strip()}",
         ]
-        if not issue.baseline_end:
-            changes.append(f"Set Baseline End = {end}")
 
         if dry_run:
             return ActionResult(
@@ -94,17 +155,9 @@ class Actions:
                 next_actions=["start"],
             )
 
-        write_args = {"planned_start": start, "planned_end": end}
-        if not issue.baseline_end:
-            write_args["baseline_end"] = end
-
-        payload = issue_fields_for_write(self.cfg, **write_args)
-        self.gateway.update_fields(key, payload)
-
-        trans_name = self.cfg.transitions.get("schedule", "Schedule")
-        available = self.gateway.get_transitions(key)
-        if any(t["name"].lower() == trans_name.lower() for t in available):
-            self.gateway.transition(key, trans_name)
+        payload = issue_fields_for_write(self.cfg, planned_start=start, planned_end=end)
+        payload["timetracking"] = {"originalEstimate": estimate.strip()}
+        self.gateway.transition(key, matched, fields=payload)
 
         return ActionResult(
             ok=True,
@@ -119,6 +172,7 @@ class Actions:
         start: date | None = None,
         end: date | None = None,
         estimate: str | None = None,
+        *,
         dry_run: bool = False,
     ) -> ActionResult:
         issue = self._get_issue(key)
@@ -130,26 +184,76 @@ class Actions:
                 next_actions=[],
             )
 
-        has_schedule = (
-            issue.planned_end is not None
+        dates_passed = (
+            start is not None
             or end is not None
-            or issue.baseline_end is not None
+            or (estimate is not None and bool(estimate.strip()))
         )
-        if not has_schedule:
+
+        if dates_passed:
+            if issue.baseline_end is not None:
+                return ActionResult(
+                    ok=False,
+                    message=(
+                        f"Issue {key} đã có Baseline, "
+                        "hãy xin dời lịch (request_reschedule)."
+                    ),
+                    changes=[],
+                    next_actions=["request_reschedule"],
+                )
+            if start is None or end is None or not estimate or not estimate.strip():
+                return ActionResult(
+                    ok=False,
+                    message=(
+                        "Khi truyền ngày bắt đầu, cần cung cấp đầy đủ "
+                        "start, end và estimate."
+                    ),
+                    changes=[],
+                    next_actions=[],
+                )
+            sched_res = self.schedule(
+                key, start=start, end=end, estimate=estimate, dry_run=dry_run
+            )
+            if not sched_res.ok:
+                return sched_res
+
+            matched, avail = self._find_transition(key, "start")
+            if not matched:
+                return self._unavailable_result(key, "start", avail)
+
+            changes = sched_res.changes + ["Chuyển trạng thái sang Dev In Progress"]
+            if dry_run:
+                return ActionResult(
+                    ok=True,
+                    message=f"[Dry-run] Sẽ lên lịch và bắt đầu thực hiện {key}",
+                    changes=changes,
+                    next_actions=["log_work", "submit_qc", "block"],
+                )
+
+            self.gateway.transition(key, matched)
+            return ActionResult(
+                ok=True,
+                message=f"Đã lên lịch và bắt đầu thực hiện {key}.",
+                changes=changes,
+                next_actions=["log_work", "submit_qc", "block"],
+            )
+
+        if issue.baseline_end is None:
             return ActionResult(
                 ok=False,
-                message=f"Không thể bắt đầu: issue {key} chưa có lịch (Planned End/Baseline End). Vui lòng lên lịch trước khi bắt đầu.",
+                message=(
+                    f"Không thể bắt đầu: issue {key} chưa có lịch (Baseline End). "
+                    "Vui lòng lên lịch trước khi bắt đầu."
+                ),
                 changes=[],
                 next_actions=["schedule"],
             )
 
-        changes = ["Chuyển trạng thái sang Dev In Progress"]
-        effective_end = end or issue.planned_end
-        if not issue.baseline_end and effective_end:
-            changes.append(f"Set Baseline End = {effective_end}")
-        if start or end or estimate:
-            changes.append(f"Cập nhật lịch: start={start}, end={end}, estimate={estimate}")
+        matched, avail = self._find_transition(key, "start")
+        if not matched:
+            return self._unavailable_result(key, "start", avail)
 
+        changes = ["Chuyển trạng thái sang Dev In Progress"]
         if dry_run:
             return ActionResult(
                 ok=True,
@@ -158,19 +262,7 @@ class Actions:
                 next_actions=["log_work", "submit_qc", "block"],
             )
 
-        w_args = {}
-        if start:
-            w_args["planned_start"] = start
-        if end:
-            w_args["planned_end"] = end
-        if not issue.baseline_end and effective_end:
-            w_args["baseline_end"] = effective_end
-        if w_args:
-            payload = issue_fields_for_write(self.cfg, **w_args)
-            self.gateway.update_fields(key, payload)
-
-        trans_name = self.cfg.transitions.get("start", "Start")
-        self.gateway.transition(key, trans_name)
+        self.gateway.transition(key, matched)
 
         return ActionResult(
             ok=True,
@@ -185,8 +277,17 @@ class Actions:
         time_spent: str,
         note: str,
         kind: Literal["dev", "qc", "ba"] = "dev",
+        *,
         dry_run: bool = False,
     ) -> ActionResult:
+        if not time_spent or not time_spent.strip():
+            return ActionResult(
+                ok=False,
+                message="time_spent không được để trống.",
+                changes=[],
+                next_actions=[],
+            )
+
         changes = [f"Ghi nhận {time_spent} ({kind}): {note}"]
         if dry_run:
             return ActionResult(
@@ -209,16 +310,24 @@ class Actions:
         key: str,
         time_spent: str | None = None,
         note: str = "",
+        *,
         dry_run: bool = False,
     ) -> ActionResult:
         issue = self._get_issue(key)
         if issue.type == "dev_task" and issue.parent_type == "adhoc":
             return ActionResult(
                 ok=False,
-                message=f"Dev Task {key} thuộc Ad-hoc Task không qua QC. Vui lòng dùng finish() để hoàn thành.",
+                message=(
+                    f"Dev Task {key} thuộc Ad-hoc Task không qua QC. "
+                    "Vui lòng dùng finish() để hoàn thành."
+                ),
                 changes=[],
                 next_actions=["finish"],
             )
+
+        matched, avail = self._find_transition(key, "submit_qc")
+        if not matched:
+            return self._unavailable_result(key, "submit_qc", avail)
 
         changes = ["Chuyển trạng thái sang QC TO DO"]
         if time_spent:
@@ -235,8 +344,7 @@ class Actions:
         if time_spent:
             self.gateway.add_worklog(key, time_spent=time_spent, comment=note)
 
-        trans_name = self.cfg.transitions.get("submit_qc", "Submit QC")
-        self.gateway.transition(key, trans_name)
+        self.gateway.transition(key, matched)
 
         return ActionResult(
             ok=True,
@@ -250,8 +358,14 @@ class Actions:
         key: str,
         time_spent: str | None = None,
         note: str = "",
+        *,
         dry_run: bool = False,
     ) -> ActionResult:
+        self._get_issue(key)
+        matched, avail = self._find_transition(key, "finish")
+        if not matched:
+            return self._unavailable_result(key, "finish", avail)
+
         changes = ["Chuyển trạng thái sang Done"]
         if time_spent:
             changes.append(f"Log work {time_spent}: {note}")
@@ -267,12 +381,9 @@ class Actions:
         if time_spent:
             self.gateway.add_worklog(key, time_spent=time_spent, comment=note)
 
-        available = self.gateway.get_transitions(key)
-        matched_trans = next(
-            (t["name"] for t in available if t["name"].lower() in ("done", "finish", "closed", "close", "qc pass")),
-            "Done",
+        self.gateway.transition(
+            key, matched, comment=note if (note and not time_spent) else None
         )
-        self.gateway.transition(key, matched_trans)
 
         return ActionResult(
             ok=True,
@@ -286,8 +397,31 @@ class Actions:
         key: str,
         reason: str,
         blocked_by: Literal["Nội bộ", "Khách hàng", "Bên thứ ba"],
+        *,
         dry_run: bool = False,
     ) -> ActionResult:
+        if not reason or not reason.strip():
+            return ActionResult(
+                ok=False,
+                message="Lý do block không được để trống.",
+                changes=[],
+                next_actions=[],
+            )
+        if not blocked_by or blocked_by not in ("Nội bộ", "Khách hàng", "Bên thứ ba"):
+            return ActionResult(
+                ok=False,
+                message=(
+                    "blocked_by bắt buộc là 'Nội bộ', 'Khách hàng' hoặc 'Bên thứ ba'."
+                ),
+                changes=[],
+                next_actions=[],
+            )
+
+        self._get_issue(key)
+        matched, avail = self._find_transition(key, "block")
+        if not matched:
+            return self._unavailable_result(key, "block", avail)
+
         changes = [
             "Chuyển trạng thái Block",
             f"Set Blocked By = {blocked_by}",
@@ -308,12 +442,7 @@ class Actions:
             block_reason=reason,
             blocked_since=self._today(),
         )
-        self.gateway.update_fields(key, payload)
-
-        trans_name = self.cfg.transitions.get("block", "Block")
-        available = self.gateway.get_transitions(key)
-        if any(t["name"].lower() == trans_name.lower() for t in available):
-            self.gateway.transition(key, trans_name)
+        self.gateway.transition(key, matched, fields=payload)
 
         return ActionResult(
             ok=True,
@@ -326,8 +455,14 @@ class Actions:
         self,
         key: str,
         note: str = "",
+        *,
         dry_run: bool = False,
     ) -> ActionResult:
+        self._get_issue(key)
+        matched, avail = self._find_transition(key, "unblock")
+        if not matched:
+            return self._unavailable_result(key, "unblock", avail)
+
         changes = ["Gỡ Block và xóa cờ Impediment"]
         if dry_run:
             return ActionResult(
@@ -344,15 +479,9 @@ class Actions:
             block_reason=CLEAR,
             blocked_since=CLEAR,
         )
-        self.gateway.update_fields(key, payload)
-
-        trans_name = self.cfg.transitions.get("unblock", "Unblock")
-        available = self.gateway.get_transitions(key)
-        if any(t["name"].lower() == trans_name.lower() for t in available):
-            self.gateway.transition(key, trans_name)
-
-        if note:
-            self.gateway.add_comment(key, note)
+        self.gateway.transition(
+            key, matched, fields=payload, comment=note if note else None
+        )
 
         return ActionResult(
             ok=True,
@@ -367,10 +496,37 @@ class Actions:
         new_end: date,
         reason: str,
         interrupted_by: str | None = None,
+        *,
         no_impact: bool = False,
         note: str = "",
         dry_run: bool = False,
     ) -> ActionResult:
+        if no_impact:
+            return self.confirm_no_impact(key, note=note or reason, dry_run=dry_run)
+
+        if not reason or not reason.strip():
+            return ActionResult(
+                ok=False,
+                message="Lý do dời lịch không được để trống.",
+                changes=[],
+                next_actions=[],
+            )
+
+        issue = self._get_issue(key)
+        if not issue.baseline_end:
+            return ActionResult(
+                ok=False,
+                message="Chưa có Baseline End, không thể yêu cầu dời lịch.",
+                changes=[],
+                next_actions=[],
+            )
+        if issue.is_resolved:
+            return ActionResult(
+                ok=False,
+                message="Issue đã hoàn thành (resolved), không thể yêu cầu dời lịch.",
+                changes=[],
+                next_actions=[],
+            )
         if new_end < self._today():
             return ActionResult(
                 ok=False,
@@ -379,29 +535,29 @@ class Actions:
                 next_actions=[],
             )
 
-        is_chen_ngang = (
-            "chen ngang" in reason.lower()
-            or "chèn ngang" in reason.lower()
-            or reason == "Việc chen ngang"
+        is_interrupt = (
+            reason.strip().lower()
+            == self.cfg.reschedule_interrupt_value.strip().lower()
         )
-        if is_chen_ngang and not interrupted_by:
+        if is_interrupt and not interrupted_by:
+            val = self.cfg.reschedule_interrupt_value
             return ActionResult(
                 ok=False,
-                message="Lý do việc chen ngang bắt buộc phải có interrupted_by.",
+                message=f"Lý do '{val}' bắt buộc phải có interrupted_by.",
                 changes=[],
                 next_actions=[],
             )
 
-        changes = []
-        if no_impact:
-            changes.append("Xác nhận không ảnh hưởng tiến độ (Confirm No Impact)")
-        else:
-            changes.extend([
-                f"Yêu cầu dời lịch đến {new_end}",
-                f"Lý do: {reason}",
-            ])
-            if interrupted_by:
-                changes.append(f"Gắn link bị chen ngang bởi: {interrupted_by}")
+        matched, avail = self._find_transition(key, "request_reschedule")
+        if not matched:
+            return self._unavailable_result(key, "request_reschedule", avail)
+
+        changes = [
+            f"Yêu cầu dời lịch đến {new_end}",
+            f"Lý do: {reason}",
+        ]
+        if interrupted_by:
+            changes.append(f"Gắn link bị chen ngang bởi: {interrupted_by}")
 
         if dry_run:
             return ActionResult(
@@ -411,31 +567,23 @@ class Actions:
                 next_actions=["decide_reschedule"],
             )
 
-        if no_impact:
-            trans_name = self.cfg.transitions.get("confirm_no_impact", "Confirm No Impact")
-            self.gateway.transition(key, trans_name)
-            if note:
-                self.gateway.add_comment(key, note)
-        else:
-            payload = issue_fields_for_write(
-                self.cfg,
-                proposed_end=new_end,
-                reschedule_reason=reason,
-                reschedule_status=self.cfg.reschedule_pending_value,
-                reschedule_requester=self.gateway.current_user(),
+        payload = issue_fields_for_write(
+            self.cfg,
+            proposed_end=new_end,
+            reschedule_reason=reason,
+            reschedule_status=self.cfg.reschedule_pending_value,
+            reschedule_requester=self.gateway.current_user(),
+        )
+        self.gateway.transition(
+            key, matched, fields=payload, comment=note if note else None
+        )
+
+        if interrupted_by:
+            self.gateway.link(
+                self.cfg.link_types["interrupts"],
+                inward_key=key,
+                outward_key=interrupted_by,
             )
-            self.gateway.update_fields(key, payload)
-
-            trans_name = self.cfg.transitions.get("request_reschedule", "Request Reschedule")
-            available = self.gateway.get_transitions(key)
-            if any(t["name"].lower() == trans_name.lower() for t in available):
-                self.gateway.transition(key, trans_name)
-
-            if interrupted_by:
-                self.gateway.link("Interrupts", inward_key=key, outward_key=interrupted_by)
-
-            if note:
-                self.gateway.add_comment(key, note)
 
         return ActionResult(
             ok=True,
@@ -444,11 +592,98 @@ class Actions:
             next_actions=["decide_reschedule"],
         )
 
+    def confirm_no_impact(
+        self,
+        key: str,
+        note: str,
+        *,
+        dry_run: bool = False,
+    ) -> ActionResult:
+        if not note or not note.strip():
+            return ActionResult(
+                ok=False,
+                message=(
+                    "Ghi chú xác nhận không ảnh hưởng tiến độ (comment) "
+                    "là bắt buộc và không được để trống."
+                ),
+                changes=[],
+                next_actions=[],
+            )
+
+        self._get_issue(key)
+        matched, avail = self._find_transition(key, "confirm_no_impact")
+        if not matched:
+            return self._unavailable_result(key, "confirm_no_impact", avail)
+
+        changes = ["Xác nhận không ảnh hưởng tiến độ (Confirm No Impact)"]
+        if dry_run:
+            return ActionResult(
+                ok=True,
+                message=f"[Dry-run] Sẽ xác nhận không ảnh hưởng tiến độ cho {key}",
+                changes=changes,
+                next_actions=[],
+            )
+
+        self.gateway.transition(key, matched, comment=note)
+        return ActionResult(
+            ok=True,
+            message=f"Đã xác nhận không ảnh hưởng tiến độ cho {key}.",
+            changes=changes,
+            next_actions=[],
+        )
+
     def end_day(
         self,
         entries: list[EndDayEntry],
+        *,
         dry_run: bool = False,
     ) -> ActionResult:
+        # Pre-validate all entries first before executing any writes
+        sub_results: list[tuple[str, ActionResult]] = []
+        for e in entries:
+            if not e.time_spent or not e.time_spent.strip():
+                sub_results.append(
+                    (
+                        e.key,
+                        ActionResult(
+                            ok=False,
+                            message="time_spent không được để trống.",
+                            changes=[],
+                            next_actions=[],
+                        ),
+                    )
+                )
+                continue
+            if e.move_to == "ready_for_qc":
+                sub_res = self.submit_qc(
+                    e.key, time_spent=e.time_spent, note=e.note, dry_run=True
+                )
+            elif e.move_to == "done":
+                sub_res = self.finish(
+                    e.key, time_spent=e.time_spent, note=e.note, dry_run=True
+                )
+            elif e.move_to is None:
+                sub_res = self.log_work(
+                    e.key, time_spent=e.time_spent, note=e.note, dry_run=True
+                )
+            else:
+                sub_res = ActionResult(
+                    ok=False,
+                    message=f"move_to không hợp lệ: {e.move_to}",
+                    changes=[],
+                    next_actions=[],
+                )
+            sub_results.append((e.key, sub_res))
+
+        failed = [f"{k}: {r.message}" for k, r in sub_results if not r.ok]
+        if failed:
+            return ActionResult(
+                ok=False,
+                message="Một số công việc không hợp lệ: " + "; ".join(failed),
+                changes=[],
+                next_actions=[],
+            )
+
         changes: list[str] = []
         for e in entries:
             changes.append(f"Log {e.time_spent} trên {e.key}: {e.note}")
@@ -464,11 +699,16 @@ class Actions:
             )
 
         for e in entries:
-            self.gateway.add_worklog(e.key, e.time_spent, e.note)
             if e.move_to == "ready_for_qc":
-                self.submit_qc(e.key)
+                self.submit_qc(
+                    e.key, time_spent=e.time_spent, note=e.note, dry_run=False
+                )
             elif e.move_to == "done":
-                self.finish(e.key)
+                self.finish(e.key, time_spent=e.time_spent, note=e.note, dry_run=False)
+            else:
+                self.log_work(
+                    e.key, time_spent=e.time_spent, note=e.note, dry_run=False
+                )
 
         return ActionResult(
             ok=True,
@@ -481,7 +721,12 @@ class Actions:
     # QC
     # -------------------------------------------------------------------------
 
-    def qc_start(self, key: str, dry_run: bool = False) -> ActionResult:
+    def qc_start(self, key: str, *, dry_run: bool = False) -> ActionResult:
+        self._get_issue(key)
+        matched, avail = self._find_transition(key, "start_test")
+        if not matched:
+            return self._unavailable_result(key, "start_test", avail)
+
         changes = ["Chuyển trạng thái sang Test In Progress"]
         if dry_run:
             return ActionResult(
@@ -491,8 +736,7 @@ class Actions:
                 next_actions=["qc_pass", "qc_fail"],
             )
 
-        trans_name = self.cfg.transitions.get("start_test", "Start Test")
-        self.gateway.transition(key, trans_name)
+        self.gateway.transition(key, matched)
 
         return ActionResult(
             ok=True,
@@ -506,16 +750,32 @@ class Actions:
         key: str,
         time_spent: str | None = None,
         note: str = "",
+        *,
         dry_run: bool = False,
     ) -> ActionResult:
+        if not note or not note.strip():
+            return ActionResult(
+                ok=False,
+                message="Comment (ghi chú) bắt buộc cho QC Pass.",
+                changes=[],
+                next_actions=[],
+            )
+
         issue = self._get_issue(key)
         if issue.type == "story" and not time_spent:
             return ActionResult(
                 ok=False,
-                message=f"QC Pass cho Story ({key}) bắt buộc phải nhập thời gian (time_spent).",
+                message=(
+                    f"QC Pass cho Story ({key}) bắt buộc phải nhập thời gian "
+                    "(time_spent)."
+                ),
                 changes=[],
                 next_actions=[],
             )
+
+        matched, avail = self._find_transition(key, "qc_pass")
+        if not matched:
+            return self._unavailable_result(key, "qc_pass", avail)
 
         changes = ["Xác nhận QC Pass"]
         if time_spent:
@@ -530,10 +790,9 @@ class Actions:
             )
 
         if time_spent:
-            self.gateway.add_worklog(key, time_spent, note)
+            self.gateway.add_worklog(key, time_spent, comment=note)
 
-        trans_name = self.cfg.transitions.get("qc_pass", "QC Pass")
-        self.gateway.transition(key, trans_name)
+        self.gateway.transition(key, matched, comment=note)
 
         return ActionResult(
             ok=True,
@@ -547,20 +806,61 @@ class Actions:
         key: str,
         time_spent: str | None = None,
         reason: str = "",
-        bugs: list[str] = [],
+        bugs: list[str] | None = None,
+        *,
         dry_run: bool = False,
     ) -> ActionResult:
-        issue = self._get_issue(key)
-        if issue.type == "story" and not bugs:
+        if not reason or not reason.strip():
             return ActionResult(
                 ok=False,
-                message=f"QC Fail cho Story ({key}) bắt buộc phải có ít nhất 1 bug.",
+                message="Lý do QC Fail (comment) bắt buộc và không được để trống.",
                 changes=[],
                 next_actions=[],
             )
 
+        issue = self._get_issue(key)
+        actual_bugs = bugs or []
+        if issue.type == "story":
+            if not actual_bugs:
+                return ActionResult(
+                    ok=False,
+                    message=(
+                        f"QC Fail cho Story ({key}) bắt buộc phải có ít nhất 1 bug."
+                    ),
+                    changes=[],
+                    next_actions=[],
+                )
+            target_story_key = issue.key
+            code = issue.actor_code or "FLOW"
+        else:
+            if not issue.parent_key:
+                return ActionResult(
+                    ok=False,
+                    message=(
+                        f"Không thể QC Fail: phần việc {key} không thuộc một Story."
+                    ),
+                    changes=[],
+                    next_actions=[],
+                )
+            parent = self._get_issue(issue.parent_key)
+            if parent.type != "story":
+                return ActionResult(
+                    ok=False,
+                    message=(
+                        f"Không thể QC Fail: phần việc {key} không thuộc một Story."
+                    ),
+                    changes=[],
+                    next_actions=[],
+                )
+            target_story_key = issue.parent_key
+            code = parent.actor_code or "BUG"
+
+        matched, avail = self._find_transition(key, "qc_fail")
+        if not matched:
+            return self._unavailable_result(key, "qc_fail", avail)
+
         changes = [f"Chuyển trạng thái QC Fail: {reason}"]
-        for b in bugs:
+        for b in actual_bugs:
             changes.append(f"Tạo Bug sub-task: {b}")
 
         if dry_run:
@@ -571,30 +871,21 @@ class Actions:
                 next_actions=[],
             )
 
-        if issue.type == "story":
-            target_story_key = issue.key
-            code = issue.actor_code or "FLOW"
-        else:
-            target_story_key = issue.parent_key
-            code = "BUG"
-
-        bug_type_name = self.cfg.issue_types.get("bug_sub", ["Bug"])[0]
-        for b in bugs:
+        bug_type_name = self.cfg.issue_types["bug_sub"][0]
+        for b in actual_bugs:
             summary = f"[{code}][BUG] {b}"
             create_payload = {
                 "project": {"key": issue.project},
                 "issuetype": {"name": bug_type_name},
                 "summary": summary,
+                "parent": {"key": target_story_key},
             }
-            if target_story_key:
-                create_payload["parent"] = {"key": target_story_key}
             self.gateway.create_issue(create_payload)
 
         if time_spent:
             self.gateway.add_worklog(key, time_spent, comment=reason)
 
-        trans_name = self.cfg.transitions.get("qc_fail", "QC Fail")
-        self.gateway.transition(key, trans_name, comment=reason)
+        self.gateway.transition(key, matched, comment=reason)
 
         return ActionResult(
             ok=True,
@@ -613,8 +904,17 @@ class Actions:
         new_due: date,
         reason: str,
         note: str = "",
+        *,
         dry_run: bool = False,
     ) -> ActionResult:
+        if not reason or not reason.strip():
+            return ActionResult(
+                ok=False,
+                message="Lý do dời hạn luồng không được để trống.",
+                changes=[],
+                next_actions=[],
+            )
+
         issue = self._get_issue(story_key)
         if issue.type != "story":
             return ActionResult(
@@ -630,6 +930,10 @@ class Actions:
                 changes=[],
                 next_actions=[],
             )
+
+        matched, avail = self._find_transition(story_key, "request_reschedule")
+        if not matched:
+            return self._unavailable_result(story_key, "request_reschedule", avail)
 
         changes = [
             f"Yêu cầu dời Due Date sang {new_due}",
@@ -650,15 +954,9 @@ class Actions:
             reschedule_status=self.cfg.reschedule_pending_value,
             reschedule_requester=self.gateway.current_user(),
         )
-        self.gateway.update_fields(story_key, payload)
-
-        trans_name = self.cfg.transitions.get("request_reschedule", "Request Reschedule")
-        available = self.gateway.get_transitions(story_key)
-        if any(t["name"].lower() == trans_name.lower() for t in available):
-            self.gateway.transition(story_key, trans_name)
-
-        if note:
-            self.gateway.add_comment(story_key, note)
+        self.gateway.transition(
+            story_key, matched, fields=payload, comment=note if note else None
+        )
 
         return ActionResult(
             ok=True,
@@ -675,126 +973,245 @@ class Actions:
         note: str,
         story_keys: list[str] | None = None,
         bugs: dict[str, list[str]] | None = None,
+        *,
         dry_run: bool = False,
     ) -> ActionResult:
-        # Fetch stories under this epic
+        if action in ("signoff", "fail") and (not note or not note.strip()):
+            return ActionResult(
+                ok=False,
+                message=f"Comment (ghi chú) bắt buộc cho UAT {action}.",
+                changes=[],
+                next_actions=[],
+            )
+
+        actor_code = actor.split(" - ")[0].strip()
         proj_key = epic_key.split("-")[0]
-        raw_issues = self.gateway.search(f'project = "{proj_key}"', fields=["*all"])
+        story_types = ", ".join(f'"{t}"' for t in self.cfg.issue_types["story"])
+        jql = (
+            f'project = "{proj_key}" AND issuetype in ({story_types}) '
+            f'AND ("Epic Link" = "{epic_key}" OR parent = "{epic_key}")'
+        )
+        raw_issues = self.gateway.search(jql, fields=["*all"])
+
         actor_stories: list[Issue] = []
         for raw in raw_issues:
             iss = issue_from_json(raw, self.cfg)
-            if iss.type == "story" and (iss.epic_key == epic_key or iss.parent_key == epic_key):
-                if actor in iss.components or (iss.actor_code and actor.startswith(iss.actor_code)):
+            if iss.type == "story" and (
+                iss.epic_key == epic_key or iss.parent_key == epic_key
+            ):
+                if iss.actor_code == actor_code or actor_code in [
+                    c.split(" - ")[0].strip() for c in iss.components
+                ]:
                     actor_stories.append(iss)
 
         if not actor_stories:
             return ActionResult(
                 ok=False,
-                message=f"Không tìm thấy Story nào của actor '{actor}' trong epic {epic_key}.",
+                message=(
+                    f"Không tìm thấy Story nào của actor '{actor}' "
+                    f"trong epic {epic_key}."
+                ),
                 changes=[],
                 next_actions=[],
             )
 
+        target_stories: list[Issue] = []
         if action == "start":
-            target_stories = [s for s in actor_stories if s.status == "ready_for_uat"]
-            if not target_stories:
-                return ActionResult(
-                    ok=False,
-                    message=f"Không có Story nào của actor '{actor}' ở trạng thái Ready For UAT để bắt đầu UAT.",
-                    changes=[],
-                    next_actions=[],
-                )
-            changes = [f"Chuyển {s.key} sang Client UAT" for s in target_stories]
-            if dry_run:
-                return ActionResult(
-                    ok=True,
-                    message=f"[Dry-run] Sẽ bắt đầu UAT cho {len(target_stories)} Story",
-                    changes=changes,
-                    next_actions=["uat signoff", "uat fail"],
-                )
-            trans_name = self.cfg.transitions.get("client_uat", "Client UAT")
-            for s in target_stories:
-                self.gateway.transition(s.key, trans_name, comment=note)
-            return ActionResult(
-                ok=True,
-                message=f"Đã bắt đầu UAT cho {len(target_stories)} Story của actor {actor}.",
-                changes=changes,
-                next_actions=["uat signoff", "uat fail"],
-            )
+            required_status = "ready_for_uat"
+            trans_logical = "client_uat"
+            if story_keys:
+                for k in story_keys:
+                    matched_s = next((s for s in actor_stories if s.key == k), None)
+                    if not matched_s:
+                        return ActionResult(
+                            ok=False,
+                            message=(
+                                f"Story {k} không thuộc actor '{actor}' "
+                                f"trong epic {epic_key}."
+                            ),
+                            changes=[],
+                            next_actions=[],
+                        )
+                    if matched_s.status != required_status:
+                        return ActionResult(
+                            ok=False,
+                            message=(
+                                f"Story {k} không ở trạng thái Ready For UAT "
+                                f"(hiện tại: {matched_s.status})."
+                            ),
+                            changes=[],
+                            next_actions=[],
+                        )
+                    target_stories.append(matched_s)
+            else:
+                target_stories = [
+                    s for s in actor_stories if s.status == required_status
+                ]
 
         elif action == "signoff":
+            required_status = "client_uat"
+            trans_logical = "uat_signoff"
             if story_keys:
-                target_stories = [s for s in actor_stories if s.key in story_keys]
+                for k in story_keys:
+                    matched_s = next((s for s in actor_stories if s.key == k), None)
+                    if not matched_s:
+                        return ActionResult(
+                            ok=False,
+                            message=(
+                                f"Story {k} không thuộc actor '{actor}' "
+                                f"trong epic {epic_key}."
+                            ),
+                            changes=[],
+                            next_actions=[],
+                        )
+                    if matched_s.status != required_status:
+                        return ActionResult(
+                            ok=False,
+                            message=(
+                                f"Story {k} không ở trạng thái Đang UAT "
+                                f"(Wait For Review) (hiện tại: {matched_s.status})."
+                            ),
+                            changes=[],
+                            next_actions=[],
+                        )
+                    target_stories.append(matched_s)
             else:
-                not_in_uat = [s for s in actor_stories if s.status != "client_uat" and not s.is_resolved]
+                not_in_uat = [
+                    s
+                    for s in actor_stories
+                    if s.status != required_status and not s.is_resolved
+                ]
                 if not_in_uat:
                     keys_str = ", ".join(s.key for s in not_in_uat)
                     return ActionResult(
                         ok=False,
-                        message=f"Không thể ký UAT: còn Story của actor chưa ở trạng thái Đang UAT (Wait For Review): {keys_str}.",
+                        message=(
+                            "Không thể ký UAT: còn Story của actor chưa ở "
+                            f"trạng thái Đang UAT (Wait For Review): {keys_str}."
+                        ),
                         changes=[],
                         next_actions=[],
                     )
-                target_stories = [s for s in actor_stories if s.status == "client_uat"]
-
-            changes = [f"Ký duyệt UAT cho {s.key}" for s in target_stories]
-            if dry_run:
-                return ActionResult(
-                    ok=True,
-                    message=f"[Dry-run] Sẽ ký duyệt UAT cho {len(target_stories)} Story",
-                    changes=changes,
-                    next_actions=[],
-                )
-            trans_name = self.cfg.transitions.get("uat_signoff", "UAT Sign-off")
-            for s in target_stories:
-                self.gateway.transition(s.key, trans_name, comment=note)
-            return ActionResult(
-                ok=True,
-                message=f"Đã ký duyệt UAT cho {len(target_stories)} Story của actor {actor}.",
-                changes=changes,
-                next_actions=[],
-            )
+                target_stories = [
+                    s for s in actor_stories if s.status == required_status
+                ]
 
         elif action == "fail":
             if not story_keys:
                 return ActionResult(
                     ok=False,
-                    message="Hành động UAT Fail bắt buộc phải cung cấp danh sách story_keys.",
+                    message=(
+                        "Hành động UAT Fail bắt buộc phải cung cấp "
+                        "danh sách story_keys."
+                    ),
                     changes=[],
                     next_actions=[],
                 )
-            target_stories = [s for s in actor_stories if s.key in story_keys]
-            changes = [f"UAT Fail cho {s.key}" for s in target_stories]
-            if dry_run:
+            required_status = "client_uat"
+            trans_logical = "uat_fail"
+            for k in story_keys:
+                matched_s = next((s for s in actor_stories if s.key == k), None)
+                if not matched_s:
+                    return ActionResult(
+                        ok=False,
+                        message=(
+                            f"Story {k} không thuộc actor '{actor}' "
+                            f"trong epic {epic_key}."
+                        ),
+                        changes=[],
+                        next_actions=[],
+                    )
+                if matched_s.status != required_status:
+                    return ActionResult(
+                        ok=False,
+                        message=(
+                            f"Story {k} không ở trạng thái Đang UAT "
+                            f"(Wait For Review) (hiện tại: {matched_s.status})."
+                        ),
+                        changes=[],
+                        next_actions=[],
+                    )
+                s_bugs = (bugs or {}).get(k, [])
+                if not s_bugs:
+                    return ActionResult(
+                        ok=False,
+                        message=(
+                            f"Story {k} chưa có bug nào được khai báo cho UAT Fail."
+                        ),
+                        changes=[],
+                        next_actions=[],
+                    )
+                target_stories.append(matched_s)
+        else:
+            return ActionResult(
+                ok=False,
+                message=f"Hành động UAT không hợp lệ: {action}",
+                changes=[],
+                next_actions=[],
+            )
+
+        if not target_stories:
+            return ActionResult(
+                ok=False,
+                message=(
+                    f"Không có Story nào của actor '{actor}' phù hợp để "
+                    f"thực hiện UAT {action}."
+                ),
+                changes=[],
+                next_actions=[],
+            )
+
+        trans_name = self.cfg.transitions[trans_logical]
+        for s in target_stories:
+            matched_trans, avail = self._find_transition(s.key, trans_logical)
+            if not matched_trans:
+                avail_str = ", ".join(avail)
                 return ActionResult(
-                    ok=True,
-                    message=f"[Dry-run] Sẽ báo UAT Fail cho {len(target_stories)} Story",
-                    changes=changes,
+                    ok=False,
+                    message=(
+                        f"Transition '{trans_name}' không khả dụng cho {s.key}. "
+                        f"Các transition hiện có: {avail_str}."
+                    ),
+                    changes=[],
                     next_actions=[],
                 )
 
-            trans_name = self.cfg.transitions.get("uat_fail", "UAT Fail")
-            bug_type_name = self.cfg.issue_types.get("bug_sub", ["Bug"])[0]
-            for s in target_stories:
-                s_bugs = (bugs or {}).get(s.key, [])
-                actor_code = s.actor_code or "FLOW"
-                for b in s_bugs:
-                    self.gateway.create_issue({
-                        "project": {"key": s.project},
-                        "issuetype": {"name": bug_type_name},
-                        "summary": f"[{actor_code}][BUG] {b}",
-                        "parent": {"key": s.key},
-                    })
-                self.gateway.transition(s.key, trans_name, comment=note)
-
+        changes = [f"UAT {action} cho {s.key}" for s in target_stories]
+        if dry_run:
             return ActionResult(
                 ok=True,
-                message=f"Đã xử lý UAT Fail cho {len(target_stories)} Story.",
+                message=(
+                    f"[Dry-run] Sẽ xử lý UAT {action} cho {len(target_stories)} Story"
+                ),
                 changes=changes,
                 next_actions=[],
             )
 
-        return ActionResult(ok=False, message=f"Hành động UAT không hợp lệ: {action}", changes=[], next_actions=[])
+        bug_type_name = self.cfg.issue_types["bug_sub"][0]
+        for s in target_stories:
+            if action == "fail":
+                for b in (bugs or {}).get(s.key, []):
+                    code = s.actor_code or "FLOW"
+                    self.gateway.create_issue(
+                        {
+                            "project": {"key": s.project},
+                            "issuetype": {"name": bug_type_name},
+                            "summary": f"[{code}][BUG] {b}",
+                            "parent": {"key": s.key},
+                        }
+                    )
+            self.gateway.transition(s.key, trans_name, comment=note if note else None)
+
+        story_keys_str = ", ".join(s.key for s in target_stories)
+        return ActionResult(
+            ok=True,
+            message=(
+                f"Đã xử lý UAT {action} thành công cho {len(target_stories)} "
+                f"Story ({story_keys_str})."
+            ),
+            changes=changes,
+            next_actions=[],
+        )
 
     # -------------------------------------------------------------------------
     # Lead-BA
@@ -803,19 +1220,48 @@ class Actions:
     def decide_reschedule(
         self,
         key: str,
+        *,
         approve: bool,
         note: str,
         dry_run: bool = False,
     ) -> ActionResult:
         issue = self._get_issue(key)
+        if issue.reschedule_status != self.cfg.reschedule_pending_value:
+            return ActionResult(
+                ok=False,
+                message=(
+                    f"Issue {key} không ở trạng thái chờ duyệt dời lịch "
+                    f"(reschedule_status = {issue.reschedule_status}, "
+                    f"kỳ vọng: {self.cfg.reschedule_pending_value})."
+                ),
+                changes=[],
+                next_actions=[],
+            )
+
         current_user = self.gateway.current_user()
         if issue.reschedule_requester and current_user == issue.reschedule_requester:
             return ActionResult(
                 ok=False,
-                message="Người yêu cầu không được tự duyệt yêu cầu dời lịch của chính mình.",
+                message=(
+                    "Người yêu cầu không được tự duyệt yêu cầu dời lịch của "
+                    "chính mình."
+                ),
                 changes=[],
                 next_actions=[],
             )
+
+        if not approve and (not note or not note.strip()):
+            return ActionResult(
+                ok=False,
+                message="Ghi chú (comment) bắt buộc khi từ chối yêu cầu dời lịch.",
+                changes=[],
+                next_actions=[],
+            )
+
+        trans_logical = "approve_reschedule" if approve else "reject_reschedule"
+        matched, avail = self._find_transition(key, trans_logical)
+        if not matched:
+            return self._unavailable_result(key, trans_logical, avail)
 
         if approve:
             changes = [
@@ -834,7 +1280,6 @@ class Actions:
             )
 
         if approve:
-            trans_name = self.cfg.transitions.get("approve_reschedule", "Approve Reschedule")
             write_args = {
                 "reschedule_status": CLEAR,
                 "reschedule_requester": CLEAR,
@@ -845,30 +1290,22 @@ class Actions:
             else:
                 write_args["planned_end"] = issue.proposed_end
             payload = issue_fields_for_write(self.cfg, **write_args)
-            self.gateway.update_fields(key, payload)
-
-            available = self.gateway.get_transitions(key)
-            if any(t["name"].lower() == trans_name.lower() for t in available):
-                self.gateway.transition(key, trans_name)
-
-            if note:
-                self.gateway.add_comment(key, f"Phê duyệt dời lịch: {note}")
+            self.gateway.transition(
+                key,
+                matched,
+                fields=payload,
+                comment=f"Phê duyệt dời lịch: {note}" if note else None,
+            )
         else:
-            trans_name = self.cfg.transitions.get("reject_reschedule", "Reject Reschedule")
             payload = issue_fields_for_write(
                 self.cfg,
                 reschedule_status=CLEAR,
                 reschedule_requester=CLEAR,
                 proposed_end=CLEAR,
             )
-            self.gateway.update_fields(key, payload)
-
-            available = self.gateway.get_transitions(key)
-            if any(t["name"].lower() == trans_name.lower() for t in available):
-                self.gateway.transition(key, trans_name)
-
-            if note:
-                self.gateway.add_comment(key, f"Từ chối dời lịch: {note}")
+            self.gateway.transition(
+                key, matched, fields=payload, comment=f"Từ chối dời lịch: {note}"
+            )
 
         return ActionResult(
             ok=True,
@@ -877,7 +1314,26 @@ class Actions:
             next_actions=[],
         )
 
-    def cancel(self, key: str, reason: str, dry_run: bool = False) -> ActionResult:
+    def cancel(
+        self,
+        key: str,
+        reason: str,
+        *,
+        dry_run: bool = False,
+    ) -> ActionResult:
+        if not reason or not reason.strip():
+            return ActionResult(
+                ok=False,
+                message="Lý do hủy (comment) là bắt buộc và không được để trống.",
+                changes=[],
+                next_actions=[],
+            )
+
+        self._get_issue(key)
+        matched, avail = self._find_transition(key, "cancel")
+        if not matched:
+            return self._unavailable_result(key, "cancel", avail)
+
         changes = [f"Hủy issue {key}", f"Lý do: {reason}"]
         if dry_run:
             return ActionResult(
@@ -887,8 +1343,7 @@ class Actions:
                 next_actions=[],
             )
 
-        trans_name = self.cfg.transitions.get("cancel", "Cancel")
-        self.gateway.transition(key, trans_name, comment=f"Hủy: {reason}")
+        self.gateway.transition(key, matched, comment=f"Hủy: {reason}")
         return ActionResult(
             ok=True,
             message=f"Đã hủy {key}.",
@@ -907,28 +1362,44 @@ class Actions:
         source_url: str,
         reported_by: str,
         reported_at: datetime | None = None,
+        *,
         dry_run: bool = False,
     ) -> ActionResult:
-        month_str = self._today().strftime("%m/%Y")
-        ops_prefix = self.cfg.ops_epic_prefix
-        raw_issues = self.gateway.search(f'project = "{project}"', fields=["*all"])
+        expected_summary = self.cfg.ops_epic_summary.format(
+            month=self._today().month, year=self._today().year
+        )
+        epic_types = ", ".join(f'"{t}"' for t in self.cfg.issue_types["epic"])
+        jql = f'project = "{project}" AND issuetype in ({epic_types})'
+        raw_issues = self.gateway.search(jql, fields=["*all"])
+
         ops_epic: Issue | None = None
         for raw in raw_issues:
             iss = issue_from_json(raw, self.cfg)
-            if iss.type == "epic" and iss.summary.startswith(ops_prefix) and month_str in iss.summary:
+            if iss.type == "epic" and iss.summary == expected_summary:
                 ops_epic = iss
                 break
 
         if not ops_epic:
             return ActionResult(
                 ok=False,
-                message=f"Không tìm thấy Epic [OPS] tháng hiện tại ({month_str}) cho dự án {project}. Vui lòng chạy eggs-guardian hoặc tạo Epic [OPS] trước.",
+                message=(
+                    f"Không tìm thấy Epic [OPS] tháng hiện tại cho dự án {project} "
+                    f"({expected_summary}). "
+                    "Vui lòng chạy eggs-guardian hoặc tạo Epic [OPS] trước."
+                ),
                 changes=[],
                 next_actions=[],
             )
 
         proj_cfg = self.cfg.projects.get(project)
-        triage_owner = proj_cfg.triage_owner if (proj_cfg and proj_cfg.triage_owner) else self.cfg.lead_user
+        if not proj_cfg:
+            return ActionResult(
+                ok=False,
+                message=f"Dự án {project} chưa được khai báo cấu hình.",
+                changes=[],
+                next_actions=[],
+            )
+        triage_owner = proj_cfg.triage_owner
 
         changes = [
             f"Tạo User Report trong Epic {ops_epic.key}",
@@ -943,7 +1414,7 @@ class Actions:
                 next_actions=["triage_close"],
             )
 
-        report_type_name = self.cfg.issue_types.get("report", ["User Report"])[0]
+        report_type_name = self.cfg.issue_types["report"][0]
         create_fields: dict[str, Any] = {
             "project": {"key": project},
             "issuetype": {"name": report_type_name},
@@ -958,12 +1429,18 @@ class Actions:
             create_fields[self.cfg.fields["reported_by"]] = reported_by
         if self.cfg.fields.get("reported_at"):
             rep_dt = reported_at or datetime.now(ZoneInfo(self.cfg.timezone))
-            create_fields[self.cfg.fields["reported_at"]] = rep_dt.isoformat()
+            dt_payload = issue_fields_for_write(self.cfg, reported_at=rep_dt)
+            create_fields[self.cfg.fields["reported_at"]] = dt_payload[
+                self.cfg.fields["reported_at"]
+            ]
 
         new_key = self.gateway.create_issue(create_fields)
 
-        start_triage_trans = self.cfg.transitions.get("start_triage", "Start Triage")
-        self.gateway.transition(new_key, start_triage_trans)
+        matched, avail = self._find_transition(new_key, "start_triage")
+        if not matched:
+            return self._unavailable_result(new_key, "start_triage", avail)
+
+        self.gateway.transition(new_key, matched)
 
         return ActionResult(
             ok=True,
@@ -975,45 +1452,162 @@ class Actions:
     def triage_close(
         self,
         key: str,
-        verdict: Literal["bug", "guidance", "feature", "data_fix", "duplicate", "cannot_reproduce", "third_party"],
+        verdict: Literal[
+            "bug",
+            "guidance",
+            "feature",
+            "data_fix",
+            "duplicate",
+            "cannot_reproduce",
+            "third_party",
+        ],
         note: str,
         time_spent: str,
         bug_story_key: str | None = None,
         bug_summary: str | None = None,
         link_key: str | None = None,
+        *,
         dry_run: bool = False,
     ) -> ActionResult:
         report = self._get_issue(key)
+        if report.type != "report":
+            return ActionResult(
+                ok=False,
+                message=f"Issue {key} không phải là User Report.",
+                changes=[],
+                next_actions=[],
+            )
+        if report.is_resolved:
+            return ActionResult(
+                ok=False,
+                message=f"User Report {key} đã được xử lý (resolved).",
+                changes=[],
+                next_actions=[],
+            )
+
+        if verdict not in self.cfg.report_resolutions:
+            return ActionResult(
+                ok=False,
+                message=(
+                    f"Kết luận '{verdict}' không tồn tại trong cấu hình "
+                    "report_resolutions."
+                ),
+                changes=[],
+                next_actions=[],
+            )
+
+        resolution_name = self.cfg.report_resolutions[verdict]
+        reply_suggestion = (
+            f"Gợi ý trả lời group chat: 'Chào bạn, phản ánh đã được tiếp nhận "
+            f"và xử lý ({resolution_name}). {note}. Cảm ơn bạn đã phản ánh!'"
+        )
+
+        ops_epic: Issue | None = None
+        bug_story: Issue | None = None
 
         if verdict == "bug":
             if bug_story_key:
                 bug_story = self._get_issue(bug_story_key)
-                if bug_story.is_resolved:
+                if bug_story.type != "story":
                     return ActionResult(
                         ok=False,
-                        message="Không thể tạo Bug sub-task dưới Story đã hoàn thành (Done).",
+                        message=f"Issue {bug_story_key} không phải là Story.",
                         changes=[],
                         next_actions=[],
                     )
+                if bug_story.is_resolved:
+                    return ActionResult(
+                        ok=False,
+                        message=(
+                            "Không thể tạo Bug sub-task dưới Story đã "
+                            "hoàn thành (Done)."
+                        ),
+                        changes=[],
+                        next_actions=[],
+                    )
+            else:
+                expected_summary = self.cfg.ops_epic_summary.format(
+                    month=self._today().month, year=self._today().year
+                )
+                epic_types = ", ".join(f'"{t}"' for t in self.cfg.issue_types["epic"])
+                jql = f'project = "{report.project}" AND issuetype in ({epic_types})'
+                raw_issues = self.gateway.search(jql, fields=["*all"])
+                for raw in raw_issues:
+                    iss = issue_from_json(raw, self.cfg)
+                    if iss.type == "epic" and iss.summary == expected_summary:
+                        ops_epic = iss
+                        break
+                if not ops_epic:
+                    return ActionResult(
+                        ok=False,
+                        message=(
+                            f"Không tìm thấy Epic [OPS] tháng hiện tại cho dự án "
+                            f"{report.project} ({expected_summary})."
+                        ),
+                        changes=[],
+                        next_actions=[],
+                    )
+
         elif verdict in ("feature", "data_fix", "duplicate"):
             if not link_key:
                 return ActionResult(
                     ok=False,
-                    message=f"Kết luận '{verdict}' bắt buộc phải cung cấp link_key để liên kết.",
+                    message=(
+                        f"Kết luận '{verdict}' bắt buộc phải cung cấp "
+                        "link_key để liên kết."
+                    ),
+                    changes=[],
+                    next_actions=[],
+                )
+            target_iss = self._get_issue(link_key)
+            if verdict == "feature" and target_iss.type != "story":
+                return ActionResult(
+                    ok=False,
+                    message=(
+                        "Link target cho Feature Request phải là Story "
+                        f"(hiện tại: {target_iss.type})."
+                    ),
+                    changes=[],
+                    next_actions=[],
+                )
+            elif verdict == "data_fix" and target_iss.type != "adhoc":
+                return ActionResult(
+                    ok=False,
+                    message=(
+                        "Link target cho Data/Config Fix phải là Ad-hoc Task "
+                        f"(hiện tại: {target_iss.type})."
+                    ),
+                    changes=[],
+                    next_actions=[],
+                )
+            elif verdict == "duplicate" and target_iss.type != "report":
+                return ActionResult(
+                    ok=False,
+                    message=(
+                        "Link target cho Duplicate phải là User Report "
+                        f"(hiện tại: {target_iss.type})."
+                    ),
                     changes=[],
                     next_actions=[],
                 )
 
-        resolution_name = self.cfg.report_resolutions.get(verdict, verdict)
+        matched, avail = self._find_transition(key, "close_report")
+        if not matched:
+            return self._unavailable_result(key, "close_report", avail)
+
         changes = [
             f"Log QC time: {time_spent}",
             f"Kết luận: {resolution_name}",
         ]
         if verdict == "bug":
             if bug_story_key:
-                changes.append(f"Tạo Bug sub-task dưới Story {bug_story_key} và liên kết Causes")
+                changes.append(
+                    f"Tạo Bug sub-task dưới Story {bug_story_key} và liên kết Causes"
+                )
             else:
-                changes.append("Tạo Bug stand-alone trong Epic [OPS] và liên kết Causes")
+                changes.append(
+                    "Tạo Bug stand-alone trong Epic [OPS] và liên kết Causes"
+                )
         elif link_key:
             changes.append(f"Liên kết tới {link_key}")
         changes.append("Đóng User Report (Close Report)")
@@ -1021,7 +1615,7 @@ class Actions:
         if dry_run:
             return ActionResult(
                 ok=True,
-                message=f"[Dry-run] Sẽ đóng User Report {key}",
+                message=f"[Dry-run] Sẽ đóng User Report {key}. {reply_suggestion}",
                 changes=changes,
                 next_actions=[],
             )
@@ -1029,57 +1623,54 @@ class Actions:
         self.gateway.add_worklog(key, time_spent=time_spent, comment=note)
 
         if verdict == "bug":
-            if bug_story_key:
-                story = self._get_issue(bug_story_key)
-                actor_code = story.actor_code or "FLOW"
+            if bug_story_key and bug_story:
+                actor_code = bug_story.actor_code or "FLOW"
                 summary = bug_summary or f"[{actor_code}][BUG] {note}"
-                bug_type_name = self.cfg.issue_types.get("bug_sub", ["Bug"])[0]
-                bug_key = self.gateway.create_issue({
-                    "project": {"key": story.project},
-                    "issuetype": {"name": bug_type_name},
-                    "summary": summary,
-                    "parent": {"key": bug_story_key},
-                })
-                self.gateway.link("Causes", inward_key=key, outward_key=bug_key)
-            else:
-                month_str = self._today().strftime("%m/%Y")
-                ops_prefix = self.cfg.ops_epic_prefix
-                raw_issues = self.gateway.search(f'project = "{report.project}"', fields=["*all"])
-                ops_epic = None
-                for raw in raw_issues:
-                    iss = issue_from_json(raw, self.cfg)
-                    if iss.type == "epic" and iss.summary.startswith(ops_prefix) and month_str in iss.summary:
-                        ops_epic = iss
-                        break
-                bug_type_name = self.cfg.issue_types.get("bug", ["Bug stand-alone"])[0]
+                bug_type_name = self.cfg.issue_types["bug_sub"][0]
+                bug_key = self.gateway.create_issue(
+                    {
+                        "project": {"key": bug_story.project},
+                        "issuetype": {"name": bug_type_name},
+                        "summary": summary,
+                        "parent": {"key": bug_story_key},
+                    }
+                )
+                self.gateway.link(
+                    self.cfg.link_types["causes"], inward_key=key, outward_key=bug_key
+                )
+            elif ops_epic:
+                bug_type_name = self.cfg.issue_types["bug"][0]
+                summary = bug_summary or f"{self.cfg.hotfix_prefix} {note}"
                 create_payload: dict[str, Any] = {
                     "project": {"key": report.project},
                     "issuetype": {"name": bug_type_name},
-                    "summary": bug_summary or f"[HOTFIX] {note}",
+                    "summary": summary,
                 }
-                if ops_epic and self.cfg.fields.get("epic_link"):
+                if self.cfg.fields.get("epic_link"):
                     create_payload[self.cfg.fields["epic_link"]] = ops_epic.key
                 bug_key = self.gateway.create_issue(create_payload)
-                self.gateway.link("Causes", inward_key=key, outward_key=bug_key)
+                self.gateway.link(
+                    self.cfg.link_types["causes"], inward_key=key, outward_key=bug_key
+                )
 
         elif verdict in ("feature", "data_fix"):
             if link_key:
-                self.gateway.link("Relates", inward_key=key, outward_key=link_key)
+                self.gateway.link(
+                    self.cfg.link_types["relates"], inward_key=key, outward_key=link_key
+                )
         elif verdict == "duplicate":
             if link_key:
-                self.gateway.link("Duplicate", inward_key=key, outward_key=link_key)
+                self.gateway.link(
+                    self.cfg.link_types["duplicates"],
+                    inward_key=key,
+                    outward_key=link_key,
+                )
 
-        trans_name = self.cfg.transitions.get("close_report", "Close Report")
         self.gateway.transition(
             key,
-            trans_name,
+            matched,
             fields={"resolution": {"name": resolution_name}},
             comment=f"Kết luận triage: {resolution_name}. Ghi chú: {note}",
-        )
-
-        reply_suggestion = (
-            f"Gợi ý trả lời group chat: 'Chào bạn, phản ánh đã được tiếp nhận và xử lý ({resolution_name}). "
-            f"{note}. Cảm ơn bạn đã phản ánh!'"
         )
 
         return ActionResult(

@@ -1,15 +1,13 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime
-import re
 from typing import Any
 
 from .calendar import WorkCalendar
 from .config import EggsConfig
-from .escalation import Escalation
 from .identity import Identity
-from .model import Issue
 from .report import Snapshot
 
 
@@ -80,7 +78,11 @@ INTENTS: list[Intent] = [
     Intent(
         name="schedule",
         roles=frozenset({"dev"}),
-        examples=["nhận việc và đặt lịch RFID-130", "lên lịch RFID-130 từ 18/11 đến 21/11", "schedule"],
+        examples=[
+            "nhận việc và đặt lịch RFID-130",
+            "lên lịch RFID-130 từ 18/11 đến 21/11",
+            "schedule",
+        ],
         tool="eggs_schedule",
         required=["key", "start", "end", "estimate"],
     ),
@@ -108,7 +110,11 @@ INTENTS: list[Intent] = [
     Intent(
         name="request_reschedule",
         roles=frozenset({"dev"}),
-        examples=["xin dời lịch RFID-123 sang 20/11 vì bị chèn ngang", "dời hạn do bug", "xin lùi ngày"],
+        examples=[
+            "xin dời lịch RFID-123 sang 20/11 vì bị chèn ngang",
+            "dời hạn do bug",
+            "xin lùi ngày",
+        ],
         tool="eggs_request_reschedule",
         required=["key", "new_end", "reason"],
     ),
@@ -144,7 +150,11 @@ INTENTS: list[Intent] = [
     Intent(
         name="triage_close",
         roles=frozenset({"qc"}),
-        examples=["kết luận phản ánh RFID-R12 là lỗi", "đóng report hướng dẫn sử dụng", "triage close"],
+        examples=[
+            "kết luận phản ánh RFID-R12 là lỗi",
+            "đóng report hướng dẫn sử dụng",
+            "triage close",
+        ],
         tool="eggs_triage_close",
         required=["key", "verdict", "note", "time_spent"],
     ),
@@ -152,7 +162,11 @@ INTENTS: list[Intent] = [
     Intent(
         name="decide_reschedule",
         roles=frozenset({"lead_ba", "lead"}),
-        examples=["duyệt dời lịch RFID-123", "từ chối gia hạn RFID-123", "decide reschedule"],
+        examples=[
+            "duyệt dời lịch RFID-123",
+            "từ chối gia hạn RFID-123",
+            "decide reschedule",
+        ],
         tool="eggs_decide_reschedule",
         required=["key", "approve", "note"],
     ),
@@ -166,7 +180,11 @@ INTENTS: list[Intent] = [
     Intent(
         name="uat",
         roles=frozenset({"lead_ba"}),
-        examples=["bắt đầu UAT nhóm CH epic RFID-10", "ký nhận UAT nhóm KT", "UAT fail nhóm POS"],
+        examples=[
+            "bắt đầu UAT nhóm CH epic RFID-10",
+            "ký nhận UAT nhóm KT",
+            "UAT fail nhóm POS",
+        ],
         tool="eggs_uat",
         required=["epic_key", "actor", "action", "note"],
     ),
@@ -194,7 +212,11 @@ INTENTS: list[Intent] = [
     Intent(
         name="pending_approvals",
         roles=frozenset({"lead_ba", "lead"}),
-        examples=["danh sách chờ duyệt", "có ai xin dời lịch không", "pending approvals"],
+        examples=[
+            "danh sách chờ duyệt",
+            "có ai xin dời lịch không",
+            "pending approvals",
+        ],
         tool="eggs_pending_approvals",
         required=[],
     ),
@@ -220,7 +242,9 @@ def intents_for(identity: Identity) -> list[Intent]:
 
 
 def mentioned_keys(text: str, project_keys: set[str]) -> list[str]:
-    """Find issue keys mentioned in text that belong to known project_keys, ordered and deduplicated."""
+    """Find issue keys mentioned in text that belong to known project_keys,
+    ordered and deduplicated.
+    """
     pattern = re.compile(r"\b([A-Z][A-Z0-9]+)-(\d+)\b")
     seen: set[str] = set()
     result: list[str] = []
@@ -262,10 +286,14 @@ def build_agenda(
 
             flag_str = ", ".join(sorted(item_flags))
             title = f"[{key}] Cờ {flag_str} (mức {esc.level}): {issue.summary}"
-            say = f"{key} đang gặp cờ {flag_str} (leo thang mức {esc.level}), cần xử lý."
+            say = (
+                f"{key} đang gặp cờ {flag_str} (leo thang mức {esc.level}), cần xử lý."
+            )
             actions: list[SuggestedAction] = []
             if "BLOCKED" in item_flags:
-                actions.append(SuggestedAction(tool="eggs_unblock", args={"key": key}, missing=[]))
+                actions.append(
+                    SuggestedAction(tool="eggs_unblock", args={"key": key}, missing=[])
+                )
             elif "UNSCHEDULED" in item_flags:
                 actions.append(
                     SuggestedAction(
@@ -337,7 +365,10 @@ def build_agenda(
             if key in seen_keys:
                 continue
             title = f"[{key}] Phản ánh cần xử lý: {issue.summary}"
-            say = f"Phản ánh {key} ({issue.summary}) đang được giao cho bạn, cần xác minh/kết luận."
+            say = (
+                f"Phản ánh {key} ({issue.summary}) đang được giao cho bạn, "
+                "cần xác minh/kết luận."
+            )
             actions = [
                 SuggestedAction(
                     tool="eggs_triage_close",
@@ -357,23 +388,34 @@ def build_agenda(
             )
             seen_keys.add(key)
 
-    # Priority 4: QC queue (work items in ready_for_qc whose Story QC Owner is identity, and Stories in ready_for_qc where identity is QC Owner)
+    # Priority 4: QC queue (work items in ready_for_qc whose Story QC Owner
+    # is identity, and Stories in ready_for_qc where identity is QC Owner)
     for key, issue in snapshot.issues.items():
         if issue.frozen or issue.is_resolved or key in seen_keys:
             continue
         is_qc_target = False
         if issue.is_work_item and issue.status == "ready_for_qc":
-            parent_story = snapshot.issues.get(issue.parent_key) if issue.parent_key else None
-            story_qc = (parent_story.qc_owner if parent_story else None) or issue.qc_owner
+            parent_story = (
+                snapshot.issues.get(issue.parent_key) if issue.parent_key else None
+            )
+            story_qc = (
+                parent_story.qc_owner if parent_story else None
+            ) or issue.qc_owner
             if story_qc == identity.username:
                 is_qc_target = True
-        elif issue.type == "story" and issue.status == "ready_for_qc" and issue.qc_owner == identity.username:
+        elif (
+            issue.type == "story"
+            and issue.status == "ready_for_qc"
+            and issue.qc_owner == identity.username
+        ):
             is_qc_target = True
 
         if is_qc_target:
             title = f"[{key}] Chờ kiểm thử: {issue.summary}"
             say = f"{key} đã sẵn sàng kiểm thử (QC: {identity.username})."
-            actions = [SuggestedAction(tool="eggs_qc_start", args={"key": key}, missing=[])]
+            actions = [
+                SuggestedAction(tool="eggs_qc_start", args={"key": key}, missing=[])
+            ]
             items.append(
                 AgendaItem(
                     priority=4,
@@ -386,7 +428,8 @@ def build_agenda(
             )
             seen_keys.add(key)
 
-    # Priority 5: (epic, actor) groups ready for UAT where identity has Lead-BA role in that project
+    # Priority 5: (epic, actor) groups ready for UAT where identity
+    # has Lead-BA role in that project
     for epic_key, em in snapshot.epics.items():
         epic_issue = snapshot.issues.get(epic_key)
         if not epic_issue or epic_issue.frozen or epic_issue.is_resolved:
@@ -396,12 +439,22 @@ def build_agenda(
             for act in em.actors:
                 if act.ready_for_uat > 0 and act.dev == 0 and act.qc == 0:
                     actor_name = act.actor_code or act.actor
-                    title = f"[{epic_key}] Nhóm {actor_name} sẵn sàng UAT ({act.ready_for_uat}/{act.total} luồng)"
-                    say = f"Epic {epic_key} có nhóm {actor_name} đã sẵn sàng UAT, có thể mời khách hàng kiểm thử."
+                    title = (
+                        f"[{epic_key}] Nhóm {actor_name} sẵn sàng UAT "
+                        f"({act.ready_for_uat}/{act.total} luồng)"
+                    )
+                    say = (
+                        f"Epic {epic_key} có nhóm {actor_name} đã sẵn sàng UAT, "
+                        "có thể mời khách hàng kiểm thử."
+                    )
                     actions = [
                         SuggestedAction(
                             tool="eggs_uat",
-                            args={"epic_key": epic_key, "actor": actor_name, "action": "start"},
+                            args={
+                                "epic_key": epic_key,
+                                "actor": actor_name,
+                                "action": "start",
+                            },
                             missing=["note"],
                         )
                     ]
@@ -416,7 +469,8 @@ def build_agenda(
                         )
                     )
 
-    # Priority 6: "cập nhật cuối ngày" when now.hour >= end_day_hour and identity has no worklog dated today
+    # Priority 6: "cập nhật cuối ngày" when now.hour >= end_day_hour
+    # and identity has no worklog dated today
     end_day_hour = cfg.thresholds.end_day_hour
     if now.hour >= end_day_hour:
         has_worklog_today = any(
@@ -424,14 +478,22 @@ def build_agenda(
             for wl in snapshot.worklogs
         )
         if not has_worklog_today:
+            say = (
+                "Đã đến giờ cập nhật cuối ngày (sau 17:00) và bạn chưa có "
+                "worklog hôm nay. Vui lòng ghi giờ hoặc báo kết thúc ngày."
+            )
             items.append(
                 AgendaItem(
                     priority=6,
                     key=None,
                     project=None,
                     title="Cập nhật cuối ngày",
-                    say="Đã đến giờ cập nhật cuối ngày (sau 17:00) và bạn chưa có worklog hôm nay. Vui lòng ghi giờ hoặc báo kết thúc ngày.",
-                    actions=[SuggestedAction(tool="eggs_end_day", args={}, missing=["entries"])],
+                    say=say,
+                    actions=[
+                        SuggestedAction(
+                            tool="eggs_end_day", args={}, missing=["entries"]
+                        )
+                    ],
                 )
             )
 

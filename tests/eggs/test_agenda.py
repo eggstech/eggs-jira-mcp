@@ -2,12 +2,10 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
+
 import pytest
 
 from mcp_atlassian.eggs.agenda import (
-    AgendaItem,
-    INTENTS,
-    Intent,
     SuggestedAction,
     build_agenda,
     intents_for,
@@ -16,7 +14,6 @@ from mcp_atlassian.eggs.agenda import (
 from mcp_atlassian.eggs.calendar import WorkCalendar
 from mcp_atlassian.eggs.config import EggsConfig, ProjectConfig, Thresholds
 from mcp_atlassian.eggs.escalation import Escalation
-from mcp_atlassian.eggs.forecast import ActorRow, EpicMetrics, FlowMetrics
 from mcp_atlassian.eggs.identity import Identity
 from mcp_atlassian.eggs.model import Issue, Worklog
 from mcp_atlassian.eggs.report import Snapshot
@@ -81,11 +78,12 @@ def cal():
 def cfg():
     return EggsConfig(
         lead_user="cuong.huynh",
+        jira_url="https://jira.eggstech.io.vn",
         projects={
-            "RFID": ProjectConfig(key="RFID", default_lead_ba="cuong.huynh"),
-            "CP": ProjectConfig(key="CP", default_lead_ba="cuong.huynh"),
+            "RFID": ProjectConfig(key="RFID", default_lead_ba="cuong.huynh", triage_owner="cuong.huynh"),
+            "CP": ProjectConfig(key="CP", default_lead_ba="cuong.huynh", triage_owner="cuong.huynh"),
         },
-        roles={"lead_ba": "Lead-BA", "qc": "QC", "dev": "Developers"},
+        roles={"lead_ba": ["Lead-BA"], "qc": ["QC"], "dev": ["Developers"]},
         thresholds=Thresholds(end_day_hour=17),
     )
 
@@ -336,11 +334,12 @@ def test_agenda_end_day_after_17_without_worklog(cfg, cal):
 def test_agenda_excludes_projects_without_role(cal):
     cfg_multi = EggsConfig(
         lead_user="lead_boss",
+        jira_url="https://jira.eggstech.io.vn",
         projects={
-            "RFID": ProjectConfig(key="RFID", default_lead_ba="lead_boss"),
-            "OTHER": ProjectConfig(key="OTHER", default_lead_ba="lead_boss"),
+            "RFID": ProjectConfig(key="RFID", default_lead_ba="lead_boss", triage_owner="lead_boss"),
+            "OTHER": ProjectConfig(key="OTHER", default_lead_ba="lead_boss", triage_owner="lead_boss"),
         },
-        roles={"lead_ba": "Lead-BA", "qc": "QC", "dev": "Developers"},
+        roles={"lead_ba": ["Lead-BA"], "qc": ["QC"], "dev": ["Developers"]},
     )
     # Non-lead user has role only in RFID
     identity = Identity(

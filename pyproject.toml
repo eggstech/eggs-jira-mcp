@@ -112,7 +112,7 @@ unfixable = []
 dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**/*.py" = ["S", "ANN", "B017"]
+"tests/**/*.py" = ["S", "ANN", "B017", "E501"]
 "tests/fixtures/*.py" = ["E501"]
 "src/mcp_atlassian/server.py" = ["E501"]
 

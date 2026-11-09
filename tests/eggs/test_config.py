@@ -1,10 +1,10 @@
 from datetime import date
 from pathlib import Path
+
 import pytest
+
 from mcp_atlassian.eggs.config import (
     EggsConfig,
-    ProjectConfig,
-    Thresholds,
     load_config,
 )
 
@@ -13,8 +13,14 @@ def test_load_config_expands_env_and_maps_names(tmp_path, monkeypatch):
     monkeypatch.setenv("HOOK", "https://chat.example/x")
     yaml_content = """
 lead_user: cuong.huynh
+jira_url: https://jira.eggstech.io.vn
 lead_chat_webhook: ${HOOK}
 kit_min_version: 0.1.0
+link_types:
+  interrupts: "is interrupted by"
+  causes: "causes"
+  relates: "relates to"
+  duplicates: "duplicates"
 thresholds:
   stale_working_days: 2
   unscheduled_window: 5
@@ -72,6 +78,7 @@ projects:
   BUL:
     key: BUL
     default_lead_ba: cuong.huynh
+    triage_owner: cuong.huynh
     chat_webhook: null
     frozen: true
 """
@@ -126,6 +133,7 @@ projects:
 def test_type_logical_table(jira_name, is_subtask, expected):
     cfg = EggsConfig(
         lead_user="cuong.huynh",
+        jira_url="https://jira.eggstech.io.vn",
         issue_types={
             "epic": ["Epic"],
             "story": ["Story"],
@@ -142,6 +150,7 @@ def test_type_logical_table(jira_name, is_subtask, expected):
 def test_resolution_logical():
     cfg = EggsConfig(
         lead_user="cuong.huynh",
+        jira_url="https://jira.eggstech.io.vn",
         report_resolutions={
             "bug": "Is a Bug",
             "guidance": "User Guidance",
@@ -188,11 +197,18 @@ def test_load_example_config():
 def test_load_config_custom_pending_and_internal_values(tmp_path):
     yaml_content = """
 lead_user: cuong.huynh
+jira_url: https://jira.eggstech.io.vn
+link_types:
+  interrupts: "is interrupted by"
+  causes: "causes"
+  relates: "relates to"
+  duplicates: "duplicates"
 reschedule_pending_value: "Custom Pending"
 blocked_internal_value: "Custom Internal"
 projects:
   PROJ:
     default_lead_ba: cuong.huynh
+    triage_owner: cuong.huynh
 """
     cfg_file = tmp_path / "config.yaml"
     cfg_file.write_text(yaml_content)
@@ -203,40 +219,61 @@ projects:
 
 def test_load_config_roles_and_end_day_hour(tmp_path):
     # Default roles and end_day_hour
-    cfg_default = EggsConfig(lead_user="cuong.huynh")
+    cfg_default = EggsConfig(lead_user="cuong.huynh", jira_url="https://jira.eggstech.io.vn")
     assert cfg_default.thresholds.end_day_hour == 17
-    assert cfg_default.roles == {"lead_ba": "Lead-BA", "qc": "QC", "dev": "Developers"}
+    assert cfg_default.roles == {
+        "lead_ba": ["Business Analysts", "Administrators"],
+        "qc": ["Testers"],
+        "dev": ["Developers"],
+    }
 
     # Custom roles and end_day_hour loaded from YAML
     yaml_content = """
 lead_user: cuong.huynh
+jira_url: https://jira.eggstech.io.vn
+link_types:
+  interrupts: "is interrupted by"
+  causes: "causes"
+  relates: "relates to"
+  duplicates: "duplicates"
 thresholds:
   end_day_hour: 18
 roles:
-  lead_ba: "Lead BA Custom"
-  qc: "Quality Control"
-  dev: "Software Engineers"
+  lead_ba:
+    - "Lead BA Custom"
+  qc:
+    - "Quality Control"
+  dev:
+    - "Software Engineers"
 projects:
   PROJ:
     default_lead_ba: cuong.huynh
+    triage_owner: cuong.huynh
 """
     cfg_file = tmp_path / "config.yaml"
     cfg_file.write_text(yaml_content)
     cfg = load_config(str(cfg_file))
     assert cfg.thresholds.end_day_hour == 18
-    assert cfg.roles["lead_ba"] == "Lead BA Custom"
-    assert cfg.roles["qc"] == "Quality Control"
-    assert cfg.roles["dev"] == "Software Engineers"
+    assert cfg.roles["lead_ba"] == ["Lead BA Custom"]
+    assert cfg.roles["qc"] == ["Quality Control"]
+    assert cfg.roles["dev"] == ["Software Engineers"]
 
 
 def test_load_config_legacy_epic_unscheduled_window_shim_removed(tmp_path):
     yaml_content = """
 lead_user: cuong.huynh
+jira_url: https://jira.eggstech.io.vn
+link_types:
+  interrupts: "is interrupted by"
+  causes: "causes"
+  relates: "relates to"
+  duplicates: "duplicates"
 thresholds:
   epic_unscheduled_window: 10
 projects:
   PROJ:
     default_lead_ba: cuong.huynh
+    triage_owner: cuong.huynh
 """
     cfg_file = tmp_path / "config.yaml"
     cfg_file.write_text(yaml_content)
@@ -248,10 +285,17 @@ projects:
 def test_load_config_unresolved_env_var_raises(tmp_path):
     yaml_content = """
 lead_user: cuong.huynh
+jira_url: https://jira.eggstech.io.vn
+link_types:
+  interrupts: "is interrupted by"
+  causes: "causes"
+  relates: "relates to"
+  duplicates: "duplicates"
 lead_chat_webhook: ${UNSET_HOOK_VAR}
 projects:
   PROJ:
     default_lead_ba: cuong.huynh
+    triage_owner: cuong.huynh
 """
     cfg_file = tmp_path / "config.yaml"
     cfg_file.write_text(yaml_content)
@@ -263,9 +307,16 @@ projects:
 def test_load_config_from_eggs_config_env(tmp_path, monkeypatch):
     yaml_content = """
 lead_user: cuong.huynh
+jira_url: https://jira.eggstech.io.vn
+link_types:
+  interrupts: "is interrupted by"
+  causes: "causes"
+  relates: "relates to"
+  duplicates: "duplicates"
 projects:
   PROJ:
     default_lead_ba: cuong.huynh
+    triage_owner: cuong.huynh
 """
     cfg_file = tmp_path / "config.yaml"
     cfg_file.write_text(yaml_content)
@@ -292,6 +343,12 @@ projects:
 def test_load_config_requires_project_default_lead_ba(tmp_path):
     yaml_content = """
 lead_user: cuong.huynh
+jira_url: https://jira.eggstech.io.vn
+link_types:
+  interrupts: "is interrupted by"
+  causes: "causes"
+  relates: "relates to"
+  duplicates: "duplicates"
 projects:
   PROJ:
     key: PROJ
@@ -301,5 +358,88 @@ projects:
 
     with pytest.raises(ValueError, match="default_lead_ba"):
         load_config(str(cfg_file))
+
+
+def test_load_config_requires_jira_url(tmp_path):
+    yaml_content = """
+lead_user: cuong.huynh
+link_types:
+  interrupts: "is interrupted by"
+  causes: "causes"
+  relates: "relates to"
+  duplicates: "duplicates"
+projects:
+  PROJ:
+    default_lead_ba: cuong.huynh
+    triage_owner: cuong.huynh
+"""
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(yaml_content)
+
+    with pytest.raises(ValueError, match="jira_url"):
+        load_config(str(cfg_file))
+
+
+def test_load_config_requires_project_triage_owner(tmp_path):
+    yaml_content = """
+lead_user: cuong.huynh
+jira_url: https://jira.eggstech.io.vn
+link_types:
+  interrupts: "is interrupted by"
+  causes: "causes"
+  relates: "relates to"
+  duplicates: "duplicates"
+projects:
+  PROJ:
+    default_lead_ba: cuong.huynh
+"""
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(yaml_content)
+
+    with pytest.raises(ValueError, match="triage_owner"):
+        load_config(str(cfg_file))
+
+
+def test_load_config_requires_link_types(tmp_path):
+    yaml_content = """
+lead_user: cuong.huynh
+jira_url: https://jira.eggstech.io.vn
+projects:
+  PROJ:
+    default_lead_ba: cuong.huynh
+    triage_owner: cuong.huynh
+"""
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(yaml_content)
+
+    with pytest.raises(ValueError, match="link_types"):
+        load_config(str(cfg_file))
+
+
+def test_load_config_defaults_for_new_fields(tmp_path):
+    yaml_content = """
+lead_user: cuong.huynh
+jira_url: https://jira.eggstech.io.vn
+link_types:
+  interrupts: "is interrupted by"
+  causes: "causes"
+  relates: "relates to"
+  duplicates: "duplicates"
+projects:
+  PROJ:
+    default_lead_ba: cuong.huynh
+    triage_owner: cuong.huynh
+"""
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(yaml_content)
+
+    cfg = load_config(str(cfg_file))
+    assert cfg.reschedule_interrupt_value == "Chen ngang"
+    assert cfg.ops_epic_summary == "[OPS] Vận hành & Hotfix {month:02d}/{year}"
+    assert cfg.hotfix_prefix == "[HOTFIX]"
+    assert cfg.bot_user == "eggs-bot"
+    assert cfg.roles["lead_ba"] == ["Business Analysts", "Administrators"]
+    assert cfg.roles["qc"] == ["Testers"]
+    assert cfg.roles["dev"] == ["Developers"]
 
 

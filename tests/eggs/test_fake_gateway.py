@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+
 import pytest
 
 from mcp_atlassian.eggs.gateway import JiraError, JiraGateway

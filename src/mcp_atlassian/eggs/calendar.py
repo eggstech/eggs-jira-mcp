@@ -4,7 +4,9 @@ from datetime import date, timedelta
 
 
 class WorkCalendar:
-    """Work calendar supporting working days calculation, skipping weekends and holidays."""
+    """Work calendar supporting working days calculation,
+    skipping weekends and holidays.
+    """
 
     def __init__(self, holidays: frozenset[date] = frozenset()) -> None:
         self.holidays = holidays
