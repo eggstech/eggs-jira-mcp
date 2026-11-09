@@ -246,6 +246,7 @@ def issue_from_json(raw: dict, cfg: EggsConfig) -> Issue:
         escalation_level=escalation_level,
         escalation_owner=escalation_owner,
         frozen=frozen,
+        labels=tuple(labels),
         report_source=report_source,
         reported_by=reported_by,
         reported_at=reported_at,

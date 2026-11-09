@@ -36,6 +36,7 @@ class Issue:
     escalation_level: int
     escalation_owner: str | None
     frozen: bool
+    labels: tuple[str, ...] = ()
     report_source: str | None = None
     reported_by: str | None = None
     reported_at: datetime | None = None

@@ -39,6 +39,7 @@ class EggsConfig:
     reschedule_pending_value: str = "Chờ duyệt"
     blocked_internal_value: str = "Nội bộ"
     ops_epic_prefix: str = "[OPS]"
+    jira_url: str = "https://jira.eggstech.io.vn"
     fields: dict[str, str] = field(default_factory=dict)
     statuses: dict[str, str] = field(default_factory=dict)
     issue_types: dict[str, list[str]] = field(default_factory=dict)
@@ -171,6 +172,7 @@ def load_config(path: str | None = None) -> EggsConfig:
         reschedule_pending_value=data.get("reschedule_pending_value", "Chờ duyệt"),
         blocked_internal_value=data.get("blocked_internal_value", "Nội bộ"),
         ops_epic_prefix=data.get("ops_epic_prefix", "[OPS]"),
+        jira_url=data.get("jira_url") or os.getenv("JIRA_URL") or "https://jira.eggstech.io.vn",
         fields=data.get("fields", {}),
         statuses=data.get("statuses", {}),
         issue_types=data.get("issue_types", {}),
