@@ -42,6 +42,9 @@ class EggsConfig:
     reschedule_pending_value: str = "Chờ duyệt"
     reschedule_interrupt_value: str = "Chen ngang"
     blocked_internal_value: str = "Nội bộ"
+    blocked_by_values: list[str] = field(
+        default_factory=lambda: ["Nội bộ", "Khách hàng", "Bên thứ ba"]
+    )
     ops_epic_prefix: str = "[OPS]"
     ops_epic_summary: str = "[OPS] Vận hành & Hotfix {month:02d}/{year}"
     hotfix_prefix: str = "[HOTFIX]"
@@ -245,6 +248,9 @@ def load_config(path: str | None = None) -> EggsConfig:
         reschedule_pending_value=data.get("reschedule_pending_value", "Chờ duyệt"),
         reschedule_interrupt_value=data.get("reschedule_interrupt_value", "Chen ngang"),
         blocked_internal_value=data.get("blocked_internal_value", "Nội bộ"),
+        blocked_by_values=data.get(
+            "blocked_by_values", ["Nội bộ", "Khách hàng", "Bên thứ ba"]
+        ),
         ops_epic_prefix=data.get("ops_epic_prefix", "[OPS]"),
         ops_epic_summary=data.get(
             "ops_epic_summary", "[OPS] Vận hành & Hotfix {month:02d}/{year}"

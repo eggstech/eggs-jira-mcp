@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 
 from .calendar import WorkCalendar
 from .config import EggsConfig
+from .gateway import JiraError
 from .mapping import CLEAR, issue_fields_for_write, issue_from_json
 from .model import Issue
 
@@ -212,7 +213,7 @@ class Actions:
                     next_actions=[],
                 )
             sched_res = self.schedule(
-                key, start=start, end=end, estimate=estimate, dry_run=dry_run
+                key, start=start, end=end, estimate=estimate, dry_run=True
             )
             if not sched_res.ok:
                 return sched_res
@@ -229,6 +230,12 @@ class Actions:
                     changes=changes,
                     next_actions=["log_work", "submit_qc", "block"],
                 )
+
+            sched_write_res = self.schedule(
+                key, start=start, end=end, estimate=estimate, dry_run=False
+            )
+            if not sched_write_res.ok:
+                return sched_write_res
 
             self.gateway.transition(key, matched)
             return ActionResult(
@@ -284,6 +291,24 @@ class Actions:
             return ActionResult(
                 ok=False,
                 message="time_spent không được để trống.",
+                changes=[],
+                next_actions=[],
+            )
+
+        try:
+            issue = self._get_issue(key)
+        except (JiraError, KeyError, ValueError) as e:
+            return ActionResult(
+                ok=False,
+                message=f"Issue {key} không tồn tại hoặc không thể truy cập: {e}",
+                changes=[],
+                next_actions=[],
+            )
+
+        if issue.is_resolved:
+            return ActionResult(
+                ok=False,
+                message=f"Issue {key} đã hoàn thành (resolved), không thể log work.",
                 changes=[],
                 next_actions=[],
             )
@@ -396,7 +421,7 @@ class Actions:
         self,
         key: str,
         reason: str,
-        blocked_by: Literal["Nội bộ", "Khách hàng", "Bên thứ ba"],
+        blocked_by: str,
         *,
         dry_run: bool = False,
     ) -> ActionResult:
@@ -407,11 +432,12 @@ class Actions:
                 changes=[],
                 next_actions=[],
             )
-        if not blocked_by or blocked_by not in ("Nội bộ", "Khách hàng", "Bên thứ ba"):
+        if not blocked_by or blocked_by not in self.cfg.blocked_by_values:
+            allowed_str = ", ".join(f"'{v}'" for v in self.cfg.blocked_by_values)
             return ActionResult(
                 ok=False,
                 message=(
-                    "blocked_by bắt buộc là 'Nội bộ', 'Khách hàng' hoặc 'Bên thứ ba'."
+                    f"blocked_by bắt buộc là một trong các giá trị: {allowed_str}."
                 ),
                 changes=[],
                 next_actions=[],
@@ -558,6 +584,20 @@ class Actions:
                 next_actions=[],
             )
 
+        if interrupted_by:
+            try:
+                self._get_issue(interrupted_by)
+            except (JiraError, KeyError, ValueError) as e:
+                return ActionResult(
+                    ok=False,
+                    message=(
+                        f"Issue chen ngang {interrupted_by} không tồn tại hoặc "
+                        f"không thể truy cập: {e}"
+                    ),
+                    changes=[],
+                    next_actions=[],
+                )
+
         matched, avail = self._find_transition(key, "request_reschedule")
         if not matched:
             return self._unavailable_result(key, "request_reschedule", avail)
@@ -577,6 +617,13 @@ class Actions:
                 next_actions=["decide_reschedule"],
             )
 
+        if interrupted_by:
+            self.gateway.link(
+                self.cfg.link_types["interrupts"],
+                inward_key=key,
+                outward_key=interrupted_by,
+            )
+
         payload = issue_fields_for_write(
             self.cfg,
             proposed_end=actual_end,
@@ -587,13 +634,6 @@ class Actions:
         self.gateway.transition(
             key, matched, fields=payload, comment=note if note else None
         )
-
-        if interrupted_by:
-            self.gateway.link(
-                self.cfg.link_types["interrupts"],
-                inward_key=key,
-                outward_key=interrupted_by,
-            )
 
         return ActionResult(
             ok=True,
@@ -708,22 +748,54 @@ class Actions:
                 next_actions=[],
             )
 
+        write_results: list[tuple[str, bool, str]] = []
+        write_changes: list[str] = []
+        any_failed = False
         for e in entries:
-            if e.move_to == "ready_for_qc":
-                self.submit_qc(
-                    e.key, time_spent=e.time_spent, note=e.note, dry_run=False
-                )
-            elif e.move_to == "done":
-                self.finish(e.key, time_spent=e.time_spent, note=e.note, dry_run=False)
-            else:
-                self.log_work(
-                    e.key, time_spent=e.time_spent, note=e.note, dry_run=False
-                )
+            try:
+                if e.move_to == "ready_for_qc":
+                    sub_res = self.submit_qc(
+                        e.key, time_spent=e.time_spent, note=e.note, dry_run=False
+                    )
+                elif e.move_to == "done":
+                    sub_res = self.finish(
+                        e.key, time_spent=e.time_spent, note=e.note, dry_run=False
+                    )
+                else:
+                    sub_res = self.log_work(
+                        e.key, time_spent=e.time_spent, note=e.note, dry_run=False
+                    )
+                write_results.append((e.key, sub_res.ok, sub_res.message))
+                if sub_res.ok:
+                    write_changes.extend(sub_res.changes)
+                else:
+                    any_failed = True
+            except (JiraError, KeyError, ValueError) as exc:
+                any_failed = True
+                write_results.append((e.key, False, str(exc)))
 
+        per_key_lines = [
+            f"- {k}: {'Thành công' if ok else 'Thất bại'} - {msg}"
+            for k, ok, msg in write_results
+        ]
+        if any_failed:
+            err_msg = (
+                "Một số công việc ghi nhận thất bại:\n" + "\n".join(per_key_lines)
+            )
+            return ActionResult(
+                ok=False,
+                message=err_msg,
+                changes=write_changes,
+                next_actions=[],
+            )
+
+        ok_msg = (
+            "Đã ghi nhận công việc cuối ngày thành công:\n" + "\n".join(per_key_lines)
+        )
         return ActionResult(
             ok=True,
-            message="Đã ghi nhận công việc cuối ngày thành công.",
-            changes=changes,
+            message=ok_msg,
+            changes=write_changes if write_changes else changes,
             next_actions=[],
         )
 
@@ -1467,7 +1539,21 @@ class Actions:
 
         matched, avail = self._find_transition(new_key, "start_triage")
         if not matched:
-            return self._unavailable_result(new_key, "start_triage", avail)
+            avail_str = ", ".join(avail) if avail else "(không có)"
+            warn_msg = (
+                f"Đã tạo phản ánh {new_key}, nhưng transition 'Start Triage' "
+                f"không khả dụng (các transition: {avail_str}). "
+                "Phản ánh vẫn đang ở trạng thái Open và được theo dõi."
+            )
+            return ActionResult(
+                ok=True,
+                message=warn_msg,
+                changes=[
+                    f"Tạo User Report trong Epic {ops_epic.key}",
+                    f"Gán Assignee = {triage_owner}",
+                ],
+                next_actions=["triage_close"],
+            )
 
         self.gateway.transition(new_key, matched)
 
@@ -1498,6 +1584,24 @@ class Actions:
         *,
         dry_run: bool = False,
     ) -> ActionResult:
+        if not note or not note.strip():
+            return ActionResult(
+                ok=False,
+                message="Ghi chú (note) bắt buộc và không được để trống.",
+                changes=[],
+                next_actions=[],
+            )
+        if not time_spent or not time_spent.strip():
+            return ActionResult(
+                ok=False,
+                message=(
+                    "Thời gian làm việc (time_spent) bắt buộc và "
+                    "không được để trống."
+                ),
+                changes=[],
+                next_actions=[],
+            )
+
         report = self._get_issue(key)
         if report.type != "report":
             return ActionResult(
@@ -1536,7 +1640,18 @@ class Actions:
 
         if verdict == "bug":
             if bug_story_key:
-                bug_story = self._get_issue(bug_story_key)
+                try:
+                    bug_story = self._get_issue(bug_story_key)
+                except (JiraError, KeyError, ValueError) as e:
+                    return ActionResult(
+                        ok=False,
+                        message=(
+                            f"Issue {bug_story_key} không tồn tại hoặc "
+                            f"không thể truy cập: {e}"
+                        ),
+                        changes=[],
+                        next_actions=[],
+                    )
                 if bug_story.type != "story":
                     return ActionResult(
                         ok=False,
@@ -1588,7 +1703,18 @@ class Actions:
                     changes=[],
                     next_actions=[],
                 )
-            target_iss = self._get_issue(link_key)
+            try:
+                target_iss = self._get_issue(link_key)
+            except (JiraError, KeyError, ValueError) as e:
+                return ActionResult(
+                    ok=False,
+                    message=(
+                        f"Issue {link_key} không tồn tại hoặc "
+                        f"không thể truy cập: {e}"
+                    ),
+                    changes=[],
+                    next_actions=[],
+                )
             if verdict == "feature" and target_iss.type != "story":
                 return ActionResult(
                     ok=False,
