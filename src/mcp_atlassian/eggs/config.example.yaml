@@ -4,6 +4,9 @@
 lead_user: cuong.huynh
 lead_chat_webhook: null
 kit_min_version: 0.1.0
+timezone: Asia/Ho_Chi_Minh
+frozen_label: legacy-frozen
+flagged_impediment_value: Impediment
 
 # Working calendar & thresholds
 thresholds:
@@ -27,6 +30,8 @@ holidays:
 fields:
   planned_start: customfield_10108
   planned_end: customfield_10109
+  epic_link: null  # set via `eggs-guardian resolve-fields`
+  flagged: null  # set via `eggs-guardian resolve-fields`
   qc_owner: null
   contributors: null
   reschedule_requester: null

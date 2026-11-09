@@ -5,8 +5,10 @@ import pytest
 
 from mcp_atlassian.eggs.config import EggsConfig, ProjectConfig
 from mcp_atlassian.eggs.mapping import (
+    CLEAR,
     issue_fields_for_write,
     issue_from_json,
+    parse_jira_dt,
     status_changed_at,
 )
 from mcp_atlassian.eggs.model import Issue, Worklog
@@ -15,6 +17,7 @@ from mcp_atlassian.eggs.model import Issue, Worklog
 @pytest.fixture
 def base_config():
     return EggsConfig(
+        lead_user="cuong.huynh",
         fields={
             "planned_start": "customfield_10108",
             "planned_end": "customfield_10109",
@@ -199,3 +202,154 @@ def test_issue_fields_for_write(base_config):
     assert payload["customfield_escalation_level"] == 2
     assert payload["customfield_10109"] == "2026-11-22"
     assert payload["customfield_contributors"] == [{"name": "user1"}, {"name": "user2"}]
+
+    # Select field shape (reschedule_status -> {"value": ...})
+    payload_select = issue_fields_for_write(base_config, reschedule_status="Chờ duyệt")
+    assert payload_select["customfield_reschedule_status"] == {"value": "Chờ duyệt"}
+
+
+def test_blocked_derives_only_from_source_signals(base_config):
+    # health_flags={"BLOCKED"}, no flag, no blocked_by -> blocked is False
+    raw_health_blocked = {
+        "id": "1001",
+        "key": "P-1",
+        "fields": {
+            "summary": "Health blocked issue",
+            "project": {"key": "HMKLOYAL"},
+            "issuetype": {"name": "Dev Task", "subtask": True},
+            "status": {"name": "Dev In Progress"},
+            "created": "2026-11-01T08:00:00.000+0700",
+            "customfield_health_flags": [{"value": "BLOCKED"}],
+        }
+    }
+    issue1 = issue_from_json(raw_health_blocked, base_config)
+    assert issue1.health_flags == frozenset({"BLOCKED"})
+    assert issue1.blocked is False
+
+    # Flagged Impediment -> blocked is True
+    raw_flagged = {
+        "id": "1002",
+        "key": "P-2",
+        "fields": {
+            "summary": "Flagged issue",
+            "project": {"key": "HMKLOYAL"},
+            "issuetype": {"name": "Dev Task", "subtask": True},
+            "status": {"name": "Dev In Progress"},
+            "created": "2026-11-01T08:00:00.000+0700",
+            "flagged": [{"value": "Impediment"}],
+        }
+    }
+    issue2 = issue_from_json(raw_flagged, base_config)
+    assert issue2.blocked is True
+
+    # blocked_by set -> blocked is True
+    raw_blocked_by = {
+        "id": "1003",
+        "key": "P-3",
+        "fields": {
+            "summary": "Blocked by issue",
+            "project": {"key": "HMKLOYAL"},
+            "issuetype": {"name": "Dev Task", "subtask": True},
+            "status": {"name": "Dev In Progress"},
+            "created": "2026-11-01T08:00:00.000+0700",
+            "customfield_blocked_by": {"value": "Nội bộ"},
+        }
+    }
+    issue3 = issue_from_json(raw_blocked_by, base_config)
+    assert issue3.blocked is True
+
+
+def test_parse_jira_dt(base_config):
+    # +HHMM format
+    dt1 = parse_jira_dt("2026-11-16T09:00:00.000+0700", base_config)
+    assert dt1 is not None
+    assert str(dt1.tzinfo) == "Asia/Ho_Chi_Minh"
+    assert (dt1.year, dt1.month, dt1.day, dt1.hour, dt1.minute) == (2026, 11, 16, 9, 0)
+
+    # +07:00 format
+    dt2 = parse_jira_dt("2026-11-16T09:00:00.000+07:00", base_config)
+    assert dt2 is not None
+    assert str(dt2.tzinfo) == "Asia/Ho_Chi_Minh"
+    assert (dt2.year, dt2.month, dt2.day, dt2.hour, dt2.minute) == (2026, 11, 16, 9, 0)
+
+    # Z format (02:00 UTC == 09:00 Asia/Ho_Chi_Minh)
+    dt3 = parse_jira_dt("2026-11-16T02:00:00.000Z", base_config)
+    assert dt3 is not None
+    assert str(dt3.tzinfo) == "Asia/Ho_Chi_Minh"
+    assert (dt3.year, dt3.month, dt3.day, dt3.hour, dt3.minute) == (2026, 11, 16, 9, 0)
+
+    # Missing / empty forms -> None
+    assert parse_jira_dt(None, base_config) is None
+    assert parse_jira_dt("", base_config) is None
+    assert parse_jira_dt("   ", base_config) is None
+
+    # Issue with missing created -> created is None, not datetime.min
+    raw_no_created = {
+        "id": "1004",
+        "key": "P-4",
+        "fields": {
+            "summary": "No created issue",
+            "project": {"key": "HMKLOYAL"},
+            "issuetype": {"name": "Dev Task", "subtask": True},
+            "status": {"name": "Dev In Progress"},
+        }
+    }
+    issue = issue_from_json(raw_no_created, base_config)
+    assert issue.created is None
+
+
+def test_issue_fields_for_write_clear_and_validation(base_config):
+    # 1. CLEAR writes JSON null (None in dict)
+    payload = issue_fields_for_write(base_config, escalation_owner=CLEAR)
+    assert payload["customfield_escalation_owner"] is None
+
+    # 2. None means skip
+    payload_skip = issue_fields_for_write(base_config, escalation_owner=None)
+    assert "customfield_escalation_owner" not in payload_skip
+
+    # 3. Missing in cfg.fields raises ValueError naming the logical field
+    with pytest.raises(ValueError, match="unknown_field"):
+        issue_fields_for_write(base_config, unknown_field="foo")
+
+    # 4. Field with None id in cfg.fields raises ValueError naming the logical field
+    cfg_with_null = EggsConfig(
+        lead_user="someone",
+        fields={"unconfigured_cf": None},
+        statuses={},
+        issue_types={},
+        projects={},
+    )
+    with pytest.raises(ValueError, match="unconfigured_cf"):
+        issue_fields_for_write(cfg_with_null, unconfigured_cf="bar")
+
+    with pytest.raises(ValueError, match="unconfigured_cf"):
+        issue_fields_for_write(cfg_with_null, unconfigured_cf=CLEAR)
+
+
+def test_frozen_label_and_impediment_value_from_config():
+    custom_cfg = EggsConfig(
+        lead_user="someone",
+        frozen_label="custom-frozen",
+        flagged_impediment_value="Blocker",
+        fields={"flagged": "customfield_flagged"},
+        statuses={},
+        issue_types={},
+        projects={"P": ProjectConfig(key="P", default_lead_ba="ba", frozen=False)},
+    )
+    raw_issue = {
+        "id": "1",
+        "key": "P-1",
+        "fields": {
+            "summary": "Custom issue",
+            "project": {"key": "P"},
+            "labels": ["custom-frozen"],
+            "customfield_flagged": [{"value": "Blocker"}],
+        }
+    }
+    issue = issue_from_json(raw_issue, custom_cfg)
+    assert issue.frozen is True
+    assert issue.blocked is True
+
+
+
+

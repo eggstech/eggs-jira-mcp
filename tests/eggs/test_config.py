@@ -77,7 +77,10 @@ projects:
     assert cfg.status_logical("QC TO DO") == "ready_for_qc"
     assert cfg.type_logical("Bug", is_subtask=True) == "flow_bug"
     assert cfg.type_logical("Bug", is_subtask=False) == "bug"
+    assert cfg.type_logical("Bug stand-alone", is_subtask=False) == "bug"
+    assert cfg.type_logical("Sub-task", is_subtask=True) == "tech_subtask"
     assert cfg.type_logical("Dev Task", is_subtask=True) == "flow"
+    assert cfg.type_logical("Dev Task", is_subtask=False) is None
     assert cfg.type_logical("Ad-hoc Task", is_subtask=False) == "tech_task"
     assert cfg.projects["HMKLOYAL"].chat_webhook == "https://chat.example/x/hmkloyal"
     assert cfg.projects["BUL"].frozen is True
@@ -96,3 +99,68 @@ def test_load_example_config():
         assert cfg.projects[active_key].frozen is False, f"{active_key} should not be frozen"
     assert cfg.fields["planned_start"] == "customfield_10108"
     assert cfg.fields["planned_end"] == "customfield_10109"
+    assert cfg.timezone == "Asia/Ho_Chi_Minh"
+    assert cfg.frozen_label == "legacy-frozen"
+    assert cfg.flagged_impediment_value == "Impediment"
+    assert "epic_link" in cfg.fields
+    assert "flagged" in cfg.fields
+
+
+def test_load_config_unresolved_env_var_raises(tmp_path):
+    yaml_content = """
+lead_user: cuong.huynh
+lead_chat_webhook: ${UNSET_HOOK_VAR}
+projects:
+  PROJ:
+    default_lead_ba: cuong.huynh
+"""
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(yaml_content)
+
+    with pytest.raises(ValueError, match="UNSET_HOOK_VAR"):
+        load_config(str(cfg_file))
+
+
+def test_load_config_from_eggs_config_env(tmp_path, monkeypatch):
+    yaml_content = """
+lead_user: cuong.huynh
+projects:
+  PROJ:
+    default_lead_ba: cuong.huynh
+"""
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(yaml_content)
+
+    monkeypatch.setenv("EGGS_CONFIG", str(cfg_file))
+    cfg = load_config(None)
+    assert cfg.lead_user == "cuong.huynh"
+    assert "PROJ" in cfg.projects
+
+
+def test_load_config_requires_lead_user(tmp_path):
+    yaml_content = """
+projects:
+  PROJ:
+    default_lead_ba: cuong.huynh
+"""
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(yaml_content)
+
+    with pytest.raises(ValueError, match="lead_user"):
+        load_config(str(cfg_file))
+
+
+def test_load_config_requires_project_default_lead_ba(tmp_path):
+    yaml_content = """
+lead_user: cuong.huynh
+projects:
+  PROJ:
+    key: PROJ
+"""
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(yaml_content)
+
+    with pytest.raises(ValueError, match="default_lead_ba"):
+        load_config(str(cfg_file))
+
+

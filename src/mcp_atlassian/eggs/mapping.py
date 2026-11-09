@@ -1,13 +1,52 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+import re
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from .config import EggsConfig
 from .model import Issue
 
 
-def status_changed_at(raw_changelog: dict | None) -> datetime | None:
+def parse_jira_dt(value: Any, cfg: EggsConfig | None = None) -> datetime | None:
+    """Parse a Jira datetime string or object into an aware datetime in cfg.timezone."""
+    if value is None:
+        return None
+
+    tz_name = cfg.timezone if (cfg is not None and hasattr(cfg, "timezone")) else "Asia/Ho_Chi_Minh"
+    target_tz = ZoneInfo(tz_name)
+
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=target_tz)
+        return value.astimezone(target_tz)
+
+    if not isinstance(value, str):
+        return None
+
+    val = value.strip()
+    if not val:
+        return None
+
+    # Normalize trailing 'Z' or 'z' -> '+00:00'
+    if val.endswith(("Z", "z")):
+        val = val[:-1] + "+00:00"
+    else:
+        # Normalize +HHMM or -HHMM (no colon) to +HH:MM or -HH:MM
+        val = re.sub(r"([+-]\d{2})(\d{2})$", r"\1:\2", val)
+
+    try:
+        dt = datetime.fromisoformat(val)
+    except (ValueError, TypeError):
+        return None
+
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=target_tz)
+    return dt.astimezone(target_tz)
+
+
+def status_changed_at(raw_changelog: dict | None, cfg: EggsConfig | None = None) -> datetime | None:
     """Extract the timestamp of the latest status change from issue changelog."""
     if not raw_changelog or not isinstance(raw_changelog, dict):
         return None
@@ -21,11 +60,9 @@ def status_changed_at(raw_changelog: dict | None) -> datetime | None:
         items = history.get("items", [])
         has_status_change = any(item.get("field") == "status" for item in items)
         if has_status_change and history.get("created"):
-            try:
-                dt = datetime.fromisoformat(history["created"])
+            dt = parse_jira_dt(history["created"], cfg)
+            if dt:
                 status_changes.append(dt)
-            except (ValueError, TypeError):
-                continue
 
     if not status_changes:
         return None
@@ -100,14 +137,14 @@ def issue_from_json(raw: dict, cfg: EggsConfig) -> Issue:
     assignee = _parse_user(fields.get("assignee"))
 
     created_raw = fields.get("created")
-    created = datetime.fromisoformat(created_raw) if created_raw else datetime.min
+    created = parse_jira_dt(created_raw, cfg)
 
     due_date = _parse_date(fields.get("duedate"))
     estimate_seconds = fields.get("timeoriginalestimate") or fields.get("aggregatetimeoriginalestimate")
 
     labels = fields.get("labels") or []
     is_project_frozen = bool(cfg.projects.get(project).frozen) if project in cfg.projects else False
-    frozen = ("legacy-frozen" in labels) or is_project_frozen
+    frozen = (cfg.frozen_label in labels) or is_project_frozen
 
     parent_data = fields.get("parent") or {}
     parent_key = parent_data.get("key")
@@ -147,12 +184,14 @@ def issue_from_json(raw: dict, cfg: EggsConfig) -> Issue:
 
     # Blocked status
     flagged_raw = fields.get("flagged") or get_cf("flagged")
+    impediment_target = cfg.flagged_impediment_value.lower()
     is_flagged = bool(flagged_raw and any(
-        (_parse_option(f) or "").lower() == "impediment" for f in (flagged_raw if isinstance(flagged_raw, list) else [flagged_raw])
+        (_parse_option(f) or "").lower() == impediment_target
+        for f in (flagged_raw if isinstance(flagged_raw, list) else [flagged_raw])
     ))
-    blocked = is_flagged or (blocked_by is not None) or ("BLOCKED" in health_flags)
+    blocked = is_flagged or (blocked_by is not None)
 
-    status_chg = status_changed_at(raw.get("changelog"))
+    status_chg = status_changed_at(raw.get("changelog"), cfg)
 
     return Issue(
         key=key,
@@ -205,6 +244,9 @@ _SELECT_FIELDS = frozenset({
 })
 
 
+CLEAR = object()
+
+
 def issue_fields_for_write(cfg: EggsConfig, **logical_values: Any) -> dict[str, Any]:
     """Convert logical field names and values to Jira REST API write payload."""
     payload: dict[str, Any] = {}
@@ -216,14 +258,19 @@ def issue_fields_for_write(cfg: EggsConfig, **logical_values: Any) -> dict[str, 
         # Determine target Jira field ID
         field_id = cfg.fields.get(logical_name)
         if field_id is None:
-            # Handle standard fields fallback
-            if logical_name == "due_date":
+            # Handle standard fields fallback if not explicitly in cfg.fields
+            if logical_name == "due_date" and "due_date" not in cfg.fields:
                 field_id = "duedate"
-            elif logical_name in ("summary", "description", "assignee"):
+            elif logical_name in ("summary", "description", "assignee") and logical_name not in cfg.fields:
                 field_id = logical_name
             else:
-                # If custom field has no configured field ID, cannot write
-                continue
+                raise ValueError(
+                    f"Logical field '{logical_name}' has no configured field ID in cfg.fields"
+                )
+
+        if value is CLEAR:
+            payload[field_id] = None
+            continue
 
         # Format value according to field type
         if logical_name in _DATE_FIELDS:

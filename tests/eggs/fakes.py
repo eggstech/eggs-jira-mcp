@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 
@@ -8,7 +9,12 @@ from mcp_atlassian.eggs.model import Worklog
 
 
 class FakeGateway(JiraGateway):
-    """In-memory fake gateway for offline testing."""
+    """In-memory fake gateway for offline testing.
+
+    `search` ignores JQL unless a `search_filter: Callable[[str, dict], bool]`
+    is passed to the constructor.
+    `worklogs_since` filters on `started >= since`.
+    """
 
     def __init__(
         self,
@@ -17,12 +23,16 @@ class FakeGateway(JiraGateway):
         transitions: dict[str, list[str]] | None = None,
         components_map: dict[str, list[str]] | None = None,
         user: str = "cuong.huynh",
+        status_after: dict[str, str] | None = None,
+        search_filter: Callable[[str, dict], bool] | None = None,
     ) -> None:
         self.issues = dict(issues or {})
         self.worklogs = list(worklogs or [])
         self.transitions = dict(transitions or {})
         self.components_map = dict(components_map or {})
         self.user = user
+        self.status_after = dict(status_after or {})
+        self.search_filter = search_filter
         self.calls: list[tuple[str, tuple, dict[str, Any]]] = []
         self._next_id = 1000
 
@@ -32,8 +42,14 @@ class FakeGateway(JiraGateway):
     def search(
         self, jql: str, fields: list[str], expand_changelog: bool = False
     ) -> list[dict]:
+        """Search in-memory issues.
+
+        Note:
+            Ignores JQL unless a `search_filter: Callable[[str, dict], bool]` is passed to __init__.
+        """
         self._record("search", jql, fields, expand_changelog=expand_changelog)
-        # Return all in-memory issues as a list of dicts
+        if self.search_filter is not None:
+            return [iss for iss in self.issues.values() if self.search_filter(jql, iss)]
         return list(self.issues.values())
 
     def get_issue(self, key: str) -> dict:
@@ -63,6 +79,11 @@ class FakeGateway(JiraGateway):
         issue = self.issues.get(key)
         if issue:
             issue_fields = issue.setdefault("fields", {})
+            for t_name, new_status in self.status_after.items():
+                if t_name.lower() == transition_name.lower():
+                    status_dict = issue_fields.setdefault("status", {})
+                    status_dict["name"] = new_status
+                    break
             if fields:
                 issue_fields.update(fields)
             if comment:
@@ -130,6 +151,11 @@ class FakeGateway(JiraGateway):
         self._record("link", link_type, inward_key, outward_key)
 
     def worklogs_since(self, since: datetime) -> list[Worklog]:
+        """Fetch worklogs updated since given datetime.
+
+        Note:
+            Filters in-memory worklogs on `w.started >= since`.
+        """
         self._record("worklogs_since", since)
         return [
             w for w in self.worklogs

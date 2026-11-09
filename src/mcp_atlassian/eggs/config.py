@@ -29,6 +29,10 @@ class ProjectConfig:
 
 @dataclass(frozen=True)
 class EggsConfig:
+    lead_user: str
+    timezone: str = "Asia/Ho_Chi_Minh"
+    frozen_label: str = "legacy-frozen"
+    flagged_impediment_value: str = "Impediment"
     fields: dict[str, str] = field(default_factory=dict)
     statuses: dict[str, str] = field(default_factory=dict)
     issue_types: dict[str, list[str]] = field(default_factory=dict)
@@ -36,7 +40,6 @@ class EggsConfig:
     thresholds: Thresholds = field(default_factory=Thresholds)
     holidays: frozenset[date] = field(default_factory=frozenset)
     projects: dict[str, ProjectConfig] = field(default_factory=dict)
-    lead_user: str = "cuong.huynh"
     lead_chat_webhook: str | None = None
     kit_min_version: str = "0.1.0"
 
@@ -52,19 +55,13 @@ class EggsConfig:
         """Map Jira issue type name and is_subtask to logical issue type."""
         cleaned = jira_name.strip().lower()
 
-        # Prioritize based on is_subtask
-        subtask_types = ("flow_bug", "flow", "tech_subtask")
-        standard_types = ("epic", "story", "tech_task", "bug")
-
-        priority_order = subtask_types if is_subtask else standard_types
-        for logical in priority_order:
-            names = self.issue_types.get(logical, [])
-            if any(name.strip().lower() == cleaned for name in names):
-                return logical
-
-        # Fallback to check other types if not resolved
-        secondary_order = standard_types if is_subtask else subtask_types
-        for logical in secondary_order:
+        # Candidate types strictly match is_subtask
+        candidate_types = (
+            ("flow_bug", "flow", "tech_subtask")
+            if is_subtask
+            else ("epic", "story", "tech_task", "bug")
+        )
+        for logical in candidate_types:
             names = self.issue_types.get(logical, [])
             if any(name.strip().lower() == cleaned for name in names):
                 return logical
@@ -78,7 +75,10 @@ def _expand_env_vars(data: Any) -> Any:
         # Expand ${VAR} or $VAR using os.environ
         def replace_var(m: re.Match) -> str:
             var_name = m.group(1) or m.group(2)
-            return os.getenv(var_name, m.group(0))
+            val = os.getenv(var_name)
+            if val is None:
+                raise ValueError(f"Unresolved environment variable: {var_name}")
+            return val
 
         pattern = re.compile(r"\$\{([^}]+)\}|\$([a-zA-Z_][a-zA-Z0-9_]*)")
         return pattern.sub(replace_var, data)
@@ -129,14 +129,23 @@ def load_config(path: str | None = None) -> EggsConfig:
     projects: dict[str, ProjectConfig] = {}
     for key, pdata in projects_data.items():
         if isinstance(pdata, dict):
+            if "default_lead_ba" not in pdata or not pdata["default_lead_ba"]:
+                raise ValueError(f"Missing required 'default_lead_ba' for project '{key}'")
             projects[key] = ProjectConfig(
                 key=pdata.get("key", key),
-                default_lead_ba=pdata.get("default_lead_ba", "cuong.huynh"),
+                default_lead_ba=pdata["default_lead_ba"],
                 chat_webhook=pdata.get("chat_webhook"),
                 frozen=bool(pdata.get("frozen", False)),
             )
 
+    if "lead_user" not in data or not data["lead_user"]:
+        raise ValueError("Missing required configuration key: 'lead_user'")
+
     return EggsConfig(
+        lead_user=data["lead_user"],
+        timezone=data.get("timezone", "Asia/Ho_Chi_Minh"),
+        frozen_label=data.get("frozen_label", "legacy-frozen"),
+        flagged_impediment_value=data.get("flagged_impediment_value", "Impediment"),
         fields=data.get("fields", {}),
         statuses=data.get("statuses", {}),
         issue_types=data.get("issue_types", {}),
@@ -144,7 +153,6 @@ def load_config(path: str | None = None) -> EggsConfig:
         thresholds=thresholds,
         holidays=frozenset(holidays_set),
         projects=projects,
-        lead_user=data.get("lead_user", "cuong.huynh"),
         lead_chat_webhook=data.get("lead_chat_webhook"),
         kit_min_version=data.get("kit_min_version", "0.1.0"),
     )

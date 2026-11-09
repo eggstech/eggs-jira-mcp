@@ -143,3 +143,121 @@ def test_search_handles_pagination(mock_client):
     assert len(results) == 3
     assert [r["key"] for r in results] == ["P-1", "P-2", "P-3"]
     assert mock_client.jql.call_count == 2
+    assert mock_client.jql.call_args_list[0].kwargs["start"] == 0
+    assert mock_client.jql.call_args_list[1].kwargs["start"] == 2
+
+
+def test_search_expand_changelog_passes_changelog(mock_client):
+    gateway = AtlassianGateway(mock_client)
+    mock_client.jql.return_value = {
+        "startAt": 0,
+        "maxResults": 50,
+        "total": 1,
+        "issues": [{"key": "P-1"}],
+    }
+
+    gateway.search("project = PROJ", fields=["key"], expand_changelog=True)
+    mock_client.jql.assert_called_once_with(
+        "project = PROJ",
+        start=0,
+        limit=50,
+        fields=["key"],
+        expand="changelog",
+    )
+
+
+def test_worklogs_since_requires_aware_datetime(mock_client):
+    gateway = AtlassianGateway(mock_client)
+    naive_dt = datetime(2026, 11, 10, 8, 0)
+    with pytest.raises(ValueError, match="aware"):
+        gateway.worklogs_since(naive_dt)
+
+
+def test_add_worklog_requires_aware_datetime(mock_client):
+    gateway = AtlassianGateway(mock_client)
+    naive_dt = datetime(2026, 11, 10, 8, 0)
+    with pytest.raises(ValueError, match="aware"):
+        gateway.add_worklog("PROJ-1", "1h", "did work", started=naive_dt)
+
+
+def test_worklogs_since_pagination_and_chunking(mock_client):
+    gateway = AtlassianGateway(mock_client)
+
+    # First page: lastPage=False, 1000 ids (1..1000)
+    page1_values = [{"worklogId": i} for i in range(1, 1001)]
+    # Second page: lastPage=True, 500 ids (1001..1500)
+    page2_values = [{"worklogId": i} for i in range(1001, 1501)]
+
+    mock_client.get.side_effect = [
+        {"values": page1_values, "lastPage": False, "nextPage": "rest/api/2/worklog/updated?since=1700000010000"},
+        {"values": page2_values, "lastPage": True},
+    ]
+
+    # Two list calls: chunk 1 (1000 items), chunk 2 (500 items)
+    chunk1_worklogs = [
+        {
+            "id": str(i),
+            "issueKey": "PROJ-1",
+            "author": {"name": "alice"},
+            "started": "2026-11-10T08:00:00.000+0700",
+            "timeSpentSeconds": 3600,
+        }
+        for i in range(1, 1001)
+    ]
+    chunk2_worklogs = [
+        {
+            "id": str(i),
+            "issueKey": "PROJ-2",
+            "author": {"name": "bob"},
+            "started": "2026-11-10T09:00:00.000+0700",
+            "timeSpentSeconds": 1800,
+        }
+        for i in range(1001, 1501)
+    ]
+
+    mock_client.post.side_effect = [
+        chunk1_worklogs,
+        chunk2_worklogs,
+    ]
+
+    since = datetime(2026, 11, 9, 0, 0, tzinfo=timezone.utc)
+    results = gateway.worklogs_since(since)
+
+    # Assert 2 get calls (pagination)
+    assert mock_client.get.call_count == 2
+    # Assert 2 post calls (chunking 1500 ids into 1000 + 500)
+    assert mock_client.post.call_count == 2
+    assert len(mock_client.post.call_args_list[0].kwargs["data"]["ids"]) == 1000
+    assert len(mock_client.post.call_args_list[1].kwargs["data"]["ids"]) == 500
+    # Both pages' worklogs returned
+    assert len(results) == 1500
+
+
+def test_worklogs_since_skips_unresolvable_issue_id(mock_client, caplog):
+    import logging
+    gateway = AtlassianGateway(mock_client)
+    mock_client.get.return_value = {
+        "values": [{"worklogId": 999}],
+        "lastPage": True,
+    }
+    mock_client.post.return_value = [
+        {
+            "id": "999",
+            "issueId": "99999",
+            "author": {"name": "dev"},
+            "started": "2026-11-10T08:00:00.000+0700",
+            "timeSpentSeconds": 3600,
+        }
+    ]
+    # JQL search fails to find issueId 99999
+    mock_client.jql.return_value = {"issues": [], "total": 0}
+
+    since = datetime(2026, 11, 9, 0, 0, tzinfo=timezone.utc)
+    with caplog.at_level(logging.WARNING):
+        results = gateway.worklogs_since(since)
+
+    # Worklog must be skipped and never use numeric ID as key
+    assert len(results) == 0
+    assert any("could not be resolved" in record.message for record in caplog.records)
+
+

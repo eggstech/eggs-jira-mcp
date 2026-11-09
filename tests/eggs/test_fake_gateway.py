@@ -55,3 +55,29 @@ def test_worklogs_since():
     logs = fake.worklogs_since(datetime(2026, 11, 11, 0, 0, tzinfo=timezone.utc))
     assert len(logs) == 1
     assert logs[0].author == "bob"
+
+
+def test_fake_gateway_transition_status_mutation():
+    fake = FakeGateway(
+        issues={"PROJ-1": {"key": "PROJ-1", "fields": {"status": {"name": "DEV To Do"}}}},
+        transitions={"PROJ-1": ["Start"]},
+        status_after={"Start": "Dev In Progress"},
+    )
+    fake.transition("PROJ-1", "Start")
+    assert fake.issues["PROJ-1"]["fields"]["status"]["name"] == "Dev In Progress"
+
+
+def test_fake_gateway_search_filter():
+    issues = {
+        "P-1": {"key": "P-1", "fields": {"summary": "Issue 1"}},
+        "P-2": {"key": "P-2", "fields": {"summary": "Issue 2"}},
+        "P-3": {"key": "P-3", "fields": {"summary": "Issue 3"}},
+    }
+    fake = FakeGateway(
+        issues=issues,
+        search_filter=lambda jql, iss: iss["key"] == "P-2",
+    )
+    res = fake.search("dummy jql", fields=["key"])
+    assert len(res) == 1
+    assert res[0]["key"] == "P-2"
+

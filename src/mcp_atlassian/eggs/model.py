@@ -16,7 +16,7 @@ class Issue:
     qc_owner: str | None
     parent_key: str | None
     epic_key: str | None
-    created: datetime
+    created: datetime | None
     status_changed_at: datetime | None
     planned_start: date | None
     planned_end: date | None

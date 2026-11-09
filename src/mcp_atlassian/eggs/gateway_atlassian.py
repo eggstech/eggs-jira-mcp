@@ -1,17 +1,22 @@
 from __future__ import annotations
 
 from datetime import datetime
+import logging
 from typing import Any
 
 from .gateway import JiraError, JiraGateway
+from .mapping import parse_jira_dt
 from .model import Worklog
+
+logger = logging.getLogger(__name__)
 
 
 class AtlassianGateway(JiraGateway):
     """Adapter implementing JiraGateway on top of the upstream Jira client."""
 
-    def __init__(self, client: Any) -> None:
+    def __init__(self, client: Any, cfg: Any = None) -> None:
         self.client = client
+        self.cfg = cfg
 
     def search(
         self, jql: str, fields: list[str], expand_changelog: bool = False
@@ -108,6 +113,9 @@ class AtlassianGateway(JiraGateway):
         started: datetime | None = None,
     ) -> None:
         """Add a worklog to an issue."""
+        if started is not None:
+            if started.tzinfo is None or started.tzinfo.utcoffset(started) is None:
+                raise ValueError("started datetime must be timezone-aware")
         payload: dict[str, Any] = {
             "timeSpent": time_spent,
             "comment": comment,
@@ -134,15 +142,52 @@ class AtlassianGateway(JiraGateway):
 
     def worklogs_since(self, since: datetime) -> list[Worklog]:
         """Fetch worklogs updated since given datetime mapped to Worklog models."""
+        if since.tzinfo is None or since.tzinfo.utcoffset(since) is None:
+            raise ValueError("since datetime must be timezone-aware")
+
         since_ms = int(since.timestamp() * 1000)
-        updated_res = self.client.get(f"rest/api/2/worklog/updated?since={since_ms}")
-        values = updated_res.get("values", []) if isinstance(updated_res, dict) else []
-        ids = [v["worklogId"] for v in values if "worklogId" in v]
+        ids: list[int] = []
+        url: str | None = f"rest/api/2/worklog/updated?since={since_ms}"
+
+        while url:
+            updated_res = self.client.get(url)
+            if not isinstance(updated_res, dict):
+                break
+            values = updated_res.get("values", [])
+            for v in values:
+                if "worklogId" in v:
+                    ids.append(v["worklogId"])
+
+            if updated_res.get("lastPage", True):
+                break
+
+            # Follow nextPage or since of the response
+            next_page = updated_res.get("nextPage")
+            if next_page:
+                if "rest/api/2/worklog/updated" in next_page:
+                    idx = next_page.find("rest/api/2/worklog/updated")
+                    url = next_page[idx:]
+                else:
+                    url = next_page
+            elif "until" in updated_res or "since" in updated_res:
+                next_since = updated_res.get("until", updated_res.get("since"))
+                url = f"rest/api/2/worklog/updated?since={next_since}"
+            else:
+                break
+
         if not ids:
             return []
 
-        worklogs_data = self.client.post("rest/api/2/worklog/list", data={"ids": ids})
-        if not isinstance(worklogs_data, list):
+        # Call /worklog/list in chunks of <= 1000 ids
+        worklogs_data: list[dict] = []
+        chunk_size = 1000
+        for i in range(0, len(ids), chunk_size):
+            chunk = ids[i : i + chunk_size]
+            res = self.client.post("rest/api/2/worklog/list", data={"ids": chunk})
+            if isinstance(res, list):
+                worklogs_data.extend(res)
+
+        if not worklogs_data:
             return []
 
         # Find which worklogs need issue key resolution
@@ -165,12 +210,19 @@ class AtlassianGateway(JiraGateway):
 
         result: list[Worklog] = []
         for item in worklogs_data:
-            issue_key = (
+            resolved_key = (
                 item.get("issueKey")
                 or (item.get("issue") and item["issue"].get("key"))
                 or id_to_key_map.get(str(item.get("issueId")))
-                or str(item.get("issueId"))
             )
+            if not resolved_key:
+                logger.warning(
+                    "Skipping worklog %s: issueId %s could not be resolved to an issue key",
+                    item.get("id"),
+                    item.get("issueId"),
+                )
+                continue
+
             author_data = item.get("author") or {}
             author = (
                 author_data.get("name")
@@ -179,16 +231,20 @@ class AtlassianGateway(JiraGateway):
                 or "unknown"
             )
             started_str = item.get("started")
-            started_dt = (
-                datetime.fromisoformat(started_str)
-                if started_str
-                else datetime.min
-            )
+            started_dt = parse_jira_dt(started_str, self.cfg)
+            if started_dt is None:
+                logger.warning(
+                    "Skipping worklog %s: invalid or missing started timestamp %s",
+                    item.get("id"),
+                    started_str,
+                )
+                continue
+
             seconds = item.get("timeSpentSeconds") or 0
 
             result.append(
                 Worklog(
-                    issue_key=issue_key,
+                    issue_key=resolved_key,
                     author=author,
                     started=started_dt,
                     seconds=int(seconds),
