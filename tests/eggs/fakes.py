@@ -1,0 +1,145 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Any
+
+from mcp_atlassian.eggs.gateway import JiraError, JiraGateway
+from mcp_atlassian.eggs.model import Worklog
+
+
+class FakeGateway(JiraGateway):
+    """In-memory fake gateway for offline testing."""
+
+    def __init__(
+        self,
+        issues: dict[str, dict] | None = None,
+        worklogs: list[Worklog] | None = None,
+        transitions: dict[str, list[str]] | None = None,
+        components_map: dict[str, list[str]] | None = None,
+        user: str = "cuong.huynh",
+    ) -> None:
+        self.issues = dict(issues or {})
+        self.worklogs = list(worklogs or [])
+        self.transitions = dict(transitions or {})
+        self.components_map = dict(components_map or {})
+        self.user = user
+        self.calls: list[tuple[str, tuple, dict[str, Any]]] = []
+        self._next_id = 1000
+
+    def _record(self, name: str, *args: Any, **kwargs: Any) -> None:
+        self.calls.append((name, args, kwargs))
+
+    def search(
+        self, jql: str, fields: list[str], expand_changelog: bool = False
+    ) -> list[dict]:
+        self._record("search", jql, fields, expand_changelog=expand_changelog)
+        # Return all in-memory issues as a list of dicts
+        return list(self.issues.values())
+
+    def get_issue(self, key: str) -> dict:
+        self._record("get_issue", key)
+        if key not in self.issues:
+            raise JiraError(f"Issue {key} not found")
+        return self.issues[key]
+
+    def get_transitions(self, key: str) -> list[dict]:
+        self._record("get_transitions", key)
+        names = self.transitions.get(key, [])
+        return [{"id": str(i + 1), "name": name} for i, name in enumerate(names)]
+
+    def transition(
+        self,
+        key: str,
+        transition_name: str,
+        fields: dict | None = None,
+        comment: str | None = None,
+    ) -> None:
+        self._record("transition", key, transition_name, fields=fields, comment=comment)
+        available = self.transitions.get(key, [])
+        matched = next((name for name in available if name.lower() == transition_name.lower()), None)
+        if not matched:
+            raise JiraError(f"Transition '{transition_name}' not available for {key}")
+
+        issue = self.issues.get(key)
+        if issue:
+            issue_fields = issue.setdefault("fields", {})
+            if fields:
+                issue_fields.update(fields)
+            if comment:
+                comments = issue_fields.setdefault("comment", {}).setdefault("comments", [])
+                comments.append({"body": comment, "author": {"name": self.user}})
+
+    def update_fields(
+        self,
+        key: str,
+        fields: dict,
+        override_screen_security: bool = False,
+    ) -> None:
+        self._record("update_fields", key, fields, override_screen_security=override_screen_security)
+        if key in self.issues:
+            issue_fields = self.issues[key].setdefault("fields", {})
+            issue_fields.update(fields)
+
+    def add_comment(self, key: str, body: str) -> None:
+        self._record("add_comment", key, body)
+        if key in self.issues:
+            issue_fields = self.issues[key].setdefault("fields", {})
+            comments = issue_fields.setdefault("comment", {}).setdefault("comments", [])
+            comments.append({"body": body, "author": {"name": self.user}})
+
+    def add_worklog(
+        self,
+        key: str,
+        time_spent: str,
+        comment: str,
+        started: datetime | None = None,
+    ) -> None:
+        self._record("add_worklog", key, time_spent, comment, started=started)
+        # Parse approximate seconds from time_spent (e.g. 1h, 2d, 30m, 3600)
+        seconds = 3600
+        if time_spent.endswith("h"):
+            seconds = int(time_spent[:-1]) * 3600
+        elif time_spent.endswith("d"):
+            seconds = int(time_spent[:-1]) * 8 * 3600
+        elif time_spent.endswith("m"):
+            seconds = int(time_spent[:-1]) * 60
+        elif time_spent.isdigit():
+            seconds = int(time_spent)
+
+        log = Worklog(
+            issue_key=key,
+            author=self.user,
+            started=started or datetime.now(timezone.utc),
+            seconds=seconds,
+        )
+        self.worklogs.append(log)
+
+    def create_issue(self, fields: dict) -> str:
+        self._record("create_issue", fields)
+        project = fields.get("project", {}).get("key", "TEST")
+        self._next_id += 1
+        key = f"{project}-{self._next_id}"
+        self.issues[key] = {
+            "id": str(self._next_id),
+            "key": key,
+            "fields": dict(fields),
+        }
+        return key
+
+    def link(self, link_type: str, inward_key: str, outward_key: str) -> None:
+        self._record("link", link_type, inward_key, outward_key)
+
+    def worklogs_since(self, since: datetime) -> list[Worklog]:
+        self._record("worklogs_since", since)
+        return [
+            w for w in self.worklogs
+            if w.started >= since
+        ]
+
+    def components(self, project: str) -> list[str]:
+        self._record("components", project)
+        return list(self.components_map.get(project, []))
+
+    def current_user(self) -> str:
+        self._record("current_user")
+        return self.user
