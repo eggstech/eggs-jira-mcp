@@ -1,0 +1,92 @@
+{
+  "id": "10020",
+  "key": "HMKLOYAL-123",
+  "fields": {
+    "summary": "[CH-01] Dang nhap bang OTP",
+    "project": {
+      "id": "10001",
+      "key": "HMKLOYAL",
+      "name": "HMK Loyalty"
+    },
+    "issuetype": {
+      "id": "10200",
+      "name": "Dev Task",
+      "subtask": true
+    },
+    "status": {
+      "id": "10102",
+      "name": "QC TO DO",
+      "statusCategory": {
+        "id": 4,
+        "key": "indeterminate",
+        "name": "In Progress"
+      }
+    },
+    "assignee": {
+      "name": "nguyen.van.a",
+      "displayName": "Nguyen Van A"
+    },
+    "created": "2026-11-01T08:30:00.000+0700",
+    "duedate": "2026-11-25",
+    "timeoriginalestimate": 28800,
+    "labels": ["loyalty-v1"],
+    "parent": {
+      "id": "10010",
+      "key": "HMKLOYAL-100"
+    },
+    "customfield_10108": "2026-11-10",
+    "customfield_10109": "2026-11-20",
+    "customfield_baseline_end": "2026-11-20",
+    "customfield_contributors": [
+      {"name": "tran.thi.b"},
+      {"name": "le.van.c"}
+    ],
+    "customfield_qc_owner": {
+      "name": "qc.tester"
+    },
+    "customfield_health_flags": [
+      {"value": "OVERDUE"}
+    ],
+    "customfield_escalation_level": 1,
+    "customfield_escalation_owner": {
+      "name": "ba.lead"
+    },
+    "customfield_health_since": "2026-11-15",
+    "customfield_epic_link": "HMKLOYAL-50"
+  },
+  "changelog": {
+    "startAt": 0,
+    "maxResults": 2,
+    "total": 2,
+    "histories": [
+      {
+        "id": "10501",
+        "created": "2026-11-02T09:00:00.000+0700",
+        "items": [
+          {
+            "field": "assignee",
+            "fieldtype": "jira",
+            "from": null,
+            "fromString": null,
+            "to": "nguyen.van.a",
+            "toString": "Nguyen Van A"
+          }
+        ]
+      },
+      {
+        "id": "10502",
+        "created": "2026-11-05T14:15:00.000+0700",
+        "items": [
+          {
+            "field": "status",
+            "fieldtype": "jira",
+            "from": "3",
+            "fromString": "Dev In Progress",
+            "to": "10102",
+            "toString": "QC TO DO"
+          }
+        ]
+      }
+    ]
+  }
+}
