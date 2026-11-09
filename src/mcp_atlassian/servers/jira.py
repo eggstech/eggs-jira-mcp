@@ -4889,3 +4889,10 @@ async def get_cross_project_dependencies(
         max_issues=max_issues,
     )
     return json.dumps(result, indent=2, ensure_ascii=False)
+
+
+# Register EGGS toolset
+from mcp_atlassian.eggs.tools import register_eggs_tools  # noqa: E402
+
+register_eggs_tools(jira_mcp)
+

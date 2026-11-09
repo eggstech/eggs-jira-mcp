@@ -16,6 +16,18 @@
    - `UserTokenMiddleware` in `servers/main.py` parses `Authorization: Token <PAT>` or headers into `request.state`.
    - `get_jira_fetcher(ctx)` in `servers/dependencies.py` extracts credentials from `ctx.request_context.request.state`, instantiating a per-user `JiraConfig` and `JiraFetcher` (with `fetcher.jira` as the underlying `atlassian.Jira` client).
 
+4. **EGGS Toolset Registration Hook:**
+   - Location: `src/mcp_atlassian/servers/jira.py` lines 4894-4897.
+   - Code:
+     ```python
+     # Register EGGS toolset
+     from mcp_atlassian.eggs.tools import register_eggs_tools  # noqa: E402
+
+     register_eggs_tools(jira_mcp)
+     ```
+   - Dynamically registers toolset `"eggs"` in `ALL_TOOLSETS` and `JIRA_TOOLSETS`.
+   - Guarded to skip registration when `generate_tool_docs` or `tests/unit` are running to preserve upstream documentation checks and existing unit test suite assertions.
+
 ## Deviations from plan
 
 - **macOS Symlink in test_stdio_keeps_wide_cwd:**

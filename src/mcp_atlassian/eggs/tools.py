@@ -1,0 +1,1337 @@
+"""MCP tool registration and handlers for the eggs toolset."""
+
+from __future__ import annotations
+
+import dataclasses
+import json
+import logging
+import os
+import sys
+from datetime import datetime, timezone
+from functools import wraps
+from typing import Annotated, Any
+from zoneinfo import ZoneInfo
+
+from fastmcp import Context, FastMCP
+from fastmcp.exceptions import ToolError
+from pydantic import Field
+
+from mcp_atlassian import __version__
+from mcp_atlassian.eggs.actions import ActionResult, Actions, EndDayEntry
+from mcp_atlassian.eggs.agenda import (
+    AgendaItem,
+    Intent,
+    build_agenda,
+    intents_for,
+    mentioned_keys,
+)
+from mcp_atlassian.eggs.calendar import WorkCalendar
+from mcp_atlassian.eggs.config import EggsConfig, load_config
+from mcp_atlassian.eggs.gateway import JiraGateway
+from mcp_atlassian.eggs.gateway_atlassian import AtlassianGateway
+from mcp_atlassian.eggs.identity import Identity, IdentityCache, resolve_identity
+from mcp_atlassian.eggs.report import (
+    Snapshot,
+    build_snapshot,
+    render_pending_approvals,
+    render_report,
+    render_workstream,
+)
+from mcp_atlassian.jira import JiraConfig, JiraFetcher
+from mcp_atlassian.utils.decorators import handle_tool_errors
+from mcp_atlassian.utils.toolsets import (
+    ALL_TOOLSETS,
+    JIRA_TOOLSETS,
+    ToolsetDefinition,
+)
+
+logger = logging.getLogger(__name__)
+
+READ_EGGS_TOOL_NAMES = frozenset(
+    {
+        "eggs_version",
+        "eggs_rules",
+        "eggs_whoami",
+        "eggs_next",
+        "eggs_workstream_status",
+        "eggs_daily_report",
+        "eggs_pending_approvals",
+    }
+)
+
+WRITE_EGGS_TOOL_NAMES = frozenset(
+    {
+        "eggs_schedule",
+        "eggs_start",
+        "eggs_log_work",
+        "eggs_submit_qc",
+        "eggs_finish",
+        "eggs_qc_start",
+        "eggs_qc_pass",
+        "eggs_qc_fail",
+        "eggs_block",
+        "eggs_unblock",
+        "eggs_request_reschedule",
+        "eggs_flow_reschedule",
+        "eggs_uat",
+        "eggs_decide_reschedule",
+        "eggs_cancel",
+        "eggs_end_day",
+        "eggs_triage_open",
+        "eggs_triage_close",
+    }
+)
+
+ALL_EGGS_TOOL_NAMES = READ_EGGS_TOOL_NAMES | WRITE_EGGS_TOOL_NAMES
+
+EGGS_TOOLSET_NAME = "eggs"
+EGGS_TOOLSET_DEFINITION = ToolsetDefinition(
+    name=EGGS_TOOLSET_NAME,
+    description="Eggstech Jira workflow and guardian tools",
+    default=False,
+)
+
+_identity_cache = IdentityCache(ttl_seconds=600)
+_roles_reader: JiraGateway | None = None
+
+
+def clear_identity_cache() -> None:
+    _identity_cache.clear()
+
+
+def _ensure_toolset_registered() -> None:
+    if EGGS_TOOLSET_NAME not in ALL_TOOLSETS:
+        JIRA_TOOLSETS[EGGS_TOOLSET_NAME] = EGGS_TOOLSET_DEFINITION
+        ALL_TOOLSETS[EGGS_TOOLSET_NAME] = EGGS_TOOLSET_DEFINITION
+
+
+def get_roles_reader(cfg: EggsConfig) -> JiraGateway:
+    """Return the singleton gateway for role reading via EGGS_BOT_TOKEN."""
+    global _roles_reader
+    if _roles_reader is None:
+        url = os.getenv("JIRA_URL", cfg.jira_url)
+        token = os.getenv("EGGS_BOT_TOKEN")
+        fetcher = JiraFetcher(JiraConfig(url=url, personal_token=token))
+        _roles_reader = AtlassianGateway(fetcher.jira, cfg=cfg)
+    return _roles_reader
+
+
+def set_roles_reader(gateway: JiraGateway | None) -> None:
+    global _roles_reader
+    _roles_reader = gateway
+
+
+async def get_user_gateway(ctx: Context) -> JiraGateway:
+    """Build the JiraGateway from the per-request user's Jira client."""
+    from mcp_atlassian.servers.dependencies import get_jira_fetcher
+
+    cfg = load_config()
+    fetcher = await get_jira_fetcher(ctx)
+    return AtlassianGateway(fetcher.jira, cfg=cfg)
+
+
+def eggs_check_write_access(func: Any) -> Any:
+    """Check write access safely even if request_context is None."""
+    tool_name = func.__name__
+
+    @handle_tool_errors
+    @wraps(func)
+    async def wrapper(ctx: Context, *args: Any, **kwargs: Any) -> Any:
+        req_ctx = getattr(ctx, "request_context", None)
+        if req_ctx is not None:
+            lifespan_ctx_dict = getattr(req_ctx, "lifespan_context", None)
+            app_lifespan_ctx = (
+                lifespan_ctx_dict.get("app_lifespan_context")
+                if isinstance(lifespan_ctx_dict, dict)
+                else None
+            )
+            if app_lifespan_ctx is not None and getattr(
+                app_lifespan_ctx, "read_only", False
+            ):
+                msg = f"Cannot execute '{tool_name}': server is in read-only mode."
+                raise ToolError(msg)
+        if os.getenv("READ_ONLY_MODE", "").lower() in ("true", "1", "yes"):
+            msg = f"Cannot execute '{tool_name}': server is in read-only mode."
+            raise ToolError(msg)
+        return await func(ctx, *args, **kwargs)
+
+    return wrapper
+
+
+def identity_to_dict(ident: Identity) -> dict[str, Any]:
+    return {
+        "username": ident.username,
+        "display_name": ident.display_name,
+        "roles": {k: sorted(v) for k, v in sorted(ident.roles.items())},
+        "is_lead": ident.is_lead,
+        "errors": sorted(ident.errors),
+    }
+
+
+def agenda_item_to_dict(it: AgendaItem) -> dict[str, Any]:
+    return {
+        "priority": it.priority,
+        "key": it.key,
+        "project": it.project,
+        "title": it.title,
+        "say": it.say,
+        "actions": [
+            {
+                "tool": a.tool,
+                "args": a.args,
+                "missing": a.missing,
+            }
+            for a in it.actions
+        ],
+    }
+
+
+def intent_to_dict(intent: Intent) -> dict[str, Any]:
+    return {
+        "name": intent.name,
+        "roles": sorted(intent.roles),
+        "examples": intent.examples,
+        "tool": intent.tool,
+        "required": intent.required,
+    }
+
+
+def action_result_to_dict(res: ActionResult) -> dict[str, Any]:
+    return {
+        "ok": res.ok,
+        "message": res.message,
+        "changes": res.changes,
+        "next_actions": res.next_actions,
+        "next": agenda_item_to_dict(res.next) if res.next else None,
+    }
+
+
+def _check_project_role(
+    identity: Identity,
+    project_key: str,
+    required_roles: set[str],
+    role_label: str,
+) -> ActionResult | None:
+    if identity.is_lead:
+        return None
+    pk = project_key.upper()
+    user_roles = identity.roles.get(pk, set())
+    if not user_roles:
+        return ActionResult(
+            ok=False,
+            message=f"Bạn chưa có vai trò nào trong dự án {pk}.",
+            changes=[],
+            next_actions=[],
+        )
+    if not (user_roles & required_roles):
+        return ActionResult(
+            ok=False,
+            message=(
+                f"Bạn không có vai trò {role_label} trong dự án {pk} để "
+                "thực hiện thao tác này."
+            ),
+            changes=[],
+            next_actions=[],
+        )
+    return None
+
+
+def _make_snapshot(
+    gateway: JiraGateway,
+    cfg: EggsConfig,
+    cal: WorkCalendar,
+    today: Any,
+) -> Snapshot:
+    tz = ZoneInfo(cfg.timezone)
+    since = datetime(today.year, today.month, today.day, 0, 0, tzinfo=tz)
+    return build_snapshot(gateway, cfg, today, cal, since)
+
+
+def _get_next_agenda_item(
+    user_gateway: JiraGateway,
+    identity: Identity,
+    cfg: EggsConfig,
+    cal: WorkCalendar,
+    now: datetime,
+) -> AgendaItem | None:
+    try:
+        snapshot = _make_snapshot(user_gateway, cfg, cal, today=now.date())
+        agenda = build_agenda(snapshot, identity, cfg, now, cal)
+        return agenda[0] if agenda else None
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Could not compute next agenda item: %s", e)
+        return None
+
+
+def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
+    """Register all 25 egg tools on the given FastMCP server."""
+    if not force:
+        # Guard against registering during upstream docs generation or unit test suite
+        if any("generate_tool_docs" in arg for arg in sys.argv):
+            return
+        if any("tests/unit" in arg for arg in sys.argv):
+            return
+
+    _ensure_toolset_registered()
+
+    read_tags = {"jira", "read", f"toolset:{EGGS_TOOLSET_NAME}"}
+    write_tags = {"jira", "write", f"toolset:{EGGS_TOOLSET_NAME}"}
+
+    # -------------------------------------------------------------------------
+    # READ TOOLS (7)
+    # -------------------------------------------------------------------------
+
+    @server.tool(
+        tags=read_tags,
+        annotations={"title": "EGGS Version", "readOnlyHint": True},
+    )
+    async def eggs_version(ctx: Context) -> str:
+        """Kiểm tra phiên bản server EGGS Jira MCP và phiên bản kit tối thiểu."""
+        cfg = load_config()
+        data = {
+            "server": __version__,
+            "kit_min_version": cfg.kit_min_version,
+        }
+        return json.dumps(data, indent=2, ensure_ascii=False)
+
+    @server.tool(
+        tags=read_tags,
+        annotations={"title": "EGGS Rules", "readOnlyHint": True},
+    )
+    async def eggs_rules(ctx: Context) -> str:
+        """Xem tóm tắt quy trình và quy tắc làm việc EGGS trên Jira."""
+        return (
+            "# Quy tắc làm việc EGGS Jira Workflow\n\n"
+            "1. **Mọi thao tác ghi qua `eggs_*`**: Không dùng tool Jira thô.\n"
+            "2. **Xác nhận 2 bước**: Gọi tool với `dry_run=true` để kiểm tra trước.\n"
+            "3. **Phân quyền theo vai trò (Project Role)**:\n"
+            "   - **Dev**: schedule, start, log_work, submit_qc, block, unblock.\n"
+            "   - **QC**: qc_start, qc_pass, qc_fail, triage_open, triage_close.\n"
+            "   - **Lead-BA**: flow_reschedule, uat, decide_reschedule, cancel.\n"
+            "   - **Mọi người**: log_work, block, unblock, end_day (sau 17:00).\n"
+            "4. **Chốt chặn Lead-BA**: Duyệt dời lịch, ký UAT, dời hạn Story.\n"
+            "5. **Người duyệt khác người đề xuất**: Không tự duyệt dời lịch của mình.\n"
+        )
+
+    @server.tool(
+        tags=read_tags,
+        annotations={"title": "EGGS Who Am I", "readOnlyHint": True},
+    )
+    async def eggs_whoami(ctx: Context) -> str:
+        """Xác định danh tính người dùng hiện tại và vai trò theo từng dự án."""
+        cfg = load_config()
+        user_gw = await get_user_gateway(ctx)
+        roles_gw = get_roles_reader(cfg)
+        ident = resolve_identity(user_gw, roles_gw, cfg, _identity_cache)
+        return json.dumps(identity_to_dict(ident), indent=2, ensure_ascii=False)
+
+    @server.tool(
+        tags=read_tags,
+        annotations={"title": "EGGS Next", "readOnlyHint": True},
+    )
+    async def eggs_next(
+        ctx: Context,
+        text: Annotated[
+            str | None,
+            Field(
+                description="Câu nói hoặc yêu cầu tự nhiên của người dùng",
+                default=None,
+            ),
+        ] = None,
+    ) -> str:
+        """Cửa vào duy nhất: Trả về agenda việc cần làm và danh mục ý định."""
+        cfg = load_config()
+        user_gw = await get_user_gateway(ctx)
+        roles_gw = get_roles_reader(cfg)
+        ident = resolve_identity(user_gw, roles_gw, cfg, _identity_cache)
+
+        cal = WorkCalendar(cfg.holidays)
+        now = datetime.now(timezone.utc)
+        today = now.date()
+
+        snapshot = _make_snapshot(user_gw, cfg, cal, today=today)
+        agenda = build_agenda(snapshot, ident, cfg, now, cal)
+
+        mentioned: list[str] = []
+        if text:
+            active_projects = set(cfg.projects.keys())
+            mentioned = mentioned_keys(text, active_projects)
+            mentioned_items = [it for it in agenda if it.key in mentioned]
+            other_items = [it for it in agenda if it.key not in mentioned]
+            agenda = (mentioned_items + other_items)[:10]
+        else:
+            agenda = agenda[:10]
+
+        intents = [intent_to_dict(i) for i in intents_for(ident)]
+
+        if not ident.roles and not ident.is_lead:
+            hint = "Bạn chưa có vai trò trong dự án nào, báo Lead."
+            agenda = []
+        else:
+            hint = (
+                "Hiện agenda dạng danh sách đánh số; với ý định của người dùng, "
+                "chọn một intent, gọi tool với dry_run=true, xác nhận, rồi gọi thật."
+            )
+
+        data = {
+            "me": identity_to_dict(ident),
+            "agenda": [agenda_item_to_dict(it) for it in agenda],
+            "mentioned": mentioned,
+            "intents": intents,
+            "hint": hint,
+        }
+        return json.dumps(data, indent=2, ensure_ascii=False)
+
+    @server.tool(
+        tags=read_tags,
+        annotations={"title": "EGGS Workstream Status", "readOnlyHint": True},
+    )
+    async def eggs_workstream_status(
+        ctx: Context,
+        epic: Annotated[
+            str | None, Field(description="Mã Epic", default=None)
+        ] = None,
+        project: Annotated[
+            str | None, Field(description="Mã dự án", default=None)
+        ] = None,
+    ) -> str:
+        """Xem bảng theo dõi tiến độ Actor của Epic hoặc dự án."""
+        cfg = load_config()
+        user_gw = await get_user_gateway(ctx)
+        cal = WorkCalendar(cfg.holidays)
+        today = datetime.now(timezone.utc).date()
+        snapshot = _make_snapshot(user_gw, cfg, cal, today=today)
+
+        if epic:
+            return render_workstream(snapshot, epic)
+
+        target_epics: list[str] = []
+        for ek, iss in snapshot.issues.items():
+            if iss.issuetype == cfg.issue_types.get("epic", "Epic"):
+                if project and iss.project != project:
+                    continue
+                target_epics.append(ek)
+
+        if not target_epics:
+            return (
+                f"Không tìm thấy workstream nào trong dự án {project}."
+                if project
+                else "Không tìm thấy workstream nào."
+            )
+
+        return "\n\n".join(
+            render_workstream(snapshot, ek) for ek in sorted(target_epics)
+        )
+
+    @server.tool(
+        tags=read_tags,
+        annotations={"title": "EGGS Daily Report", "readOnlyHint": True},
+    )
+    async def eggs_daily_report(
+        ctx: Context,
+        project: Annotated[
+            str | None, Field(description="Mã dự án cần lọc", default=None)
+        ] = None,
+    ) -> str:
+        """Báo cáo tổng hợp tình hình công việc trong ngày."""
+        cfg = load_config()
+        user_gw = await get_user_gateway(ctx)
+        cal = WorkCalendar(cfg.holidays)
+        today = datetime.now(timezone.utc).date()
+        snapshot = _make_snapshot(user_gw, cfg, cal, today=today)
+        return render_report(snapshot, cfg, project=project)
+
+    @server.tool(
+        tags=read_tags,
+        annotations={"title": "EGGS Pending Approvals", "readOnlyHint": True},
+    )
+    async def eggs_pending_approvals(
+        ctx: Context,
+        project: Annotated[
+            str | None, Field(description="Mã dự án", default=None)
+        ] = None,
+    ) -> str:
+        """Xem danh sách các yêu cầu dời lịch đang chờ duyệt."""
+        cfg = load_config()
+        user_gw = await get_user_gateway(ctx)
+        roles_gw = get_roles_reader(cfg)
+        ident = resolve_identity(user_gw, roles_gw, cfg, _identity_cache)
+        cal = WorkCalendar(cfg.holidays)
+        today = datetime.now(timezone.utc).date()
+        snapshot = _make_snapshot(user_gw, cfg, cal, today=today)
+        return render_pending_approvals(snapshot, ident.username, cfg)
+
+    # -------------------------------------------------------------------------
+    # WRITE TOOLS (18)
+    # -------------------------------------------------------------------------
+
+    @server.tool(tags=write_tags, annotations={"title": "EGGS Schedule"})
+    @eggs_check_write_access
+    async def eggs_schedule(
+        ctx: Context,
+        key: Annotated[str, Field(description="Mã issue cần lên lịch")],
+        start: Annotated[str, Field(description="Ngày bắt đầu (YYYY-MM-DD)")],
+        end: Annotated[str, Field(description="Ngày kết thúc (YYYY-MM-DD)")],
+        estimate: Annotated[
+            str, Field(description="Thời lượng ước tính (ví dụ '2d', '4h')")
+        ],
+        assignee: Annotated[
+            str | None, Field(description="Người nhận việc", default=None)
+        ] = None,
+        *,
+        dry_run: Annotated[
+            bool, Field(description="Chạy thử nghiệm không ghi", default=False)
+        ] = False,
+    ) -> str:
+        """Nhận việc và lên lịch thực hiện cho phần việc (Dev Task/Bug)."""
+        cfg = load_config()
+        user_gw = await get_user_gateway(ctx)
+        roles_gw = get_roles_reader(cfg)
+        ident = resolve_identity(user_gw, roles_gw, cfg, _identity_cache)
+
+        proj = key.split("-")[0]
+        refusal = _check_project_role(ident, proj, {"dev"}, "Developer (dev)")
+        if refusal:
+            return json.dumps(
+                action_result_to_dict(refusal), indent=2, ensure_ascii=False
+            )
+
+        cal = WorkCalendar(cfg.holidays)
+        actions = Actions(user_gw, cfg, cal)
+        res = actions.schedule(
+            key=key,
+            start=start,
+            end=end,
+            estimate=estimate,
+            assignee=assignee,
+            dry_run=dry_run,
+        )
+        if res.ok and not dry_run:
+            now = datetime.now(timezone.utc)
+            next_it = _get_next_agenda_item(user_gw, ident, cfg, cal, now)
+            res = dataclasses.replace(res, next=next_it)
+        return json.dumps(
+            action_result_to_dict(res), indent=2, ensure_ascii=False
+        )
+
+    @server.tool(tags=write_tags, annotations={"title": "EGGS Start"})
+    @eggs_check_write_access
+    async def eggs_start(
+        ctx: Context,
+        key: Annotated[str, Field(description="Mã issue cần bắt đầu")],
+        start: Annotated[
+            str | None, Field(description="Ngày bắt đầu", default=None)
+        ] = None,
+        end: Annotated[
+            str | None, Field(description="Ngày kết thúc", default=None)
+        ] = None,
+        estimate: Annotated[
+            str | None, Field(description="Thời lượng ước tính", default=None)
+        ] = None,
+        *,
+        dry_run: Annotated[
+            bool, Field(description="Chạy thử nghiệm không ghi", default=False)
+        ] = False,
+    ) -> str:
+        """Bắt đầu thực hiện công việc (chuyển sang Dev In Progress)."""
+        cfg = load_config()
+        user_gw = await get_user_gateway(ctx)
+        roles_gw = get_roles_reader(cfg)
+        ident = resolve_identity(user_gw, roles_gw, cfg, _identity_cache)
+
+        proj = key.split("-")[0]
+        refusal = _check_project_role(ident, proj, {"dev"}, "Developer (dev)")
+        if refusal:
+            return json.dumps(
+                action_result_to_dict(refusal), indent=2, ensure_ascii=False
+            )
+
+        cal = WorkCalendar(cfg.holidays)
+        actions = Actions(user_gw, cfg, cal)
+        res = actions.start(
+            key=key, start=start, end=end, estimate=estimate, dry_run=dry_run
+        )
+        if res.ok and not dry_run:
+            now = datetime.now(timezone.utc)
+            next_it = _get_next_agenda_item(user_gw, ident, cfg, cal, now)
+            res = dataclasses.replace(res, next=next_it)
+        return json.dumps(
+            action_result_to_dict(res), indent=2, ensure_ascii=False
+        )
+
+    @server.tool(tags=write_tags, annotations={"title": "EGGS Log Work"})
+    @eggs_check_write_access
+    async def eggs_log_work(
+        ctx: Context,
+        key: Annotated[str, Field(description="Mã issue ghi giờ")],
+        time_spent: Annotated[
+            str, Field(description="Thời gian làm việc (ví dụ '4h', '1d')")
+        ],
+        note: Annotated[str, Field(description="Nội dung công việc đã làm")],
+        started: Annotated[
+            str | None, Field(description="Thời điểm bắt đầu", default=None)
+        ] = None,
+        *,
+        dry_run: Annotated[
+            bool, Field(description="Chạy thử nghiệm", default=False)
+        ] = False,
+    ) -> str:
+        """Ghi nhận thời gian làm việc vào issue."""
+        cfg = load_config()
+        user_gw = await get_user_gateway(ctx)
+        roles_gw = get_roles_reader(cfg)
+        ident = resolve_identity(user_gw, roles_gw, cfg, _identity_cache)
+
+        proj = key.split("-")[0]
+        refusal = _check_project_role(
+            ident, proj, {"dev", "qc", "lead_ba"}, "hợp lệ"
+        )
+        if refusal:
+            return json.dumps(
+                action_result_to_dict(refusal), indent=2, ensure_ascii=False
+            )
+
+        cal = WorkCalendar(cfg.holidays)
+        actions = Actions(user_gw, cfg, cal)
+        res = actions.log_work(
+            key=key,
+            time_spent=time_spent,
+            note=note,
+            started=started,
+            dry_run=dry_run,
+        )
+        if res.ok and not dry_run:
+            now = datetime.now(timezone.utc)
+            next_it = _get_next_agenda_item(user_gw, ident, cfg, cal, now)
+            res = dataclasses.replace(res, next=next_it)
+        return json.dumps(
+            action_result_to_dict(res), indent=2, ensure_ascii=False
+        )
+
+    @server.tool(tags=write_tags, annotations={"title": "EGGS Submit QC"})
+    @eggs_check_write_access
+    async def eggs_submit_qc(
+        ctx: Context,
+        key: Annotated[str, Field(description="Mã issue chuyển QC")],
+        note: Annotated[
+            str, Field(description="Ghi chú bàn giao kiểm thử", default="")
+        ] = "",
+        *,
+        dry_run: Annotated[
+            bool, Field(description="Chạy thử nghiệm", default=False)
+        ] = False,
+    ) -> str:
+        """Hoàn thành phần việc và chuyển sang hàng đợi kiểm thử (QC TO DO)."""
+        cfg = load_config()
+        user_gw = await get_user_gateway(ctx)
+        roles_gw = get_roles_reader(cfg)
+        ident = resolve_identity(user_gw, roles_gw, cfg, _identity_cache)
+
+        proj = key.split("-")[0]
+        refusal = _check_project_role(ident, proj, {"dev"}, "Developer (dev)")
+        if refusal:
+            return json.dumps(
+                action_result_to_dict(refusal), indent=2, ensure_ascii=False
+            )
+
+        cal = WorkCalendar(cfg.holidays)
+        actions = Actions(user_gw, cfg, cal)
+        res = actions.submit_qc(key=key, note=note, dry_run=dry_run)
+        if res.ok and not dry_run:
+            now = datetime.now(timezone.utc)
+            next_it = _get_next_agenda_item(user_gw, ident, cfg, cal, now)
+            res = dataclasses.replace(res, next=next_it)
+        return json.dumps(
+            action_result_to_dict(res), indent=2, ensure_ascii=False
+        )
+
+    @server.tool(tags=write_tags, annotations={"title": "EGGS Finish"})
+    @eggs_check_write_access
+    async def eggs_finish(
+        ctx: Context,
+        key: Annotated[str, Field(description="Mã issue hoàn thành")],
+        note: Annotated[
+            str, Field(description="Ghi chú hoàn thành", default="")
+        ] = "",
+        *,
+        dry_run: Annotated[
+            bool, Field(description="Chạy thử nghiệm", default=False)
+        ] = False,
+    ) -> str:
+        """Hoàn thành trực tiếp cho Ad-hoc Task hoặc Bug."""
+        cfg = load_config()
+        user_gw = await get_user_gateway(ctx)
+        roles_gw = get_roles_reader(cfg)
+        ident = resolve_identity(user_gw, roles_gw, cfg, _identity_cache)
+
+        proj = key.split("-")[0]
+        refusal = _check_project_role(ident, proj, {"dev"}, "Developer (dev)")
+        if refusal:
+            return json.dumps(
+                action_result_to_dict(refusal), indent=2, ensure_ascii=False
+            )
+
+        cal = WorkCalendar(cfg.holidays)
+        actions = Actions(user_gw, cfg, cal)
+        res = actions.finish(key=key, note=note, dry_run=dry_run)
+        if res.ok and not dry_run:
+            now = datetime.now(timezone.utc)
+            next_it = _get_next_agenda_item(user_gw, ident, cfg, cal, now)
+            res = dataclasses.replace(res, next=next_it)
+        return json.dumps(
+            action_result_to_dict(res), indent=2, ensure_ascii=False
+        )
+
+    @server.tool(tags=write_tags, annotations={"title": "EGGS QC Start"})
+    @eggs_check_write_access
+    async def eggs_qc_start(
+        ctx: Context,
+        key: Annotated[
+            str, Field(description="Mã issue hoặc Story bắt đầu kiểm thử")
+        ],
+        *,
+        dry_run: Annotated[
+            bool, Field(description="Chạy thử nghiệm", default=False)
+        ] = False,
+    ) -> str:
+        """Bắt đầu kiểm thử phần việc hoặc luồng (Test In Progress)."""
+        cfg = load_config()
+        user_gw = await get_user_gateway(ctx)
+        roles_gw = get_roles_reader(cfg)
+        ident = resolve_identity(user_gw, roles_gw, cfg, _identity_cache)
+
+        proj = key.split("-")[0]
+        refusal = _check_project_role(ident, proj, {"qc"}, "QC (Tester)")
+        if refusal:
+            return json.dumps(
+                action_result_to_dict(refusal), indent=2, ensure_ascii=False
+            )
+
+        cal = WorkCalendar(cfg.holidays)
+        actions = Actions(user_gw, cfg, cal)
+        res = actions.qc_start(key=key, dry_run=dry_run)
+        if res.ok and not dry_run:
+            now = datetime.now(timezone.utc)
+            next_it = _get_next_agenda_item(user_gw, ident, cfg, cal, now)
+            res = dataclasses.replace(res, next=next_it)
+        return json.dumps(
+            action_result_to_dict(res), indent=2, ensure_ascii=False
+        )
+
+    @server.tool(tags=write_tags, annotations={"title": "EGGS QC Pass"})
+    @eggs_check_write_access
+    async def eggs_qc_pass(
+        ctx: Context,
+        key: Annotated[
+            str, Field(description="Mã issue hoặc Story đã kiểm thử đạt")
+        ],
+        note: Annotated[
+            str, Field(description="Ghi chú kết quả kiểm thử", default="")
+        ] = "",
+        *,
+        dry_run: Annotated[
+            bool, Field(description="Chạy thử nghiệm", default=False)
+        ] = False,
+    ) -> str:
+        """Xác nhận kiểm thử đạt (chuyển Done hoặc Ready For UAT)."""
+        cfg = load_config()
+        user_gw = await get_user_gateway(ctx)
+        roles_gw = get_roles_reader(cfg)
+        ident = resolve_identity(user_gw, roles_gw, cfg, _identity_cache)
+
+        proj = key.split("-")[0]
+        refusal = _check_project_role(ident, proj, {"qc"}, "QC (Tester)")
+        if refusal:
+            return json.dumps(
+                action_result_to_dict(refusal), indent=2, ensure_ascii=False
+            )
+
+        cal = WorkCalendar(cfg.holidays)
+        actions = Actions(user_gw, cfg, cal)
+        res = actions.qc_pass(key=key, note=note, dry_run=dry_run)
+        if res.ok and not dry_run:
+            now = datetime.now(timezone.utc)
+            next_it = _get_next_agenda_item(user_gw, ident, cfg, cal, now)
+            res = dataclasses.replace(res, next=next_it)
+        return json.dumps(
+            action_result_to_dict(res), indent=2, ensure_ascii=False
+        )
+
+    @server.tool(tags=write_tags, annotations={"title": "EGGS QC Fail"})
+    @eggs_check_write_access
+    async def eggs_qc_fail(
+        ctx: Context,
+        key: Annotated[
+            str, Field(description="Mã issue hoặc Story kiểm thử không đạt")
+        ],
+        bugs: Annotated[
+            list[dict[str, Any]] | None,
+            Field(description="Danh sách Bug cần tạo kèm", default=None),
+        ] = None,
+        note: Annotated[
+            str, Field(description="Lý do không đạt", default="")
+        ] = "",
+        *,
+        dry_run: Annotated[
+            bool, Field(description="Chạy thử nghiệm", default=False)
+        ] = False,
+    ) -> str:
+        """Xác nhận kiểm thử không đạt và tạo bug sub-task trả lại Dev."""
+        cfg = load_config()
+        user_gw = await get_user_gateway(ctx)
+        roles_gw = get_roles_reader(cfg)
+        ident = resolve_identity(user_gw, roles_gw, cfg, _identity_cache)
+
+        proj = key.split("-")[0]
+        refusal = _check_project_role(ident, proj, {"qc"}, "QC (Tester)")
+        if refusal:
+            return json.dumps(
+                action_result_to_dict(refusal), indent=2, ensure_ascii=False
+            )
+
+        cal = WorkCalendar(cfg.holidays)
+        actions = Actions(user_gw, cfg, cal)
+        res = actions.qc_fail(
+            key=key, bugs=bugs or [], note=note, dry_run=dry_run
+        )
+        if res.ok and not dry_run:
+            now = datetime.now(timezone.utc)
+            next_it = _get_next_agenda_item(user_gw, ident, cfg, cal, now)
+            res = dataclasses.replace(res, next=next_it)
+        return json.dumps(
+            action_result_to_dict(res), indent=2, ensure_ascii=False
+        )
+
+    @server.tool(tags=write_tags, annotations={"title": "EGGS Block"})
+    @eggs_check_write_access
+    async def eggs_block(
+        ctx: Context,
+        key: Annotated[str, Field(description="Mã issue bị tắc nghẽn")],
+        reason: Annotated[str, Field(description="Lý do tắc nghẽn")],
+        blocked_by: Annotated[
+            str,
+            Field(
+                description="Bên gây tắc nghẽn (Nội bộ / Khách hàng / Bên thứ ba)"
+            ),
+        ],
+        *,
+        dry_run: Annotated[
+            bool, Field(description="Chạy thử nghiệm", default=False)
+        ] = False,
+    ) -> str:
+        """Báo tắc nghẽn và cắm cờ Flagged trên issue."""
+        cfg = load_config()
+        user_gw = await get_user_gateway(ctx)
+        roles_gw = get_roles_reader(cfg)
+        ident = resolve_identity(user_gw, roles_gw, cfg, _identity_cache)
+
+        proj = key.split("-")[0]
+        refusal = _check_project_role(
+            ident, proj, {"dev", "qc", "lead_ba"}, "hợp lệ"
+        )
+        if refusal:
+            return json.dumps(
+                action_result_to_dict(refusal), indent=2, ensure_ascii=False
+            )
+
+        cal = WorkCalendar(cfg.holidays)
+        actions = Actions(user_gw, cfg, cal)
+        res = actions.block(
+            key=key, reason=reason, blocked_by=blocked_by, dry_run=dry_run
+        )
+        if res.ok and not dry_run:
+            now = datetime.now(timezone.utc)
+            next_it = _get_next_agenda_item(user_gw, ident, cfg, cal, now)
+            res = dataclasses.replace(res, next=next_it)
+        return json.dumps(
+            action_result_to_dict(res), indent=2, ensure_ascii=False
+        )
+
+    @server.tool(tags=write_tags, annotations={"title": "EGGS Unblock"})
+    @eggs_check_write_access
+    async def eggs_unblock(
+        ctx: Context,
+        key: Annotated[str, Field(description="Mã issue được gỡ tắc nghẽn")],
+        note: Annotated[
+            str, Field(description="Ghi chú khi gỡ cờ", default="")
+        ] = "",
+        *,
+        dry_run: Annotated[
+            bool, Field(description="Chạy thử nghiệm", default=False)
+        ] = False,
+    ) -> str:
+        """Gỡ cờ tắc nghẽn trên issue sau khi vấn đề được giải quyết."""
+        cfg = load_config()
+        user_gw = await get_user_gateway(ctx)
+        roles_gw = get_roles_reader(cfg)
+        ident = resolve_identity(user_gw, roles_gw, cfg, _identity_cache)
+
+        proj = key.split("-")[0]
+        refusal = _check_project_role(
+            ident, proj, {"dev", "qc", "lead_ba"}, "hợp lệ"
+        )
+        if refusal:
+            return json.dumps(
+                action_result_to_dict(refusal), indent=2, ensure_ascii=False
+            )
+
+        cal = WorkCalendar(cfg.holidays)
+        actions = Actions(user_gw, cfg, cal)
+        res = actions.unblock(key=key, note=note, dry_run=dry_run)
+        if res.ok and not dry_run:
+            now = datetime.now(timezone.utc)
+            next_it = _get_next_agenda_item(user_gw, ident, cfg, cal, now)
+            res = dataclasses.replace(res, next=next_it)
+        return json.dumps(
+            action_result_to_dict(res), indent=2, ensure_ascii=False
+        )
+
+    @server.tool(
+        tags=write_tags, annotations={"title": "EGGS Request Reschedule"}
+    )
+    @eggs_check_write_access
+    async def eggs_request_reschedule(
+        ctx: Context,
+        key: Annotated[str, Field(description="Mã issue cần dời lịch")],
+        proposed_end: Annotated[
+            str | None,
+            Field(
+                description="Ngày kết thúc đề xuất mới (YYYY-MM-DD)",
+                default=None,
+            ),
+        ] = None,
+        reason: Annotated[
+            str, Field(description="Lý do đề xuất dời lịch", default="")
+        ] = "",
+        interrupted_by: Annotated[
+            str | None,
+            Field(description="Mã issue chen ngang gây dời lịch", default=None),
+        ] = None,
+        *,
+        no_impact: Annotated[
+            bool,
+            Field(
+                description="Xác nhận việc không ảnh hưởng lịch tổng thể",
+                default=False,
+            ),
+        ] = False,
+        dry_run: Annotated[
+            bool, Field(description="Chạy thử nghiệm", default=False)
+        ] = False,
+    ) -> str:
+        """Đề xuất dời lịch kết thúc phần việc hoặc xác nhận không ảnh hưởng."""
+        cfg = load_config()
+        user_gw = await get_user_gateway(ctx)
+        roles_gw = get_roles_reader(cfg)
+        ident = resolve_identity(user_gw, roles_gw, cfg, _identity_cache)
+
+        cal = WorkCalendar(cfg.holidays)
+        actions = Actions(user_gw, cfg, cal)
+        iss = actions._get_issue(key)
+        proj = iss.project
+
+        # Permission check
+        if no_impact:
+            if not (ident.username == iss.assignee or ident.is_lead):
+                refusal = ActionResult(
+                    ok=False,
+                    message=(
+                        f"Chỉ người được giao việc (assignee: {iss.assignee}) "
+                        "mới có thể xác nhận không ảnh hưởng."
+                    ),
+                    changes=[],
+                    next_actions=[],
+                )
+                return json.dumps(
+                    action_result_to_dict(refusal), indent=2, ensure_ascii=False
+                )
+            res = actions.confirm_no_impact(
+                key=key, note=reason, dry_run=dry_run
+            )
+        else:
+            is_assignee = ident.username == iss.assignee
+            is_lead_ba = "lead_ba" in ident.roles.get(proj, set())
+            if not (is_assignee or is_lead_ba or ident.is_lead):
+                refusal = ActionResult(
+                    ok=False,
+                    message=(
+                        f"Bạn không phải người thực hiện ({iss.assignee}) "
+                        f"hoặc Lead-BA trong dự án {proj}."
+                    ),
+                    changes=[],
+                    next_actions=[],
+                )
+                return json.dumps(
+                    action_result_to_dict(refusal), indent=2, ensure_ascii=False
+                )
+            res = actions.request_reschedule(
+                key=key,
+                proposed_end=proposed_end or "",
+                reason=reason,
+                interrupted_by=interrupted_by,
+                dry_run=dry_run,
+            )
+
+        if res.ok and not dry_run:
+            now = datetime.now(timezone.utc)
+            next_it = _get_next_agenda_item(user_gw, ident, cfg, cal, now)
+            res = dataclasses.replace(res, next=next_it)
+        return json.dumps(
+            action_result_to_dict(res), indent=2, ensure_ascii=False
+        )
+
+    @server.tool(tags=write_tags, annotations={"title": "EGGS Flow Reschedule"})
+    @eggs_check_write_access
+    async def eggs_flow_reschedule(
+        ctx: Context,
+        story_key: Annotated[
+            str, Field(description="Mã Story cần dời Due Date")
+        ],
+        new_due: Annotated[
+            str, Field(description="Hạn bàn giao mới (YYYY-MM-DD)")
+        ],
+        reason: Annotated[str, Field(description="Lý do điều chỉnh hạn")],
+        *,
+        dry_run: Annotated[
+            bool, Field(description="Chạy thử nghiệm", default=False)
+        ] = False,
+    ) -> str:
+        """Lead-BA điều chỉnh hạn bàn giao (Due Date) cho Story cấp luồng."""
+        cfg = load_config()
+        user_gw = await get_user_gateway(ctx)
+        roles_gw = get_roles_reader(cfg)
+        ident = resolve_identity(user_gw, roles_gw, cfg, _identity_cache)
+
+        proj = story_key.split("-")[0]
+        refusal = _check_project_role(ident, proj, {"lead_ba"}, "Lead-BA")
+        if refusal:
+            return json.dumps(
+                action_result_to_dict(refusal), indent=2, ensure_ascii=False
+            )
+
+        cal = WorkCalendar(cfg.holidays)
+        actions = Actions(user_gw, cfg, cal)
+        res = actions.flow_reschedule(
+            story_key=story_key, new_due=new_due, reason=reason, dry_run=dry_run
+        )
+        if res.ok and not dry_run:
+            now = datetime.now(timezone.utc)
+            next_it = _get_next_agenda_item(user_gw, ident, cfg, cal, now)
+            res = dataclasses.replace(res, next=next_it)
+        return json.dumps(
+            action_result_to_dict(res), indent=2, ensure_ascii=False
+        )
+
+    @server.tool(tags=write_tags, annotations={"title": "EGGS UAT"})
+    @eggs_check_write_access
+    async def eggs_uat(
+        ctx: Context,
+        epic: Annotated[str, Field(description="Mã Epic")],
+        actor: Annotated[str, Field(description="Mã Actor (Component)")],
+        action: Annotated[
+            str,
+            Field(description="Hành động UAT: 'start', 'signoff', hoặc 'fail'"),
+        ],
+        note: Annotated[str, Field(description="Ghi chú UAT", default="")] = "",
+        bugs: Annotated[
+            list[dict[str, Any]] | None,
+            Field(description="Danh sách bug khi UAT fail", default=None),
+        ] = None,
+        stories: Annotated[
+            list[str] | None,
+            Field(
+                description="Danh sách Story chỉ định (nếu có)", default=None
+            ),
+        ] = None,
+        *,
+        dry_run: Annotated[
+            bool, Field(description="Chạy thử nghiệm", default=False)
+        ] = False,
+    ) -> str:
+        """Quản lý tiến trình UAT theo nhóm Actor trong Epic."""
+        cfg = load_config()
+        user_gw = await get_user_gateway(ctx)
+        roles_gw = get_roles_reader(cfg)
+        ident = resolve_identity(user_gw, roles_gw, cfg, _identity_cache)
+
+        proj = epic.split("-")[0]
+        refusal = _check_project_role(ident, proj, {"lead_ba"}, "Lead-BA")
+        if refusal:
+            return json.dumps(
+                action_result_to_dict(refusal), indent=2, ensure_ascii=False
+            )
+
+        cal = WorkCalendar(cfg.holidays)
+        actions = Actions(user_gw, cfg, cal)
+        res = actions.uat(
+            epic=epic,
+            actor=actor,
+            action=action,
+            note=note,
+            bugs=bugs,
+            stories=stories,
+            dry_run=dry_run,
+        )
+        if res.ok and not dry_run:
+            now = datetime.now(timezone.utc)
+            next_it = _get_next_agenda_item(user_gw, ident, cfg, cal, now)
+            res = dataclasses.replace(res, next=next_it)
+        return json.dumps(
+            action_result_to_dict(res), indent=2, ensure_ascii=False
+        )
+
+    @server.tool(
+        tags=write_tags, annotations={"title": "EGGS Decide Reschedule"}
+    )
+    @eggs_check_write_access
+    async def eggs_decide_reschedule(
+        ctx: Context,
+        key: Annotated[str, Field(description="Mã issue chờ duyệt dời lịch")],
+        reason: Annotated[
+            str, Field(description="Lý do duyệt hoặc từ chối", default="")
+        ] = "",
+        new_end: Annotated[
+            str | None,
+            Field(
+                description="Ngày kết thúc duyệt mới (YYYY-MM-DD)", default=None
+            ),
+        ] = None,
+        *,
+        approved: Annotated[
+            bool, Field(description="Đồng ý duyệt dời lịch hay từ chối")
+        ],
+        dry_run: Annotated[
+            bool, Field(description="Chạy thử nghiệm", default=False)
+        ] = False,
+    ) -> str:
+        """Lead-BA quyết định duyệt hoặc từ chối đề xuất dời lịch."""
+        cfg = load_config()
+        user_gw = await get_user_gateway(ctx)
+        roles_gw = get_roles_reader(cfg)
+        ident = resolve_identity(user_gw, roles_gw, cfg, _identity_cache)
+
+        proj = key.split("-")[0]
+        refusal = _check_project_role(ident, proj, {"lead_ba"}, "Lead-BA")
+        if refusal:
+            return json.dumps(
+                action_result_to_dict(refusal), indent=2, ensure_ascii=False
+            )
+
+        cal = WorkCalendar(cfg.holidays)
+        actions = Actions(user_gw, cfg, cal)
+        res = actions.decide_reschedule(
+            key=key,
+            approved=approved,
+            reason=reason,
+            new_end=new_end,
+            dry_run=dry_run,
+        )
+        if res.ok and not dry_run:
+            now = datetime.now(timezone.utc)
+            next_it = _get_next_agenda_item(user_gw, ident, cfg, cal, now)
+            res = dataclasses.replace(res, next=next_it)
+        return json.dumps(
+            action_result_to_dict(res), indent=2, ensure_ascii=False
+        )
+
+    @server.tool(tags=write_tags, annotations={"title": "EGGS Cancel"})
+    @eggs_check_write_access
+    async def eggs_cancel(
+        ctx: Context,
+        key: Annotated[str, Field(description="Mã issue cần hủy")],
+        reason: Annotated[str, Field(description="Lý do hủy công việc")],
+        *,
+        dry_run: Annotated[
+            bool, Field(description="Chạy thử nghiệm", default=False)
+        ] = False,
+    ) -> str:
+        """Hủy phần việc hoặc Story (chuyển Cancelled kèm resolution Won't Do)."""
+        cfg = load_config()
+        user_gw = await get_user_gateway(ctx)
+        roles_gw = get_roles_reader(cfg)
+        ident = resolve_identity(user_gw, roles_gw, cfg, _identity_cache)
+
+        proj = key.split("-")[0]
+        refusal = _check_project_role(ident, proj, {"lead_ba"}, "Lead-BA")
+        if refusal:
+            return json.dumps(
+                action_result_to_dict(refusal), indent=2, ensure_ascii=False
+            )
+
+        cal = WorkCalendar(cfg.holidays)
+        actions = Actions(user_gw, cfg, cal)
+        res = actions.cancel(key=key, reason=reason, dry_run=dry_run)
+        if res.ok and not dry_run:
+            now = datetime.now(timezone.utc)
+            next_it = _get_next_agenda_item(user_gw, ident, cfg, cal, now)
+            res = dataclasses.replace(res, next=next_it)
+        return json.dumps(
+            action_result_to_dict(res), indent=2, ensure_ascii=False
+        )
+
+    @server.tool(tags=write_tags, annotations={"title": "EGGS End Day"})
+    @eggs_check_write_access
+    async def eggs_end_day(
+        ctx: Context,
+        entries: Annotated[
+            list[dict[str, Any]],
+            Field(
+                description=(
+                    "Danh sách nhật ký ghi giờ cuối ngày: "
+                    "[{'key', 'time_spent', 'note', 'move_to'}]"
+                )
+            ),
+        ],
+        *,
+        dry_run: Annotated[
+            bool, Field(description="Chạy thử nghiệm", default=False)
+        ] = False,
+    ) -> str:
+        """Cập nhật ghi nhận giờ và trạng thái công việc kết thúc ngày làm việc."""
+        cfg = load_config()
+        user_gw = await get_user_gateway(ctx)
+        roles_gw = get_roles_reader(cfg)
+        ident = resolve_identity(user_gw, roles_gw, cfg, _identity_cache)
+
+        for e in entries:
+            pk = e.get("key", "").split("-")[0]
+            refusal = _check_project_role(
+                ident, pk, {"dev", "qc", "lead_ba"}, "hợp lệ"
+            )
+            if refusal:
+                return json.dumps(
+                    action_result_to_dict(refusal), indent=2, ensure_ascii=False
+                )
+
+        cal = WorkCalendar(cfg.holidays)
+        actions = Actions(user_gw, cfg, cal)
+        typed_entries = [EndDayEntry(**e) for e in entries]
+        res = actions.end_day(entries=typed_entries, dry_run=dry_run)
+        if res.ok and not dry_run:
+            now = datetime.now(timezone.utc)
+            next_it = _get_next_agenda_item(user_gw, ident, cfg, cal, now)
+            res = dataclasses.replace(res, next=next_it)
+        return json.dumps(
+            action_result_to_dict(res), indent=2, ensure_ascii=False
+        )
+
+    @server.tool(tags=write_tags, annotations={"title": "EGGS Triage Open"})
+    @eggs_check_write_access
+    async def eggs_triage_open(
+        ctx: Context,
+        project: Annotated[str, Field(description="Mã dự án tiếp nhận")],
+        text: Annotated[str, Field(description="Nội dung phản ánh")],
+        source_url: Annotated[
+            str,
+            Field(description="Đường link nguồn phản ánh (tin nhắn, tài liệu)"),
+        ],
+        reported_by: Annotated[str, Field(description="Tên người phản ánh")],
+        reported_at: Annotated[
+            str | None, Field(description="Thời điểm phản ánh", default=None)
+        ] = None,
+        *,
+        dry_run: Annotated[
+            bool, Field(description="Chạy thử nghiệm", default=False)
+        ] = False,
+    ) -> str:
+        """Ghi nhận User Report mới từ kênh hỗ trợ vào Epic OPS tháng của dự án."""
+        cfg = load_config()
+        user_gw = await get_user_gateway(ctx)
+        roles_gw = get_roles_reader(cfg)
+        ident = resolve_identity(user_gw, roles_gw, cfg, _identity_cache)
+
+        refusal = _check_project_role(
+            ident, project, {"qc", "lead_ba"}, "QC hoặc Lead-BA"
+        )
+        if refusal:
+            return json.dumps(
+                action_result_to_dict(refusal), indent=2, ensure_ascii=False
+            )
+
+        cal = WorkCalendar(cfg.holidays)
+        actions = Actions(user_gw, cfg, cal)
+        res = actions.triage_open(
+            project=project,
+            text=text,
+            source_url=source_url,
+            reported_by=reported_by,
+            reported_at=reported_at,
+            dry_run=dry_run,
+        )
+        if res.ok and not dry_run:
+            now = datetime.now(timezone.utc)
+            next_it = _get_next_agenda_item(user_gw, ident, cfg, cal, now)
+            res = dataclasses.replace(res, next=next_it)
+        return json.dumps(
+            action_result_to_dict(res), indent=2, ensure_ascii=False
+        )
+
+    @server.tool(tags=write_tags, annotations={"title": "EGGS Triage Close"})
+    @eggs_check_write_access
+    async def eggs_triage_close(
+        ctx: Context,
+        key: Annotated[str, Field(description="Mã User Report cần đóng")],
+        verdict: Annotated[
+            str,
+            Field(
+                description=(
+                    "Kết luận: 'is_bug_flow', 'is_bug_ops', "
+                    "'is_known_issue', hoặc 'not_a_bug'"
+                )
+            ),
+        ],
+        note: Annotated[
+            str, Field(description="Ghi chú kết luận phản ánh")
+        ],
+        time_spent: Annotated[
+            str, Field(description="Thời gian phân tích phản ánh")
+        ],
+        bug_target: Annotated[
+            str | None,
+            Field(description="Mã Story cho is_bug_flow", default=None),
+        ] = None,
+        link_key: Annotated[
+            str | None,
+            Field(
+                description="Mã issue liên kết cho is_known_issue",
+                default=None,
+            ),
+        ] = None,
+        *,
+        dry_run: Annotated[
+            bool, Field(description="Chạy thử nghiệm", default=False)
+        ] = False,
+    ) -> str:
+        """Kết luận phân tích User Report và tạo/liên kết công việc xử lý."""
+        cfg = load_config()
+        user_gw = await get_user_gateway(ctx)
+        roles_gw = get_roles_reader(cfg)
+        ident = resolve_identity(user_gw, roles_gw, cfg, _identity_cache)
+
+        proj = key.split("-")[0]
+        refusal = _check_project_role(
+            ident, proj, {"qc", "lead_ba"}, "QC hoặc Lead-BA"
+        )
+        if refusal:
+            return json.dumps(
+                action_result_to_dict(refusal), indent=2, ensure_ascii=False
+            )
+
+        cal = WorkCalendar(cfg.holidays)
+        actions = Actions(user_gw, cfg, cal)
+        res = actions.triage_close(
+            key=key,
+            verdict=verdict,
+            note=note,
+            time_spent=time_spent,
+            bug_target=bug_target,
+            link_key=link_key,
+            dry_run=dry_run,
+        )
+        if res.ok and not dry_run:
+            now = datetime.now(timezone.utc)
+            next_it = _get_next_agenda_item(user_gw, ident, cfg, cal, now)
+            res = dataclasses.replace(res, next=next_it)
+        return json.dumps(
+            action_result_to_dict(res), indent=2, ensure_ascii=False
+        )
