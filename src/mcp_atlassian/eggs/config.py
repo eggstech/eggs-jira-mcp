@@ -19,6 +19,7 @@ class Thresholds:
     internal_block_escalate_after: int = 2
     qc_flow_buffer: int = 1
     triage_working_days: int = 1
+    end_day_hour: int = 17
 
 
 @dataclass(frozen=True)
@@ -50,6 +51,9 @@ class EggsConfig:
     projects: dict[str, ProjectConfig] = field(default_factory=dict)
     lead_chat_webhook: str | None = None
     kit_min_version: str = "0.1.0"
+    roles: dict[str, str] = field(
+        default_factory=lambda: {"lead_ba": "Lead-BA", "qc": "QC", "dev": "Developers"}
+    )
 
     def status_logical(self, jira_name: str) -> str | None:
         """Map Jira status name to logical status name."""
@@ -133,6 +137,7 @@ def load_config(path: str | None = None) -> EggsConfig:
         internal_block_escalate_after=thresholds_data.get("internal_block_escalate_after", 2),
         qc_flow_buffer=thresholds_data.get("qc_flow_buffer", 1),
         triage_working_days=thresholds_data.get("triage_working_days", 1),
+        end_day_hour=thresholds_data.get("end_day_hour", 17),
     )
 
     # Parse holidays
@@ -183,4 +188,5 @@ def load_config(path: str | None = None) -> EggsConfig:
         projects=projects,
         lead_chat_webhook=data.get("lead_chat_webhook"),
         kit_min_version=data.get("kit_min_version", "0.1.0"),
+        roles=data.get("roles", {"lead_ba": "Lead-BA", "qc": "QC", "dev": "Developers"}),
     )

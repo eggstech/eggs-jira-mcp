@@ -25,6 +25,8 @@ class FakeGateway(JiraGateway):
         user: str = "cuong.huynh",
         status_after: dict[str, str] | None = None,
         search_filter: Callable[[str, dict], bool] | None = None,
+        me: dict | None = None,
+        role_members: dict[str, dict[str, list[str]]] | None = None,
     ) -> None:
         self.issues = dict(issues or {})
         self.worklogs = list(worklogs or [])
@@ -33,6 +35,8 @@ class FakeGateway(JiraGateway):
         self.user = user
         self.status_after = dict(status_after or {})
         self.search_filter = search_filter
+        self.me = dict(me if me is not None else {"name": user, "displayName": user})
+        self.role_members = dict(role_members or {})
         self.calls: list[tuple[str, tuple, dict[str, Any]]] = []
         self._next_id = 1000
 
@@ -169,3 +173,11 @@ class FakeGateway(JiraGateway):
     def current_user(self) -> str:
         self._record("current_user")
         return self.user
+
+    def myself(self) -> dict:
+        self._record("myself")
+        return dict(self.me)
+
+    def project_role_members(self, project: str) -> dict[str, list[str]]:
+        self._record("project_role_members", project)
+        return dict(self.role_members.get(project, {}))

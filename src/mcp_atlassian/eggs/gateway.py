@@ -81,3 +81,11 @@ class JiraGateway(Protocol):
     def current_user(self) -> str:
         """Get the current authenticated user's name/key."""
         ...
+
+    def myself(self) -> dict:
+        """Fetch info about the current authenticated user: {'name': ..., 'displayName': ...}."""
+        ...
+
+    def project_role_members(self, project: str) -> dict[str, list[str]]:
+        """Fetch role members mapped by Jira role name: {role_name: [usernames]}."""
+        ...

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Callable, Literal
+from typing import Any, Callable, Literal
 from zoneinfo import ZoneInfo
 
 from .calendar import WorkCalendar
@@ -17,6 +17,7 @@ class ActionResult:
     message: str
     changes: list[str]
     next_actions: list[str]
+    next: Any = None
 
 
 @dataclass(frozen=True)

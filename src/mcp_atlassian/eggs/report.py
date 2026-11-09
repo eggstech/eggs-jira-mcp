@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Sequence
 from zoneinfo import ZoneInfo
 
 from .calendar import WorkCalendar
@@ -24,6 +24,7 @@ class Snapshot:
     epics: dict[str, EpicMetrics]
     not_updated: list[str]
     today: date
+    worklogs: Sequence[Worklog] = ()
 
 
 def build_snapshot(
@@ -135,6 +136,7 @@ def build_snapshot(
         epics=epics,
         not_updated=not_updated,
         today=today,
+        worklogs=worklogs,
     )
 
 

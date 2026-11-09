@@ -201,6 +201,34 @@ projects:
     assert cfg.blocked_internal_value == "Custom Internal"
 
 
+def test_load_config_roles_and_end_day_hour(tmp_path):
+    # Default roles and end_day_hour
+    cfg_default = EggsConfig(lead_user="cuong.huynh")
+    assert cfg_default.thresholds.end_day_hour == 17
+    assert cfg_default.roles == {"lead_ba": "Lead-BA", "qc": "QC", "dev": "Developers"}
+
+    # Custom roles and end_day_hour loaded from YAML
+    yaml_content = """
+lead_user: cuong.huynh
+thresholds:
+  end_day_hour: 18
+roles:
+  lead_ba: "Lead BA Custom"
+  qc: "Quality Control"
+  dev: "Software Engineers"
+projects:
+  PROJ:
+    default_lead_ba: cuong.huynh
+"""
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(yaml_content)
+    cfg = load_config(str(cfg_file))
+    assert cfg.thresholds.end_day_hour == 18
+    assert cfg.roles["lead_ba"] == "Lead BA Custom"
+    assert cfg.roles["qc"] == "Quality Control"
+    assert cfg.roles["dev"] == "Software Engineers"
+
+
 def test_load_config_legacy_epic_unscheduled_window_shim_removed(tmp_path):
     yaml_content = """
 lead_user: cuong.huynh

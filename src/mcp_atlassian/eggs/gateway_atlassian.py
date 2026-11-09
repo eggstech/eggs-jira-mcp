@@ -266,3 +266,67 @@ class AtlassianGateway(JiraGateway):
         if isinstance(res, dict):
             return res.get("name") or res.get("key") or res.get("displayName") or ""
         return ""
+
+    def myself(self) -> dict:
+        """Fetch info about the current authenticated user: {'name': ..., 'displayName': ...}."""
+        res = self.client.get("rest/api/2/myself")
+        if isinstance(res, dict):
+            return res
+        return {}
+
+    def project_role_members(self, project: str) -> dict[str, list[str]]:
+        """Fetch role members mapped by Jira role name: {role_name: [usernames]}."""
+        res = self.client.get(f"rest/api/2/project/{project}/role")
+        if not isinstance(res, dict):
+            return {}
+
+        role_members: dict[str, list[str]] = {}
+        for role_name, role_val in res.items():
+            url_str = (
+                role_val
+                if isinstance(role_val, str)
+                else (role_val.get("url") if isinstance(role_val, dict) else None)
+            )
+            if not url_str:
+                continue
+
+            if "/rest/" in url_str:
+                path = "rest/" + url_str.split("/rest/", 1)[1]
+            else:
+                path = url_str
+
+            try:
+                role_data = self.client.get(path)
+            except Exception as e:
+                logger.warning("Failed to fetch role data for %s: %s", path, e)
+                continue
+
+            if not isinstance(role_data, dict):
+                continue
+
+            usernames: list[str] = []
+            for actor in role_data.get("actors", []):
+                if not isinstance(actor, dict):
+                    continue
+                actor_type = actor.get("type")
+                if actor_type == "atlassian-group-role-actor":
+                    group_name = actor.get("name")
+                    if group_name:
+                        try:
+                            group_res = self.client.get(
+                                f"rest/api/2/group/member?groupname={group_name}"
+                            )
+                            if isinstance(group_res, dict) and "values" in group_res:
+                                for u in group_res["values"]:
+                                    if isinstance(u, dict) and u.get("name"):
+                                        usernames.append(u["name"])
+                                continue
+                        except Exception:
+                            pass
+                name = actor.get("name")
+                if name:
+                    usernames.append(name)
+
+            role_members[role_name] = usernames
+
+        return role_members

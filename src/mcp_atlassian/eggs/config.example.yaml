@@ -20,6 +20,12 @@ thresholds:
   internal_block_escalate_after: 2
   qc_flow_buffer: 1
   triage_working_days: 1
+  end_day_hour: 17
+
+roles:
+  lead_ba: "Lead-BA"
+  qc: "QC"
+  dev: "Developers"
 
 # Fixed-date Vietnam public holidays for 2026.
 # NOTE: Lunar New Year (Tết Âm Lịch) and Hung Kings Commemoration (Giỗ Tổ Hùng Vương)
