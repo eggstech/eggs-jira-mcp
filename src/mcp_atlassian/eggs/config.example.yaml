@@ -1,0 +1,243 @@
+# Eggs Jira MCP Configuration Example
+# Copy to config.yaml and customize for your deployment.
+
+lead_user: cuong.huynh
+lead_chat_webhook: null
+kit_min_version: 0.1.0
+
+# Working calendar & thresholds
+thresholds:
+  stale_working_days: 2
+  epic_unscheduled_window: 5
+  interrupt_window: 5
+  escalate_l1_after: 1
+  escalate_l2_after: 2
+  internal_block_escalate_after: 2
+
+# Fixed-date Vietnam public holidays for 2026.
+# NOTE: Lunar New Year (Tết Âm Lịch) and Hung Kings Commemoration (Giỗ Tổ Hùng Vương)
+# holidays vary each year and must be added yearly.
+holidays:
+  - "2026-01-01"  # Tết Dương Lịch
+  - "2026-04-30"  # Giải Phóng Miền Nam
+  - "2026-05-01"  # Quốc Tế Lao Động
+  - "2026-09-02"  # Quốc Khánh
+
+# Jira Custom Field mappings (logical -> customfield_id)
+fields:
+  planned_start: customfield_10108
+  planned_end: customfield_10109
+  qc_owner: null
+  contributors: null
+  reschedule_requester: null
+  baseline_end: null
+  proposed_end: null
+  reschedule_reason: null
+  reschedule_status: null
+  reschedule_count: null
+  qc_fail_count: null
+  block_reason: null
+  blocked_by: null
+  blocked_since: null
+  health_flags: null
+  escalation_level: null
+  escalation_owner: null
+  health_since: null
+  flow_progress: null
+  forecast_end: null
+  slip_days: null
+  unscheduled_flows: null
+
+# Status mappings (logical -> Jira status name)
+statuses:
+  todo: DEV To Do
+  in_progress: Dev In Progress
+  ready_for_qc: QC TO DO
+  testing: Test In Progress
+  done: Done
+  cancelled: Cancelled
+  open: Open
+  analyzing: Analyzing
+  ready: Ready For Dev
+  story_in_progress: In Progress
+  ready_for_uat: Ready For UAT
+  client_uat: Wait For Review
+
+# Issue type mappings (logical -> list of Jira issue type names / aliases)
+issue_types:
+  epic:
+    - Epic
+  story:
+    - Story
+  tech_task:
+    - Tech Task
+    - Ad-hoc Task
+  bug:
+    - Bug
+    - Bug stand-alone
+  flow:
+    - Flow
+    - Dev Task
+  flow_bug:
+    - Flow Bug
+    - Bug
+  tech_subtask:
+    - Tech Sub-task
+    - Sub-task
+
+# Transition names (logical -> Jira transition name)
+transitions:
+  schedule: Schedule
+  start: Start
+  submit_qc: Submit QC
+  start_test: Start Test
+  qc_pass: QC Pass
+  qc_fail: QC Fail
+  cancel: Cancel
+  request_reschedule: Request Reschedule
+  approve_reschedule: Approve Reschedule
+  reject_reschedule: Reject Reschedule
+  block: Block
+  unblock: Unblock
+  confirm_no_impact: Confirm No Impact
+
+# 27 projects from spec §3.1
+projects:
+  # Active projects (15)
+  ROCKY:
+    key: ROCKY
+    default_lead_ba: cuong.huynh
+    chat_webhook: null
+    frozen: false
+  HMKPOS:
+    key: HMKPOS
+    default_lead_ba: cuong.huynh
+    chat_webhook: null
+    frozen: false
+  HMKLOYAL:
+    key: HMKLOYAL
+    default_lead_ba: cuong.huynh
+    chat_webhook: null
+    frozen: false
+  HH:
+    key: HH
+    default_lead_ba: cuong.huynh
+    chat_webhook: null
+    frozen: false
+  LPPOS:
+    key: LPPOS
+    default_lead_ba: cuong.huynh
+    chat_webhook: null
+    frozen: false
+  RFID:
+    key: RFID
+    default_lead_ba: cuong.huynh
+    chat_webhook: null
+    frozen: false
+  CP:
+    key: CP
+    default_lead_ba: cuong.huynh
+    chat_webhook: null
+    frozen: false
+  CRM:
+    key: CRM
+    default_lead_ba: cuong.huynh
+    chat_webhook: null
+    frozen: false
+  EGG:
+    key: EGG
+    default_lead_ba: cuong.huynh
+    chat_webhook: null
+    frozen: false
+  AILA:
+    key: AILA
+    default_lead_ba: cuong.huynh
+    chat_webhook: null
+    frozen: false
+  FNB:
+    key: FNB
+    default_lead_ba: cuong.huynh
+    chat_webhook: null
+    frozen: false
+  HMKAI:
+    key: HMKAI
+    default_lead_ba: cuong.huynh
+    chat_webhook: null
+    frozen: false
+  AEON:
+    key: AEON
+    default_lead_ba: cuong.huynh
+    chat_webhook: null
+    frozen: false
+  GSH:
+    key: GSH
+    default_lead_ba: cuong.huynh
+    chat_webhook: null
+    frozen: false
+  RIV:
+    key: RIV
+    default_lead_ba: cuong.huynh
+    chat_webhook: null
+    frozen: false
+
+  # Frozen projects (12)
+  BUL:
+    key: BUL
+    default_lead_ba: cuong.huynh
+    chat_webhook: null
+    frozen: true
+  HUE:
+    key: HUE
+    default_lead_ba: cuong.huynh
+    chat_webhook: null
+    frozen: true
+  HMKCHAT:
+    key: HMKCHAT
+    default_lead_ba: cuong.huynh
+    chat_webhook: null
+    frozen: true
+  SUP:
+    key: SUP
+    default_lead_ba: cuong.huynh
+    chat_webhook: null
+    frozen: true
+  KP:
+    key: KP
+    default_lead_ba: cuong.huynh
+    chat_webhook: null
+    frozen: true
+  MAP:
+    key: MAP
+    default_lead_ba: cuong.huynh
+    chat_webhook: null
+    frozen: true
+  MEW:
+    key: MEW
+    default_lead_ba: cuong.huynh
+    chat_webhook: null
+    frozen: true
+  RS:
+    key: RS
+    default_lead_ba: cuong.huynh
+    chat_webhook: null
+    frozen: true
+  SL:
+    key: SL
+    default_lead_ba: cuong.huynh
+    chat_webhook: null
+    frozen: true
+  UW:
+    key: UW
+    default_lead_ba: cuong.huynh
+    chat_webhook: null
+    frozen: true
+  VL:
+    key: VL
+    default_lead_ba: cuong.huynh
+    chat_webhook: null
+    frozen: true
+  ZBS:
+    key: ZBS
+    default_lead_ba: cuong.huynh
+    chat_webhook: null
+    frozen: true

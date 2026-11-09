@@ -1,0 +1,1 @@
+"""Eggstech Jira MCP package."""
