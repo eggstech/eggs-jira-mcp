@@ -12,7 +12,9 @@ class Issue:
     status: str
     summary: str
     assignee: str | None
-    contributors: tuple[str, ...]
+    components: tuple[str, ...]
+    part: str | None
+    parent_type: str | None
     qc_owner: str | None
     parent_key: str | None
     epic_key: str | None
@@ -41,12 +43,19 @@ class Issue:
         return self.status in {"done", "cancelled"}
 
     @property
-    def people(self) -> frozenset[str]:
-        """Return set of people involved: assignee ∪ contributors."""
-        result = set(self.contributors)
-        if self.assignee:
-            result.add(self.assignee)
-        return frozenset(result)
+    def is_work_item(self) -> bool:
+        """Return True if issue is a work item (dev_task, bug_sub, bug, adhoc)."""
+        return self.type in {"dev_task", "bug_sub", "bug", "adhoc"}
+
+    @property
+    def actor_code(self) -> str | None:
+        """Prefix before ' - ' of the single component, else None."""
+        if len(self.components) != 1:
+            return None
+        comp = self.components[0]
+        if " - " in comp:
+            return comp.split(" - ", 1)[0].strip()
+        return None
 
 
 @dataclass(frozen=True)

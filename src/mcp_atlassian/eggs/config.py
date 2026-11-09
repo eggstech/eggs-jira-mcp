@@ -12,11 +12,12 @@ import yaml
 @dataclass(frozen=True)
 class Thresholds:
     stale_working_days: int = 2
-    epic_unscheduled_window: int = 5
+    unscheduled_window: int = 5
     interrupt_window: int = 5
     escalate_l1_after: int = 1
     escalate_l2_after: int = 2
     internal_block_escalate_after: int = 2
+    qc_flow_buffer: int = 1
 
 
 @dataclass(frozen=True)
@@ -55,11 +56,11 @@ class EggsConfig:
         """Map Jira issue type name and is_subtask to logical issue type."""
         cleaned = jira_name.strip().lower()
 
-        # Candidate types strictly match is_subtask
+        # Candidate types strictly match is_subtask in v2
         candidate_types = (
-            ("flow_bug", "flow", "tech_subtask")
+            ("dev_task", "bug_sub")
             if is_subtask
-            else ("epic", "story", "tech_task", "bug")
+            else ("epic", "story", "adhoc", "bug")
         )
         for logical in candidate_types:
             names = self.issue_types.get(logical, [])
@@ -108,11 +109,15 @@ def load_config(path: str | None = None) -> EggsConfig:
     thresholds_data = data.get("thresholds", {})
     thresholds = Thresholds(
         stale_working_days=thresholds_data.get("stale_working_days", 2),
-        epic_unscheduled_window=thresholds_data.get("epic_unscheduled_window", 5),
+        unscheduled_window=thresholds_data.get(
+            "unscheduled_window",
+            thresholds_data.get("epic_unscheduled_window", 5),
+        ),
         interrupt_window=thresholds_data.get("interrupt_window", 5),
         escalate_l1_after=thresholds_data.get("escalate_l1_after", 1),
         escalate_l2_after=thresholds_data.get("escalate_l2_after", 2),
         internal_block_escalate_after=thresholds_data.get("internal_block_escalate_after", 2),
+        qc_flow_buffer=thresholds_data.get("qc_flow_buffer", 1),
     )
 
     # Parse holidays

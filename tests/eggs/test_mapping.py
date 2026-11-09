@@ -22,8 +22,9 @@ def base_config():
             "planned_start": "customfield_10108",
             "planned_end": "customfield_10109",
             "baseline_end": "customfield_baseline_end",
-            "contributors": "customfield_contributors",
+            "part": "customfield_part",
             "qc_owner": "customfield_qc_owner",
+            "unscheduled_count": "customfield_unscheduled_count",
             "health_flags": "customfield_health_flags",
             "escalation_level": "customfield_escalation_level",
             "escalation_owner": "customfield_escalation_owner",
@@ -36,27 +37,92 @@ def base_config():
             "proposed_end": "customfield_proposed_end",
         },
         statuses={
+            "open": "Open",
+            "analyzing": "Analyzing",
+            "ready_for_dev": "Ready For Dev",
             "todo": "DEV To Do",
             "in_progress": "Dev In Progress",
             "ready_for_qc": "QC TO DO",
             "testing": "Test In Progress",
+            "ready_for_uat": "Ready For UAT",
+            "client_uat": "Wait For Review",
             "done": "Done",
             "cancelled": "Cancelled",
         },
         issue_types={
             "epic": ["Epic"],
             "story": ["Story"],
-            "tech_task": ["Tech Task", "Ad-hoc Task"],
-            "bug": ["Bug", "Bug stand-alone"],
-            "flow": ["Flow", "Dev Task"],
-            "flow_bug": ["Flow Bug", "Bug"],
-            "tech_subtask": ["Tech Sub-task", "Sub-task"],
+            "dev_task": ["Dev Task"],
+            "bug_sub": ["Bug"],
+            "adhoc": ["Ad-hoc Task"],
+            "bug": ["Bug stand-alone"],
         },
         projects={
             "HMKLOYAL": ProjectConfig(key="HMKLOYAL", default_lead_ba="cuong.huynh", frozen=False),
             "BUL": ProjectConfig(key="BUL", default_lead_ba="cuong.huynh", frozen=True),
         },
     )
+
+
+def test_issue_actor_code_and_work_item():
+    # 1 component with prefix
+    i1 = Issue(
+        key="T-1", project="T", type="dev_task", status="todo", summary="S",
+        assignee="dev", components=("CH - CỬA HÀNG",), part="BE", parent_type="story",
+        qc_owner=None, parent_key=None, epic_key=None, created=None,
+        status_changed_at=None, planned_start=None, planned_end=None,
+        baseline_end=None, due_date=None, estimate_seconds=None,
+        reschedule_status=None, reschedule_requester=None, proposed_end=None,
+        blocked=False, blocked_by=None, blocked_since=None,
+        health_flags=frozenset(), health_since=None, escalation_level=0,
+        escalation_owner=None, frozen=False,
+    )
+    assert i1.actor_code == "CH"
+    assert i1.is_work_item is True
+
+    # Zero components
+    i0 = Issue(
+        key="T-0", project="T", type="story", status="todo", summary="S",
+        assignee="ba", components=(), part=None, parent_type=None,
+        qc_owner="qc", parent_key=None, epic_key=None, created=None,
+        status_changed_at=None, planned_start=None, planned_end=None,
+        baseline_end=None, due_date=None, estimate_seconds=None,
+        reschedule_status=None, reschedule_requester=None, proposed_end=None,
+        blocked=False, blocked_by=None, blocked_since=None,
+        health_flags=frozenset(), health_since=None, escalation_level=0,
+        escalation_owner=None, frozen=False,
+    )
+    assert i0.actor_code is None
+    assert i0.is_work_item is False
+
+    # Two components
+    i2 = Issue(
+        key="T-2", project="T", type="dev_task", status="todo", summary="S",
+        assignee="dev", components=("CH - CỬA HÀNG", "KT - KẾ TOÁN"), part="BE",
+        parent_type="story", qc_owner=None, parent_key=None, epic_key=None,
+        created=None, status_changed_at=None, planned_start=None, planned_end=None,
+        baseline_end=None, due_date=None, estimate_seconds=None,
+        reschedule_status=None, reschedule_requester=None, proposed_end=None,
+        blocked=False, blocked_by=None, blocked_since=None,
+        health_flags=frozenset(), health_since=None, escalation_level=0,
+        escalation_owner=None, frozen=False,
+    )
+    assert i2.actor_code is None
+
+    # Component without prefix
+    i_no_sep = Issue(
+        key="T-3", project="T", type="adhoc", status="todo", summary="S",
+        assignee="dev", components=("CH",), part=None, parent_type=None,
+        qc_owner=None, parent_key=None, epic_key=None, created=None,
+        status_changed_at=None, planned_start=None, planned_end=None,
+        baseline_end=None, due_date=None, estimate_seconds=None,
+        reschedule_status=None, reschedule_requester=None, proposed_end=None,
+        blocked=False, blocked_by=None, blocked_since=None,
+        health_flags=frozenset(), health_since=None, escalation_level=0,
+        escalation_owner=None, frozen=False,
+    )
+    assert i_no_sep.actor_code is None
+    assert i_no_sep.is_work_item is True
 
 
 def test_mapping_issue_flow_fixture(base_config):
@@ -66,12 +132,16 @@ def test_mapping_issue_flow_fixture(base_config):
     issue = issue_from_json(raw, base_config)
     assert issue.key == "HMKLOYAL-123"
     assert issue.project == "HMKLOYAL"
-    assert issue.type == "flow"
+    assert issue.type == "dev_task"
     assert issue.status == "ready_for_qc"
     assert issue.summary == "[CH-01] Dang nhap bang OTP"
     assert issue.assignee == "nguyen.van.a"
-    assert issue.contributors == ("tran.thi.b", "le.van.c")
-    assert issue.qc_owner == "qc.tester"
+    assert issue.components == ("CH - CỬA HÀNG",)
+    assert issue.actor_code == "CH"
+    assert issue.part == "BE"
+    assert issue.parent_type == "story"
+    assert issue.qc_owner is None  # work items keep None
+    assert issue.is_work_item is True
     assert issue.parent_key == "HMKLOYAL-100"
     assert issue.epic_key == "HMKLOYAL-50"
     assert issue.planned_start == date(2026, 11, 10)
@@ -85,11 +155,34 @@ def test_mapping_issue_flow_fixture(base_config):
     assert issue.health_since == date(2026, 11, 15)
     assert issue.frozen is False
     assert issue.is_resolved is False
-    assert issue.people == frozenset({"nguyen.van.a", "tran.thi.b", "le.van.c"})
     assert issue.status_changed_at is not None
     assert issue.status_changed_at.year == 2026
     assert issue.status_changed_at.month == 11
     assert issue.status_changed_at.day == 5
+
+
+def test_mapping_story_reads_qc_owner(base_config):
+    story_raw = {
+        "id": "10010",
+        "key": "HMKLOYAL-100",
+        "fields": {
+            "summary": "[CH-01] Dang nhap bang OTP Flow",
+            "project": {"key": "HMKLOYAL"},
+            "issuetype": {"name": "Story", "subtask": False},
+            "status": {"name": "Ready For Dev"},
+            "assignee": {"name": "ba.lead"},
+            "components": [{"name": "CH - CỬA HÀNG"}],
+            "customfield_qc_owner": {"name": "qc.tester"},
+            "duedate": "2026-11-25",
+        },
+    }
+    issue = issue_from_json(story_raw, base_config)
+    assert issue.type == "story"
+    assert issue.components == ("CH - CỬA HÀNG",)
+    assert issue.actor_code == "CH"
+    assert issue.qc_owner == "qc.tester"
+    assert issue.is_work_item is False
+    assert issue.part is None
 
 
 def test_status_changed_at_extracts_latest():
@@ -136,8 +229,12 @@ def test_unknown_or_none_custom_fields_map_gracefully(base_config):
     assert issue.project == "ROCKY"
     assert issue.type == "epic"
     assert issue.assignee is None
-    assert issue.contributors == ()
+    assert issue.components == ()
+    assert issue.actor_code is None
+    assert issue.part is None
+    assert issue.parent_type is None
     assert issue.qc_owner is None
+    assert issue.is_work_item is False
     assert issue.parent_key is None
     assert issue.epic_key is None
     assert issue.planned_start is None
@@ -150,7 +247,6 @@ def test_unknown_or_none_custom_fields_map_gracefully(base_config):
     assert issue.escalation_owner is None
     assert issue.health_since is None
     assert issue.status_changed_at is None
-    assert issue.people == frozenset()
     assert issue.frozen is False
 
 
@@ -195,13 +291,15 @@ def test_issue_fields_for_write(base_config):
         escalation_owner="a.b",
         escalation_level=2,
         planned_end=date(2026, 11, 22),
-        contributors=["user1", "user2"],
+        part="BE",
+        unscheduled_count=3,
     )
     assert payload["customfield_health_flags"] == [{"value": "STALE"}]
     assert payload["customfield_escalation_owner"] == {"name": "a.b"}
     assert payload["customfield_escalation_level"] == 2
     assert payload["customfield_10109"] == "2026-11-22"
-    assert payload["customfield_contributors"] == [{"name": "user1"}, {"name": "user2"}]
+    assert payload["customfield_part"] == {"value": "BE"}
+    assert payload["customfield_unscheduled_count"] == 3
 
     # Select field shape (reschedule_status -> {"value": ...})
     payload_select = issue_fields_for_write(base_config, reschedule_status="Chờ duyệt")

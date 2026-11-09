@@ -17,11 +17,12 @@ lead_chat_webhook: ${HOOK}
 kit_min_version: 0.1.0
 thresholds:
   stale_working_days: 2
-  epic_unscheduled_window: 5
+  unscheduled_window: 5
   interrupt_window: 5
   escalate_l1_after: 1
   escalate_l2_after: 2
   internal_block_escalate_after: 2
+  qc_flow_buffer: 1
 holidays:
   - "2026-01-01"
   - "2026-04-30"
@@ -30,30 +31,34 @@ holidays:
 fields:
   planned_start: customfield_10108
   planned_end: customfield_10109
+  part: customfield_part
+  qc_owner: customfield_qc_owner
+  unscheduled_count: customfield_unscheduled_count
 statuses:
-  ready_for_qc: QC TO DO
-  in_progress: Dev In Progress
+  open: Open
+  analyzing: Analyzing
+  ready_for_dev: Ready For Dev
   todo: DEV To Do
+  in_progress: Dev In Progress
+  ready_for_qc: QC TO DO
+  testing: Test In Progress
+  ready_for_uat: Ready For UAT
+  client_uat: Wait For Review
+  done: Done
+  cancelled: Cancelled
 issue_types:
   epic:
     - Epic
   story:
     - Story
-  tech_task:
-    - Tech Task
+  dev_task:
+    - Dev Task
+  bug_sub:
+    - Bug
+  adhoc:
     - Ad-hoc Task
   bug:
-    - Bug
     - Bug stand-alone
-  flow:
-    - Flow
-    - Dev Task
-  flow_bug:
-    - Flow Bug
-    - Bug
-  tech_subtask:
-    - Tech Sub-task
-    - Sub-task
 transitions:
   schedule: Schedule
   start: Start
@@ -75,16 +80,59 @@ projects:
     cfg = load_config(str(cfg_file))
     assert cfg.lead_chat_webhook == "https://chat.example/x"
     assert cfg.status_logical("QC TO DO") == "ready_for_qc"
-    assert cfg.type_logical("Bug", is_subtask=True) == "flow_bug"
-    assert cfg.type_logical("Bug", is_subtask=False) == "bug"
+    assert cfg.status_logical("Ready For Dev") == "ready_for_dev"
+    assert cfg.status_logical("Wait For Review") == "client_uat"
+    assert cfg.type_logical("Bug", is_subtask=True) == "bug_sub"
+    assert cfg.type_logical("Bug", is_subtask=False) is None
     assert cfg.type_logical("Bug stand-alone", is_subtask=False) == "bug"
-    assert cfg.type_logical("Sub-task", is_subtask=True) == "tech_subtask"
-    assert cfg.type_logical("Dev Task", is_subtask=True) == "flow"
+    assert cfg.type_logical("Sub-task", is_subtask=True) is None
+    assert cfg.type_logical("Dev Task", is_subtask=True) == "dev_task"
     assert cfg.type_logical("Dev Task", is_subtask=False) is None
-    assert cfg.type_logical("Ad-hoc Task", is_subtask=False) == "tech_task"
+    assert cfg.type_logical("Ad-hoc Task", is_subtask=False) == "adhoc"
     assert cfg.projects["HMKLOYAL"].chat_webhook == "https://chat.example/x/hmkloyal"
     assert cfg.projects["BUL"].frozen is True
     assert date(2026, 1, 1) in cfg.holidays
+    assert cfg.thresholds.qc_flow_buffer == 1
+    assert cfg.thresholds.unscheduled_window == 5
+
+
+@pytest.mark.parametrize(
+    ("jira_name", "is_subtask", "expected"),
+    [
+        ("Epic", False, "epic"),
+        ("Story", False, "story"),
+        ("Dev Task", True, "dev_task"),
+        ("Dev Task", False, None),
+        ("Bug", True, "bug_sub"),
+        ("Bug", False, None),
+        ("Bug stand-alone", False, "bug"),
+        ("Bug stand-alone", True, None),
+        ("Ad-hoc Task", False, "adhoc"),
+        ("Ad-hoc Task", True, None),
+        # Retired types -> None
+        ("Testing Task", True, None),
+        ("Testing Task", False, None),
+        ("Sub-task", True, None),
+        ("Sub-task", False, None),
+        ("Improvement", False, None),
+        ("Task", False, None),
+        ("New Feature", False, None),
+        ("Unknown Type", False, None),
+    ],
+)
+def test_type_logical_table(jira_name, is_subtask, expected):
+    cfg = EggsConfig(
+        lead_user="cuong.huynh",
+        issue_types={
+            "epic": ["Epic"],
+            "story": ["Story"],
+            "dev_task": ["Dev Task"],
+            "bug_sub": ["Bug"],
+            "adhoc": ["Ad-hoc Task"],
+            "bug": ["Bug stand-alone"],
+        },
+    )
+    assert cfg.type_logical(jira_name, is_subtask=is_subtask) == expected
 
 
 def test_load_example_config():

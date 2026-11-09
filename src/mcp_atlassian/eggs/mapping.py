@@ -148,6 +148,14 @@ def issue_from_json(raw: dict, cfg: EggsConfig) -> Issue:
 
     parent_data = fields.get("parent") or {}
     parent_key = parent_data.get("key")
+    parent_fields = parent_data.get("fields") or {}
+    parent_issuetype = parent_fields.get("issuetype") or {}
+    raw_parent_type = parent_issuetype.get("name")
+    parent_is_subtask = bool(parent_issuetype.get("subtask", False))
+    parent_type = (
+        cfg.type_logical(raw_parent_type, is_subtask=parent_is_subtask)
+        or (raw_parent_type.lower() if raw_parent_type else None)
+    ) if raw_parent_type else None
 
     # Helper to retrieve custom field value
     def get_cf(logical_name: str) -> Any:
@@ -170,8 +178,14 @@ def issue_from_json(raw: dict, cfg: EggsConfig) -> Issue:
     health_since = _parse_date(get_cf("health_since"))
     blocked_since = _parse_date(get_cf("blocked_since"))
 
-    contributors = _parse_users(get_cf("contributors"))
-    qc_owner = _parse_user(get_cf("qc_owner"))
+    raw_components = fields.get("components") or []
+    components = tuple(
+        c.get("name") if isinstance(c, dict) else str(c)
+        for c in raw_components
+        if (c.get("name") if isinstance(c, dict) else str(c))
+    )
+    part = _parse_option(get_cf("part"))
+    qc_owner = _parse_user(get_cf("qc_owner")) if issue_type == "story" else None
     reschedule_requester = _parse_user(get_cf("reschedule_requester"))
     escalation_owner = _parse_user(get_cf("escalation_owner"))
 
@@ -200,7 +214,9 @@ def issue_from_json(raw: dict, cfg: EggsConfig) -> Issue:
         status=status,
         summary=fields.get("summary") or "",
         assignee=assignee,
-        contributors=contributors,
+        components=components,
+        part=part,
+        parent_type=parent_type,
         qc_owner=qc_owner,
         parent_key=parent_key,
         epic_key=epic_key,
@@ -233,14 +249,12 @@ _DATE_FIELDS = frozenset({
 _USER_FIELDS = frozenset({
     "escalation_owner", "qc_owner", "reschedule_requester", "assignee"
 })
-_MULTI_USER_FIELDS = frozenset({
-    "contributors"
-})
+_MULTI_USER_FIELDS = frozenset()
 _MULTI_SELECT_FIELDS = frozenset({
     "health_flags"
 })
 _SELECT_FIELDS = frozenset({
-    "reschedule_reason", "reschedule_status", "blocked_by"
+    "part", "reschedule_reason", "reschedule_status", "blocked_by"
 })
 
 

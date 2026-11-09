@@ -30,17 +30,28 @@
     "duedate": "2026-11-25",
     "timeoriginalestimate": 28800,
     "labels": ["loyalty-v1"],
+    "components": [
+      {
+        "id": "10100",
+        "name": "CH - CỬA HÀNG"
+      }
+    ],
     "parent": {
       "id": "10010",
-      "key": "HMKLOYAL-100"
+      "key": "HMKLOYAL-100",
+      "fields": {
+        "issuetype": {
+          "name": "Story",
+          "subtask": false
+        }
+      }
     },
     "customfield_10108": "2026-11-10",
     "customfield_10109": "2026-11-20",
     "customfield_baseline_end": "2026-11-20",
-    "customfield_contributors": [
-      {"name": "tran.thi.b"},
-      {"name": "le.van.c"}
-    ],
+    "customfield_part": {
+      "value": "BE"
+    },
     "customfield_qc_owner": {
       "name": "qc.tester"
     },

@@ -11,11 +11,12 @@ flagged_impediment_value: Impediment
 # Working calendar & thresholds
 thresholds:
   stale_working_days: 2
-  epic_unscheduled_window: 5
+  unscheduled_window: 5
   interrupt_window: 5
   escalate_l1_after: 1
   escalate_l2_after: 2
   internal_block_escalate_after: 2
+  qc_flow_buffer: 1
 
 # Fixed-date Vietnam public holidays for 2026.
 # NOTE: Lunar New Year (Tết Âm Lịch) and Hung Kings Commemoration (Giỗ Tổ Hùng Vương)
@@ -33,7 +34,7 @@ fields:
   epic_link: null  # set via `eggs-guardian resolve-fields`
   flagged: null  # set via `eggs-guardian resolve-fields`
   qc_owner: null
-  contributors: null
+  part: null
   reschedule_requester: null
   baseline_end: null
   proposed_end: null
@@ -51,22 +52,21 @@ fields:
   flow_progress: null
   forecast_end: null
   slip_days: null
-  unscheduled_flows: null
+  unscheduled_count: null
 
 # Status mappings (logical -> Jira status name)
 statuses:
+  open: Open
+  analyzing: Analyzing
+  ready_for_dev: Ready For Dev
   todo: DEV To Do
   in_progress: Dev In Progress
   ready_for_qc: QC TO DO
   testing: Test In Progress
-  done: Done
-  cancelled: Cancelled
-  open: Open
-  analyzing: Analyzing
-  ready: Ready For Dev
-  story_in_progress: In Progress
   ready_for_uat: Ready For UAT
   client_uat: Wait For Review
+  done: Done
+  cancelled: Cancelled
 
 # Issue type mappings (logical -> list of Jira issue type names / aliases)
 issue_types:
@@ -74,21 +74,14 @@ issue_types:
     - Epic
   story:
     - Story
-  tech_task:
-    - Tech Task
+  dev_task:
+    - Dev Task
+  bug_sub:
+    - Bug
+  adhoc:
     - Ad-hoc Task
   bug:
-    - Bug
     - Bug stand-alone
-  flow:
-    - Flow
-    - Dev Task
-  flow_bug:
-    - Flow Bug
-    - Bug
-  tech_subtask:
-    - Tech Sub-task
-    - Sub-task
 
 # Transition names (logical -> Jira transition name)
 transitions:
@@ -105,6 +98,9 @@ transitions:
   block: Block
   unblock: Unblock
   confirm_no_impact: Confirm No Impact
+  client_uat: Client UAT
+  uat_signoff: UAT Sign-off
+  uat_fail: UAT Fail
 
 # 27 projects from spec §3.1
 projects:
