@@ -106,6 +106,10 @@ def escalate(
         l1_candidate = cfg.lead_user
 
     l1_owner = resolve_owner(l1_candidate)
+    if l1_owner == l0_owner or (
+        issue.reschedule_requester and l1_owner == issue.reschedule_requester
+    ):
+        l1_owner = cfg.lead_user
 
     # L2 owner
     l2_owner = cfg.lead_user

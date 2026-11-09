@@ -262,3 +262,87 @@ def test_worklogs_since_skips_unresolvable_issue_id(mock_client, caplog):
     assert any("could not be resolved" in record.message for record in caplog.records)
 
 
+def test_project_role_members_pagination_and_skips_inactive(mock_client):
+    gateway = AtlassianGateway(mock_client)
+    mock_client.get.side_effect = [
+        # 1. Project roles list
+        {"Developers": "http://jira/rest/api/2/project/PROJ/role/10001", "QA": "http://jira/rest/api/2/project/PROJ/role/10002"},
+        # 2. Role 10001 details
+        {
+            "actors": [
+                {"type": "atlassian-user-role-actor", "name": "alice", "active": True},
+                {"type": "atlassian-user-role-actor", "name": "inactive_dev", "active": False},
+                {"type": "atlassian-group-role-actor", "name": "dev-group"},
+            ]
+        },
+        # 3. Group page 1
+        {
+            "isLast": False,
+            "values": [
+                {"name": "bob", "active": True},
+                {"name": "inactive_grp_user", "active": False},
+            ],
+        },
+        # 4. Group page 2
+        {
+            "isLast": True,
+            "values": [
+                {"name": "charlie", "active": True},
+            ],
+        },
+    ]
+
+    res = gateway.project_role_members("PROJ", role_names=["Developers"])
+    assert res == {"Developers": ["alice", "bob", "charlie"]}
+
+    # Verify group/member calls with params
+    group_calls = [
+        call for call in mock_client.get.call_args_list
+        if "rest/api/2/group/member" in call.args[0]
+    ]
+    assert len(group_calls) == 2
+    assert group_calls[0].kwargs.get("params") == {"groupname": "dev-group", "startAt": 0, "maxResults": 50}
+    assert group_calls[1].kwargs.get("params") == {"groupname": "dev-group", "startAt": 50, "maxResults": 50}
+
+
+def test_project_role_members_group_name_with_ampersand(mock_client):
+    gateway = AtlassianGateway(mock_client)
+    group_name = "devs & testers"
+    mock_client.get.side_effect = [
+        {"Developers": "rest/api/2/project/PROJ/role/10001"},
+        {"actors": [{"type": "atlassian-group-role-actor", "name": group_name}]},
+        {"isLast": True, "values": [{"name": "alice", "active": True}]},
+    ]
+
+    res = gateway.project_role_members("PROJ", role_names=["Developers"])
+    assert res == {"Developers": ["alice"]}
+    group_calls = [
+        call for call in mock_client.get.call_args_list
+        if "rest/api/2/group/member" in call.args[0]
+    ]
+    assert len(group_calls) == 1
+    assert group_calls[0].kwargs.get("params") == {"groupname": group_name, "startAt": 0, "maxResults": 50}
+
+
+def test_project_role_members_group_expansion_failure_raises(mock_client):
+    gateway = AtlassianGateway(mock_client)
+    mock_client.get.side_effect = [
+        {"Developers": "rest/api/2/project/PROJ/role/10001"},
+        {"actors": [{"type": "atlassian-group-role-actor", "name": "failing-group"}]},
+        Exception("Failed to reach group API"),
+    ]
+
+    with pytest.raises(Exception) as exc_info:
+        gateway.project_role_members("PROJ", role_names=["Developers"])
+    assert "Failed to reach group API" in str(exc_info.value) or "failing-group" in str(exc_info.value)
+
+
+def test_project_role_members_project_list_failure_raises(mock_client):
+    gateway = AtlassianGateway(mock_client)
+    mock_client.get.side_effect = Exception("403 Forbidden")
+
+    with pytest.raises(Exception, match="403 Forbidden"):
+        gateway.project_role_members("PROJ", role_names=["Developers"])
+
+
+

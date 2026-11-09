@@ -37,10 +37,10 @@ roles:
     - "Developers"
 
 link_types:
-  interrupts: "is interrupted by"
-  causes: "causes"
-  relates: "relates to"
-  duplicates: "duplicates"
+  interrupts: "Interrupts"
+  causes: "Causes"
+  relates: "Relates"
+  duplicates: "Duplicate"
 
 # Fixed-date Vietnam public holidays for 2026.
 # NOTE: Lunar New Year (Tết Âm Lịch) and Hung Kings Commemoration (Giỗ Tổ Hùng Vương)
@@ -55,45 +55,45 @@ holidays:
 fields:
   planned_start: customfield_10108
   planned_end: customfield_10109
-  epic_link: null  # set via `eggs-guardian resolve-fields`
-  flagged: null  # set via `eggs-guardian resolve-fields`
-  qc_owner: null
-  part: null
-  reschedule_requester: null
-  baseline_end: null
-  proposed_end: null
-  reschedule_reason: null
-  reschedule_status: null
-  reschedule_count: null
-  qc_fail_count: null
-  block_reason: null
-  blocked_by: null
-  blocked_since: null
-  health_flags: null
-  escalation_level: null
-  escalation_owner: null
-  health_since: null
+  epic_link: customfield_10100
+  flagged: customfield_10409
+  qc_owner: customfield_10702
+  part: customfield_10701
+  reschedule_requester: customfield_10706
+  baseline_end: customfield_10700
+  proposed_end: customfield_10703
+  reschedule_reason: customfield_10704
+  reschedule_status: customfield_10705
+  reschedule_count: customfield_10707
+  qc_fail_count: customfield_10708
+  block_reason: customfield_10709
+  blocked_by: customfield_10710
+  blocked_since: customfield_10711
+  health_flags: customfield_10712
+  escalation_level: customfield_10714
+  escalation_owner: customfield_10715
+  health_since: customfield_10713
   flow_progress: null
-  forecast_end: null
-  slip_days: null
-  unscheduled_count: null
-  report_source: null
-  reported_by: null
-  reported_at: null
+  forecast_end: customfield_10716
+  slip_days: customfield_10717
+  unscheduled_count: customfield_10718
+  report_source: customfield_10719
+  reported_by: customfield_10720
+  reported_at: customfield_10721
 
 # Status mappings (logical -> Jira status name)
 statuses:
   open: Open
   analyzing: Analyzing
-  ready_for_dev: Ready For Dev
+  ready_for_dev: Ready For Dev  # 10400
   todo: DEV To Do
   in_progress: Dev In Progress
   ready_for_qc: QC TO DO
   testing: Test In Progress
-  ready_for_uat: Ready For UAT
+  ready_for_uat: Ready For UAT  # 10401
   client_uat: Wait For Review
   done: Done
-  cancelled: Cancelled
+  cancelled: Cancelled  # 10402
 
 # Issue type mappings (logical -> list of Jira issue type names / aliases)
 issue_types:
@@ -127,7 +127,7 @@ transitions:
   schedule: Schedule
   start: Start
   submit_qc: Submit QC
-  finish: Done
+  finish: Finish
   start_test: Start Test
   qc_pass: QC Pass
   qc_fail: QC Fail
@@ -143,6 +143,9 @@ transitions:
   uat_fail: UAT Fail
   start_triage: Start Triage
   close_report: Close Report
+  start_analysis: Start Analysis
+  ready_for_dev: Ready For Dev
+  close_epic: Close Epic
 
 # 27 projects from spec §3.1
 projects:

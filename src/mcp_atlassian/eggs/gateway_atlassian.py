@@ -285,14 +285,40 @@ class AtlassianGateway(JiraGateway):
             return res
         return {}
 
-    def project_role_members(self, project: str) -> dict[str, list[str]]:
+    def project_role_members(
+        self, project: str, role_names: list[str] | None = None
+    ) -> dict[str, list[str]]:
         """Fetch role members mapped by Jira role name: {role_name: [usernames]}."""
-        res = self.client.get(f"rest/api/2/project/{project}/role")
+        target_role_names: set[str] | None = None
+        if role_names is not None:
+            target_role_names = {r.strip().lower() for r in role_names}
+        elif self.cfg and getattr(self.cfg, "roles", None):
+            flattened: list[str] = []
+            for val in self.cfg.roles.values():
+                if isinstance(val, list):
+                    flattened.extend(val)
+                elif isinstance(val, str):
+                    flattened.append(val)
+            target_role_names = {r.strip().lower() for r in flattened}
+
+        try:
+            res = self.client.get(f"rest/api/2/project/{project}/role")
+        except Exception as e:
+            msg = f"Failed to fetch roles for project {project}: {e}"
+            raise JiraError(msg) from e
+
         if not isinstance(res, dict):
-            return {}
+            msg = f"Expected dict from project role API for {project}, got {type(res)}"
+            raise JiraError(msg)
 
         role_members: dict[str, list[str]] = {}
         for role_name, role_val in res.items():
+            if (
+                target_role_names is not None
+                and role_name.strip().lower() not in target_role_names
+            ):
+                continue
+
             url_str = (
                 role_val
                 if isinstance(role_val, str)
@@ -308,9 +334,9 @@ class AtlassianGateway(JiraGateway):
 
             try:
                 role_data = self.client.get(path)
-            except Exception as e:  # noqa: BLE001
-                logger.warning("Failed to fetch role data for %s: %s", path, e)
-                continue
+            except Exception as e:
+                msg = f"Failed to fetch role data for {role_name} in {project}: {e}"
+                raise JiraError(msg) from e
 
             if not isinstance(role_data, dict):
                 continue
@@ -323,24 +349,50 @@ class AtlassianGateway(JiraGateway):
                 if actor_type == "atlassian-group-role-actor":
                     group_name = actor.get("name")
                     if group_name:
-                        try:
-                            group_res = self.client.get(
-                                f"rest/api/2/group/member?groupname={group_name}"
-                            )
-                            if isinstance(group_res, dict) and "values" in group_res:
-                                for u in group_res["values"]:
-                                    if isinstance(u, dict) and u.get("name"):
-                                        usernames.append(u["name"])
-                                continue
-                        except Exception as e:  # noqa: BLE001
-                            logger.debug(
-                                "Failed to resolve group members for %s: %s",
-                                group_name,
-                                e,
-                            )
-                name = actor.get("name")
-                if name:
-                    usernames.append(name)
+                        start_at = 0
+                        max_results = 50
+                        while True:
+                            try:
+                                group_res = self.client.get(
+                                    "rest/api/2/group/member",
+                                    params={
+                                        "groupname": group_name,
+                                        "startAt": start_at,
+                                        "maxResults": max_results,
+                                    },
+                                )
+                            except Exception as e:
+                                msg = (
+                                    f"Failed to expand group {group_name} "
+                                    f"in project {project}: {e}"
+                                )
+                                raise JiraError(msg) from e
+
+                            if not isinstance(group_res, dict):
+                                msg = (
+                                    f"Unexpected response expanding group "
+                                    f"{group_name}: {group_res}"
+                                )
+                                raise JiraError(msg)
+
+                            values = group_res.get("values", [])
+                            for u in values:
+                                if isinstance(u, dict):
+                                    if u.get("active") is False:
+                                        continue
+                                    uname = u.get("name") or u.get("key")
+                                    if uname and uname not in usernames:
+                                        usernames.append(uname)
+
+                            if group_res.get("isLast", True) or not values:
+                                break
+                            start_at += max_results
+                else:
+                    if actor.get("active") is False:
+                        continue
+                    name = actor.get("name")
+                    if name and name not in usernames:
+                        usernames.append(name)
 
             role_members[role_name] = usernames
 

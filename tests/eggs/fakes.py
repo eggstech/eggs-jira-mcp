@@ -183,6 +183,12 @@ class FakeGateway(JiraGateway):
         self._record("myself")
         return dict(self.me)
 
-    def project_role_members(self, project: str) -> dict[str, list[str]]:
+    def project_role_members(
+        self, project: str, role_names: list[str] | None = None
+    ) -> dict[str, list[str]]:
         self._record("project_role_members", project)
-        return dict(self.role_members.get(project, {}))
+        all_roles = dict(self.role_members.get(project, {}))
+        if role_names is not None:
+            norm_names = {r.strip().lower() for r in role_names}
+            return {k: v for k, v in all_roles.items() if k.strip().lower() in norm_names}
+        return all_roles

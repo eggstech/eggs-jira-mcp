@@ -94,6 +94,8 @@ class JiraGateway(Protocol):
         """
         ...
 
-    def project_role_members(self, project: str) -> dict[str, list[str]]:
+    def project_role_members(
+        self, project: str, role_names: list[str] | None = None
+    ) -> dict[str, list[str]]:
         """Fetch role members mapped by Jira role name: {role_name: [usernames]}."""
         ...

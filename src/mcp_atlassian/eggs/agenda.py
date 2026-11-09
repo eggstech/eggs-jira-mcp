@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from .calendar import WorkCalendar
 from .config import EggsConfig
@@ -116,7 +117,7 @@ INTENTS: list[Intent] = [
             "xin lùi ngày",
         ],
         tool="eggs_request_reschedule",
-        required=["key", "new_end", "reason"],
+        required=["key", "proposed_end", "reason"],
     ),
     # QC
     Intent(
@@ -175,7 +176,7 @@ INTENTS: list[Intent] = [
         roles=frozenset({"lead_ba"}),
         examples=["dời hạn luồng RFID-45", "đổi due date story", "flow reschedule"],
         tool="eggs_flow_reschedule",
-        required=["story_key", "new_due", "reason"],
+        required=["key", "proposed_due", "reason"],
     ),
     Intent(
         name="uat",
@@ -243,19 +244,33 @@ def intents_for(identity: Identity) -> list[Intent]:
 
 def mentioned_keys(text: str, project_keys: set[str]) -> list[str]:
     """Find issue keys mentioned in text that belong to known project_keys,
-    ordered and deduplicated.
+    ordered and deduplicated. Case-insensitive normalization to upper.
+    Project keys may contain underscores.
     """
-    pattern = re.compile(r"\b([A-Z][A-Z0-9]+)-(\d+)\b")
+    pattern = re.compile(r"\b([A-Za-z0-9_]+)-(\d+)\b")
+    norm_project_keys = {p.strip().upper() for p in project_keys}
     seen: set[str] = set()
     result: list[str] = []
     for match in pattern.finditer(text):
-        proj = match.group(1)
-        if proj in project_keys:
+        proj = match.group(1).upper()
+        if proj in norm_project_keys:
             key = f"{proj}-{match.group(2)}"
             if key not in seen:
                 seen.add(key)
                 result.append(key)
     return result
+
+
+def _natural_key(key: str | None) -> tuple[str, int]:
+    if not key:
+        return ("", 0)
+    if "-" in key:
+        proj, _, num = key.rpartition("-")
+        try:
+            return (proj, int(num))
+        except ValueError:
+            return (key, 0)
+    return (key, 0)
 
 
 def build_agenda(
@@ -290,25 +305,61 @@ def build_agenda(
                 f"{key} đang gặp cờ {flag_str} (leo thang mức {esc.level}), cần xử lý."
             )
             actions: list[SuggestedAction] = []
-            if "BLOCKED" in item_flags:
+            if "APPROVAL_PENDING" in item_flags:
                 actions.append(
-                    SuggestedAction(tool="eggs_unblock", args={"key": key}, missing=[])
+                    SuggestedAction(
+                        tool="eggs_decide_reschedule",
+                        args={"key": key},
+                        missing=["approve", "note"],
+                    )
                 )
-            elif "UNSCHEDULED" in item_flags:
+            elif issue.type == "story" and (
+                "AT_RISK" in item_flags or "UNSCHEDULED" in item_flags
+            ):
+                actions.append(
+                    SuggestedAction(
+                        tool="eggs_flow_reschedule",
+                        args={"key": key},
+                        missing=["proposed_due", "reason"],
+                    )
+                )
+            elif issue.is_work_item and (
+                "OVERDUE" in item_flags or "NEED_RESCHEDULE" in item_flags
+            ):
+                forward_tool = (
+                    "eggs_finish"
+                    if (issue.type == "adhoc" or issue.parent_type == "adhoc")
+                    else "eggs_submit_qc"
+                )
+                actions.append(
+                    SuggestedAction(tool=forward_tool, args={"key": key}, missing=[])
+                )
+                actions.append(
+                    SuggestedAction(
+                        tool="eggs_request_reschedule",
+                        args={"key": key},
+                        missing=["proposed_end", "reason"],
+                    )
+                )
+            elif issue.is_work_item and "UNSCHEDULED" in item_flags:
                 actions.append(
                     SuggestedAction(
                         tool="eggs_schedule",
                         args={"key": key},
-                        missing=["planned_start", "planned_end"],
+                        missing=["start", "end", "estimate"],
                     )
                 )
-            else:
+            elif "STALE" in item_flags:
                 actions.append(
                     SuggestedAction(
                         tool="eggs_log_work",
                         args={"key": key},
-                        missing=["time_spent", "note"],
+                        missing=["time_spent"],
                     )
+                )
+            elif "BLOCKED" in item_flags:
+                actions.append(
+                    SuggestedAction(tool="eggs_unblock", args={"key": key}, missing=[])
                 )
 
             items.append(
@@ -438,7 +489,7 @@ def build_agenda(
         if "lead_ba" in proj_roles or identity.is_lead:
             for act in em.actors:
                 if act.ready_for_uat > 0 and act.dev == 0 and act.qc == 0:
-                    actor_name = act.actor_code or act.actor
+                    actor_name = act.actor
                     title = (
                         f"[{epic_key}] Nhóm {actor_name} sẵn sàng UAT "
                         f"({act.ready_for_uat}/{act.total} luồng)"
@@ -452,7 +503,7 @@ def build_agenda(
                             tool="eggs_uat",
                             args={
                                 "epic_key": epic_key,
-                                "actor": actor_name,
+                                "actor": act.actor,
                                 "action": "start",
                             },
                             missing=["note"],
@@ -470,13 +521,29 @@ def build_agenda(
                     )
 
     # Priority 6: "cập nhật cuối ngày" when now.hour >= end_day_hour
-    # and identity has no worklog dated today
+    # on working days (cal.is_working_day), and identity has no worklog dated today.
+    # Convert now and every worklog.started to ZoneInfo(cfg.timezone)
+    # before taking .hour / .date().
+    tz = ZoneInfo(cfg.timezone)
+    local_now = (
+        now.astimezone(tz)
+        if now.tzinfo is not None
+        else now.replace(tzinfo=timezone.utc).astimezone(tz)
+    )
     end_day_hour = cfg.thresholds.end_day_hour
-    if now.hour >= end_day_hour:
-        has_worklog_today = any(
-            wl.author == identity.username and wl.started.date() == now.date()
-            for wl in snapshot.worklogs
-        )
+    if cal.is_working_day(local_now.date()) and local_now.hour >= end_day_hour:
+        has_worklog_today = False
+        for wl in snapshot.worklogs:
+            if wl.author == identity.username:
+                wl_dt = (
+                    wl.started.astimezone(tz)
+                    if wl.started.tzinfo is not None
+                    else wl.started.replace(tzinfo=timezone.utc).astimezone(tz)
+                )
+                if wl_dt.date() == local_now.date():
+                    has_worklog_today = True
+                    break
+
         if not has_worklog_today:
             say = (
                 "Đã đến giờ cập nhật cuối ngày (sau 17:00) và bạn chưa có "
@@ -547,13 +614,14 @@ def build_agenda(
         elif identity.is_lead and it.priority in {1, 2}:
             filtered_items.append(it)
 
-    # Sort items: by priority then key. For priority 1: L2/L1 before L0.
-    def sort_key(it: AgendaItem) -> tuple[int, int, str]:
+    # Sort items: by priority then natural key. For priority 1: L2/L1 before L0.
+    def sort_key(it: AgendaItem) -> tuple[int, int, str, int]:
+        proj, num = _natural_key(it.key)
         if it.priority == 1 and it.key and it.key in snapshot.escalations:
             esc = snapshot.escalations[it.key]
             # Higher level first (-2 before -1 before 0)
-            return (1, -esc.level, it.key)
-        return (it.priority, 0, it.key or "")
+            return (1, -esc.level, proj, num)
+        return (it.priority, 0, proj, num)
 
     filtered_items.sort(key=sort_key)
     return filtered_items

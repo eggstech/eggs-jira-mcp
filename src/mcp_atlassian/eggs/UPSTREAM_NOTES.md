@@ -28,7 +28,7 @@
   - Changed to `/eggs/` with explicit whitelists `!src/mcp_atlassian/eggs/` and `!tests/eggs/`.
 
 - **Ruff line length (E501) in test files:**
-  - In `pyproject.toml` under `[tool.ruff.lint.per-file-ignores]`, `"tests/**/*.py"` includes `"E501"` (line length) per reviewer instruction item 11.
+  - In `pyproject.toml` under `[tool.ruff.lint.per-file-ignores]`, reverted `E501` from `"tests/**/*.py"` and instead added a separate entry `"tests/eggs/**/*.py" = ["S", "ANN", "B017", "E501"]` to preserve upstream test linting settings.
 
 ## Behavior notes
 

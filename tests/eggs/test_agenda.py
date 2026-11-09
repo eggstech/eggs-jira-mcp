@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+import inspect
+from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
 import pytest
 
+from mcp_atlassian.eggs.actions import Actions
 from mcp_atlassian.eggs.agenda import (
-    SuggestedAction,
+    INTENTS,
     build_agenda,
     intents_for,
     mentioned_keys,
@@ -14,6 +16,7 @@ from mcp_atlassian.eggs.agenda import (
 from mcp_atlassian.eggs.calendar import WorkCalendar
 from mcp_atlassian.eggs.config import EggsConfig, ProjectConfig, Thresholds
 from mcp_atlassian.eggs.escalation import Escalation
+from mcp_atlassian.eggs.forecast import ActorRow, EpicMetrics
 from mcp_atlassian.eggs.identity import Identity
 from mcp_atlassian.eggs.model import Issue, Worklog
 from mcp_atlassian.eggs.report import Snapshot
@@ -27,11 +30,14 @@ def _make_issue(
     summary: str = "Test issue",
     project: str | None = None,
     parent_key: str | None = None,
+    parent_type: str | None = None,
     epic_key: str | None = None,
     qc_owner: str | None = None,
     reschedule_status: str | None = None,
     proposed_end: date | None = None,
     actor_code: str | None = None,
+    *,
+    blocked: bool = False,
 ) -> Issue:
     proj = project or key.split("-")[0]
     comps = (f"{actor_code} - Component",) if actor_code else ()
@@ -44,7 +50,7 @@ def _make_issue(
         assignee=assignee,
         components=comps,
         part=None,
-        parent_type=None,
+        parent_type=parent_type,
         qc_owner=qc_owner,
         parent_key=parent_key,
         epic_key=epic_key,
@@ -58,7 +64,7 @@ def _make_issue(
         reschedule_status=reschedule_status,
         reschedule_requester=None,
         proposed_end=proposed_end,
-        blocked=False,
+        blocked=blocked,
         blocked_by=None,
         blocked_since=None,
         health_flags=frozenset(),
@@ -88,16 +94,139 @@ def cfg():
     )
 
 
-def test_suggested_action_prefills_key_and_lists_missing():
-    action = SuggestedAction(
-        tool="eggs_schedule",
-        args={"key": "RFID-10", "project": "RFID"},
-        missing=["planned_start", "planned_end"],
+def test_suggested_actions_by_flag_kind(cfg, cal):
+    identity = Identity(
+        username="alice",
+        display_name="Alice",
+        roles={"RFID": {"dev", "lead_ba", "qc"}},
+        is_lead=False,
     )
-    assert action.tool == "eggs_schedule"
-    assert action.args["key"] == "RFID-10"
-    assert action.args["project"] == "RFID"
-    assert action.missing == ["planned_start", "planned_end"]
+    now = datetime(2026, 11, 9, 10, 0, tzinfo=ZoneInfo("Asia/Ho_Chi_Minh"))
+
+    # 1. APPROVAL_PENDING (esc level 1) -> eggs_decide_reschedule (missing ["approve", "note"])
+    iss_ap = _make_issue("RFID-1", summary="Approval pending", status="in_progress")
+    snap_ap = Snapshot(
+        issues={"RFID-1": iss_ap},
+        flags={"RFID-1": frozenset({"APPROVAL_PENDING"})},
+        escalations={"RFID-1": Escalation(level=1, owner="alice", since=date(2026, 11, 8))},
+        flows={}, epics={}, not_updated=[], today=date(2026, 11, 9),
+    )
+    agenda_ap = build_agenda(snap_ap, identity, cfg, now, cal)
+    assert len(agenda_ap) == 1
+    assert len(agenda_ap[0].actions) == 1
+    assert agenda_ap[0].actions[0].tool == "eggs_decide_reschedule"
+    assert agenda_ap[0].actions[0].args == {"key": "RFID-1"}
+    assert agenda_ap[0].actions[0].missing == ["approve", "note"]
+
+    # 2. Story flags (AT_RISK, UNSCHEDULED on a story) -> eggs_flow_reschedule (missing ["proposed_due", "reason"])
+    iss_st_risk = _make_issue("RFID-2", issue_type="story", summary="Story at risk", status="in_progress")
+    snap_st_risk = Snapshot(
+        issues={"RFID-2": iss_st_risk},
+        flags={"RFID-2": frozenset({"AT_RISK"})},
+        escalations={"RFID-2": Escalation(level=0, owner="alice", since=date(2026, 11, 8))},
+        flows={}, epics={}, not_updated=[], today=date(2026, 11, 9),
+    )
+    agenda_st = build_agenda(snap_st_risk, identity, cfg, now, cal)
+    assert len(agenda_st) == 1
+    assert agenda_st[0].actions[0].tool == "eggs_flow_reschedule"
+    assert agenda_st[0].actions[0].args == {"key": "RFID-2"}
+    assert agenda_st[0].actions[0].missing == ["proposed_due", "reason"]
+
+    # 3. Work item OVERDUE (dev_task under story) -> eggs_submit_qc + eggs_request_reschedule (missing ["proposed_end", "reason"])
+    iss_wi_od = _make_issue("RFID-3", issue_type="dev_task", summary="Overdue task", status="in_progress", parent_type="story")
+    snap_wi_od = Snapshot(
+        issues={"RFID-3": iss_wi_od},
+        flags={"RFID-3": frozenset({"OVERDUE"})},
+        escalations={"RFID-3": Escalation(level=0, owner="alice", since=date(2026, 11, 8))},
+        flows={}, epics={}, not_updated=[], today=date(2026, 11, 9),
+    )
+    agenda_od = build_agenda(snap_wi_od, identity, cfg, now, cal)
+    assert len(agenda_od) == 1
+    assert len(agenda_od[0].actions) == 2
+    assert agenda_od[0].actions[0].tool == "eggs_submit_qc"
+    assert agenda_od[0].actions[0].args == {"key": "RFID-3"}
+    assert agenda_od[0].actions[0].missing == []
+    assert agenda_od[0].actions[1].tool == "eggs_request_reschedule"
+    assert agenda_od[0].actions[1].args == {"key": "RFID-3"}
+    assert agenda_od[0].actions[1].missing == ["proposed_end", "reason"]
+
+    # Work item NEED_RESCHEDULE on adhoc item -> eggs_finish + eggs_request_reschedule
+    iss_adhoc = _make_issue("RFID-4", issue_type="adhoc", summary="Adhoc task", status="in_progress")
+    snap_adhoc = Snapshot(
+        issues={"RFID-4": iss_adhoc},
+        flags={"RFID-4": frozenset({"NEED_RESCHEDULE"})},
+        escalations={"RFID-4": Escalation(level=0, owner="alice", since=date(2026, 11, 8))},
+        flows={}, epics={}, not_updated=[], today=date(2026, 11, 9),
+    )
+    agenda_adhoc = build_agenda(snap_adhoc, identity, cfg, now, cal)
+    assert len(agenda_adhoc) == 1
+    assert len(agenda_adhoc[0].actions) == 2
+    assert agenda_adhoc[0].actions[0].tool == "eggs_finish"
+    assert agenda_adhoc[0].actions[0].args == {"key": "RFID-4"}
+    assert agenda_adhoc[0].actions[0].missing == []
+    assert agenda_adhoc[0].actions[1].tool == "eggs_request_reschedule"
+    assert agenda_adhoc[0].actions[1].args == {"key": "RFID-4"}
+    assert agenda_adhoc[0].actions[1].missing == ["proposed_end", "reason"]
+
+    # 4. Work item UNSCHEDULED -> eggs_schedule (missing ["start", "end", "estimate"])
+    iss_unsch = _make_issue("RFID-5", issue_type="dev_task", summary="Unscheduled task", status="dev_todo")
+    snap_unsch = Snapshot(
+        issues={"RFID-5": iss_unsch},
+        flags={"RFID-5": frozenset({"UNSCHEDULED"})},
+        escalations={"RFID-5": Escalation(level=0, owner="alice", since=date(2026, 11, 8))},
+        flows={}, epics={}, not_updated=[], today=date(2026, 11, 9),
+    )
+    agenda_unsch = build_agenda(snap_unsch, identity, cfg, now, cal)
+    assert len(agenda_unsch) == 1
+    assert agenda_unsch[0].actions[0].tool == "eggs_schedule"
+    assert agenda_unsch[0].actions[0].args == {"key": "RFID-5"}
+    assert agenda_unsch[0].actions[0].missing == ["start", "end", "estimate"]
+
+    # 5. STALE -> eggs_log_work (missing ["time_spent"])
+    iss_stale = _make_issue("RFID-6", issue_type="dev_task", summary="Stale task", status="in_progress")
+    snap_stale = Snapshot(
+        issues={"RFID-6": iss_stale},
+        flags={"RFID-6": frozenset({"STALE"})},
+        escalations={"RFID-6": Escalation(level=0, owner="alice", since=date(2026, 11, 8))},
+        flows={}, epics={}, not_updated=[], today=date(2026, 11, 9),
+    )
+    agenda_stale = build_agenda(snap_stale, identity, cfg, now, cal)
+    assert len(agenda_stale) == 1
+    assert agenda_stale[0].actions[0].tool == "eggs_log_work"
+    assert agenda_stale[0].actions[0].args == {"key": "RFID-6"}
+    assert agenda_stale[0].actions[0].missing == ["time_spent"]
+
+    # 6. BLOCKED -> eggs_unblock (missing [])
+    iss_blk = _make_issue("RFID-7", issue_type="dev_task", summary="Blocked task", status="in_progress", blocked=True)
+    snap_blk = Snapshot(
+        issues={"RFID-7": iss_blk},
+        flags={"RFID-7": frozenset({"BLOCKED"})},
+        escalations={"RFID-7": Escalation(level=0, owner="alice", since=date(2026, 11, 8))},
+        flows={}, epics={}, not_updated=[], today=date(2026, 11, 9),
+    )
+    agenda_blk = build_agenda(snap_blk, identity, cfg, now, cal)
+    assert len(agenda_blk) == 1
+    assert agenda_blk[0].actions[0].tool == "eggs_unblock"
+    assert agenda_blk[0].actions[0].args == {"key": "RFID-7"}
+    assert agenda_blk[0].actions[0].missing == []
+
+
+def test_every_intent_tool_is_a_real_action():
+    known_read_tools = {
+        "eggs_next",
+        "eggs_workstream_status",
+        "eggs_daily_report",
+        "eggs_pending_approvals",
+    }
+    for it in INTENTS:
+        if it.tool is None or it.tool in known_read_tools:
+            continue
+        method_name = it.tool.removeprefix("eggs_")
+        assert hasattr(Actions, method_name), f"Actions has no method {method_name}"
+        sig = inspect.signature(getattr(Actions, method_name))
+        for param in it.required:
+            assert param in sig.parameters, f"Parameter {param} not in Actions.{method_name} parameters: {list(sig.parameters.keys())}"
+
 
 
 def test_intents_for_dev_excludes_decide_reschedule():
@@ -138,6 +267,38 @@ def test_mentioned_keys_filters_unknown_projects():
     assert mentioned_keys(text, {"RFID"}) == ["RFID-12"]
     assert mentioned_keys("ABC-1 và XYZ-2", {"RFID"}) == []
     assert mentioned_keys("HMK-1, HMK-2, HMK-1", {"HMK"}) == ["HMK-1", "HMK-2"]
+    # Case-insensitive (normalize to upper)
+    assert mentioned_keys("xong rfid-12 và Rfid-9", {"RFID"}) == ["RFID-12", "RFID-9"]
+    # Project keys may contain underscore
+    assert mentioned_keys("xong proj_a-10 và PROJ_A-2", {"PROJ_A"}) == ["PROJ_A-10", "PROJ_A-2"]
+
+
+def test_agenda_sorts_keys_naturally(cfg, cal):
+    identity = Identity(
+        username="alice",
+        display_name="Alice",
+        roles={"RFID": {"dev"}},
+        is_lead=False,
+    )
+    now = datetime(2026, 11, 9, 10, 0, tzinfo=ZoneInfo("Asia/Ho_Chi_Minh"))
+
+    # Two items in progress for alice: RFID-10 and RFID-9
+    iss10 = _make_issue("RFID-10", summary="Item 10", status="in_progress", assignee="alice")
+    iss9 = _make_issue("RFID-9", summary="Item 9", status="in_progress", assignee="alice")
+
+    snapshot = Snapshot(
+        issues={"RFID-10": iss10, "RFID-9": iss9},
+        flags={},
+        escalations={},
+        flows={},
+        epics={},
+        not_updated=[],
+        today=date(2026, 11, 9),
+    )
+
+    agenda = build_agenda(snapshot, identity, cfg, now, cal)
+    # Natural sort must place RFID-9 before RFID-10 (not alphabetical RFID-10 < RFID-9)
+    assert [it.key for it in agenda] == ["RFID-9", "RFID-10"]
 
 
 def test_agenda_orders_by_priority(cfg, cal):
@@ -147,7 +308,8 @@ def test_agenda_orders_by_priority(cfg, cal):
         roles={"RFID": {"dev", "qc", "lead_ba"}},
         is_lead=False,
     )
-    now = datetime(2026, 11, 9, 10, 0, tzinfo=ZoneInfo("Asia/Ho_Chi_Minh"))
+    # 17:30 ICT on a Monday -> end-day (priority 6) triggered because no worklog
+    now = datetime(2026, 11, 9, 17, 30, tzinfo=ZoneInfo("Asia/Ho_Chi_Minh"))
 
     # Priority 1: Flagged item owned by alice (level 1)
     iss1 = _make_issue("RFID-1", summary="Flagged item", status="in_progress")
@@ -158,6 +320,19 @@ def test_agenda_orders_by_priority(cfg, cal):
     # Priority 4: QC queue item under story where alice is qc_owner
     iss4_story = _make_issue("RFID-4S", issue_type="story", status="dev_in_progress", qc_owner="alice")
     iss4 = _make_issue("RFID-4", issue_type="dev_task", status="ready_for_qc", parent_key="RFID-4S", summary="Ready for QC")
+    # Priority 5: Epic ready for UAT for lead_ba
+    iss5_epic = _make_issue("RFID-5E", issue_type="epic", status="in_progress")
+    em5 = EpicMetrics(
+        key="RFID-5E",
+        due=None,
+        forecast_end=None,
+        slip_days=None,
+        unscheduled=0,
+        unknown_eta=False,
+        actors=[
+            ActorRow(actor="CH - Cửa hàng", actor_code="CH", total=2, dev=0, qc=0, ready_for_uat=2, in_uat=0, signed=0, at_risk=0)
+        ],
+    )
     # Priority 7: Own item in progress
     iss7 = _make_issue("RFID-7", summary="In progress item", status="in_progress", assignee="alice")
 
@@ -167,6 +342,7 @@ def test_agenda_orders_by_priority(cfg, cal):
         iss3.key: iss3,
         iss4_story.key: iss4_story,
         iss4.key: iss4,
+        iss5_epic.key: iss5_epic,
         iss7.key: iss7,
     }
     flags = {
@@ -183,15 +359,78 @@ def test_agenda_orders_by_priority(cfg, cal):
         flags=flags,
         escalations=escalations,
         flows={},
-        epics={},
+        epics={"RFID-5E": em5},
         not_updated=[],
         today=date(2026, 11, 9),
     )
 
     agenda = build_agenda(snapshot, identity, cfg, now, cal)
     priorities = [it.priority for it in agenda]
-    assert priorities == [1, 2, 3, 4, 7]
-    assert [it.key for it in agenda] == ["RFID-1", "RFID-2", "RFID-3", "RFID-4", "RFID-7"]
+    assert priorities == [1, 2, 3, 4, 5, 6, 7]
+    assert [it.key for it in agenda] == ["RFID-1", "RFID-2", "RFID-3", "RFID-4", "RFID-5E", None, "RFID-7"]
+
+
+def test_agenda_priority_5_uses_full_actor_string(cfg, cal):
+    identity = Identity(
+        username="alice",
+        display_name="Alice",
+        roles={"RFID": {"lead_ba"}},
+        is_lead=False,
+    )
+    now = datetime(2026, 11, 9, 10, 0, tzinfo=ZoneInfo("Asia/Ho_Chi_Minh"))
+    epic = _make_issue("RFID-100", issue_type="epic", status="in_progress")
+    em = EpicMetrics(
+        key="RFID-100",
+        due=None,
+        forecast_end=None,
+        slip_days=None,
+        unscheduled=0,
+        unknown_eta=False,
+        actors=[
+            ActorRow(actor="CH - Cửa hàng", actor_code="CH", total=2, dev=0, qc=0, ready_for_uat=2, in_uat=0, signed=0, at_risk=0)
+        ],
+    )
+    snapshot = Snapshot(
+        issues={"RFID-100": epic},
+        flags={},
+        escalations={},
+        flows={},
+        epics={"RFID-100": em},
+        not_updated=[],
+        today=date(2026, 11, 9),
+    )
+    agenda = build_agenda(snapshot, identity, cfg, now, cal)
+    assert len(agenda) == 1
+    assert agenda[0].priority == 5
+    assert agenda[0].actions[0].args["actor"] == "CH - Cửa hàng"
+
+
+def test_agenda_priority_1_orders_l2_before_l0(cfg, cal):
+    identity = Identity(
+        username="alice",
+        display_name="Alice",
+        roles={"RFID": {"dev"}},
+        is_lead=False,
+    )
+    now = datetime(2026, 11, 9, 10, 0, tzinfo=ZoneInfo("Asia/Ho_Chi_Minh"))
+
+    # RFID-1 is level 0, RFID-2 is level 2
+    iss1 = _make_issue("RFID-1", summary="L0 item", status="in_progress")
+    iss2 = _make_issue("RFID-2", summary="L2 item", status="in_progress")
+    snapshot = Snapshot(
+        issues={"RFID-1": iss1, "RFID-2": iss2},
+        flags={"RFID-1": frozenset({"STALE"}), "RFID-2": frozenset({"STALE"})},
+        escalations={
+            "RFID-1": Escalation(level=0, owner="alice", since=date(2026, 11, 9)),
+            "RFID-2": Escalation(level=2, owner="alice", since=date(2026, 11, 7)),
+        },
+        flows={},
+        epics={},
+        not_updated=[],
+        today=date(2026, 11, 9),
+    )
+    agenda = build_agenda(snapshot, identity, cfg, now, cal)
+    assert [it.key for it in agenda] == ["RFID-2", "RFID-1"]
 
 
 def test_agenda_l1_owner_sees_escalated_item(cfg, cal):
@@ -329,6 +568,41 @@ def test_agenda_end_day_after_17_without_worklog(cfg, cal):
     snap_with_wl = Snapshot(issues={}, flags={}, escalations={}, flows={}, epics={}, not_updated=[], today=today, worklogs=[worklog_today])
     agenda_with_wl = build_agenda(snap_with_wl, identity, cfg, now_1700, cal)
     assert not any(it.priority == 6 for it in agenda_with_wl)
+
+
+def test_agenda_end_day_timezone_conversion(cfg, cal):
+    identity = Identity(
+        username="dev1",
+        display_name="Dev 1",
+        roles={"RFID": {"dev"}},
+        is_lead=False,
+    )
+    snap = Snapshot(issues={}, flags={}, escalations={}, flows={}, epics={}, not_updated=[], today=date(2026, 11, 17), worklogs=[])
+
+    # 2026-11-17 10:00 UTC = 17:00 ICT (Tuesday) -> end-day item present
+    now_utc_10 = datetime(2026, 11, 17, 10, 0, tzinfo=timezone.utc)
+    agenda_10utc = build_agenda(snap, identity, cfg, now_utc_10, cal)
+    assert any(it.priority == 6 for it in agenda_10utc)
+
+    # 2026-11-17 03:00 UTC = 10:00 ICT (Tuesday) -> end-day item absent
+    now_utc_03 = datetime(2026, 11, 17, 3, 0, tzinfo=timezone.utc)
+    agenda_03utc = build_agenda(snap, identity, cfg, now_utc_03, cal)
+    assert not any(it.priority == 6 for it in agenda_03utc)
+
+
+def test_agenda_end_day_absent_on_saturday(cfg, cal):
+    identity = Identity(
+        username="dev1",
+        display_name="Dev 1",
+        roles={"RFID": {"dev"}},
+        is_lead=False,
+    )
+    snap = Snapshot(issues={}, flags={}, escalations={}, flows={}, epics={}, not_updated=[], today=date(2026, 11, 21), worklogs=[])
+    # Saturday 2026-11-21 18:00 ICT -> weekend, absent
+    sat_now = datetime(2026, 11, 21, 18, 0, tzinfo=ZoneInfo("Asia/Ho_Chi_Minh"))
+    agenda = build_agenda(snap, identity, cfg, sat_now, cal)
+    assert not any(it.priority == 6 for it in agenda)
+
 
 
 def test_agenda_excludes_projects_without_role(cal):

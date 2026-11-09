@@ -425,3 +425,38 @@ def test_report_l0_owner_falls_back_to_triage_owner(cal, cfg):
     assert esc2.level == 0
     assert esc2.owner == "assigned.qc"
 
+
+@pytest.mark.parametrize(
+    ("case", "task_assignee", "default_lead", "reschedule_req"),
+    [
+        ("equals_l0", "alice", "alice", None),
+        ("equals_requester", "bob", "req_user", "req_user"),
+        ("equals_both", "charlie", "charlie", "charlie"),
+    ],
+)
+def test_l1_never_equals_l0_or_requester(cal, case, task_assignee, default_lead, reschedule_req):
+    cfg = EggsConfig(
+        lead_user="cuong.huynh",
+        jira_url="https://jira.eggstech.io.vn",
+        projects={"PROJ": ProjectConfig(key="PROJ", default_lead_ba=default_lead, triage_owner="cuong.huynh")},
+    )
+    task = _make_issue(
+        key="PROJ-1",
+        issue_type="dev_task",
+        status="in_progress",
+        assignee=task_assignee,
+        reschedule_status="Chờ duyệt" if reschedule_req else None,
+        reschedule_requester=reschedule_req,
+        health_since=date(2026, 11, 16),
+    )
+    flags = frozenset({"STALE"})
+    # At 1 working day (2026-11-17), escalation level is 1
+    esc = escalate(task, flags, story=None, epic=None, today=date(2026, 11, 17), cal=cal, cfg=cfg)
+    assert esc is not None
+    assert esc.level == 1
+    assert esc.owner != task_assignee
+    if reschedule_req:
+        assert esc.owner != reschedule_req
+    assert esc.owner == "cuong.huynh"
+
+

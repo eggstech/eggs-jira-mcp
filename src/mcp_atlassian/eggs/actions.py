@@ -493,16 +493,26 @@ class Actions:
     def request_reschedule(
         self,
         key: str,
-        new_end: date,
-        reason: str,
+        new_end: date | None = None,
+        reason: str = "",
         interrupted_by: str | None = None,
         *,
+        proposed_end: date | None = None,
         no_impact: bool = False,
         note: str = "",
         dry_run: bool = False,
     ) -> ActionResult:
         if no_impact:
             return self.confirm_no_impact(key, note=note or reason, dry_run=dry_run)
+
+        actual_end = proposed_end or new_end
+        if actual_end is None:
+            return ActionResult(
+                ok=False,
+                message="Ngày đề xuất (proposed_end/new_end) không được để trống.",
+                changes=[],
+                next_actions=[],
+            )
 
         if not reason or not reason.strip():
             return ActionResult(
@@ -527,10 +537,10 @@ class Actions:
                 changes=[],
                 next_actions=[],
             )
-        if new_end < self._today():
+        if actual_end < self._today():
             return ActionResult(
                 ok=False,
-                message=f"Không thể dời lịch về ngày trong quá khứ ({new_end}).",
+                message=f"Không thể dời lịch về ngày trong quá khứ ({actual_end}).",
                 changes=[],
                 next_actions=[],
             )
@@ -553,7 +563,7 @@ class Actions:
             return self._unavailable_result(key, "request_reschedule", avail)
 
         changes = [
-            f"Yêu cầu dời lịch đến {new_end}",
+            f"Yêu cầu dời lịch đến {actual_end}",
             f"Lý do: {reason}",
         ]
         if interrupted_by:
@@ -569,7 +579,7 @@ class Actions:
 
         payload = issue_fields_for_write(
             self.cfg,
-            proposed_end=new_end,
+            proposed_end=actual_end,
             reschedule_reason=reason,
             reschedule_status=self.cfg.reschedule_pending_value,
             reschedule_requester=self.gateway.current_user(),
@@ -900,13 +910,32 @@ class Actions:
 
     def flow_reschedule(
         self,
-        story_key: str,
-        new_due: date,
-        reason: str,
+        story_key: str | None = None,
+        new_due: date | None = None,
+        reason: str = "",
         note: str = "",
         *,
+        key: str | None = None,
+        proposed_due: date | None = None,
         dry_run: bool = False,
     ) -> ActionResult:
+        actual_key = key or story_key
+        actual_due = proposed_due or new_due
+        if not actual_key:
+            return ActionResult(
+                ok=False,
+                message="Key story không được để trống.",
+                changes=[],
+                next_actions=[],
+            )
+        if actual_due is None:
+            return ActionResult(
+                ok=False,
+                message="Hạn mới (proposed_due/new_due) không được để trống.",
+                changes=[],
+                next_actions=[],
+            )
+
         if not reason or not reason.strip():
             return ActionResult(
                 ok=False,
@@ -915,47 +944,47 @@ class Actions:
                 next_actions=[],
             )
 
-        issue = self._get_issue(story_key)
+        issue = self._get_issue(actual_key)
         if issue.type != "story":
             return ActionResult(
                 ok=False,
-                message=f"Issue {story_key} không phải là Story.",
+                message=f"Issue {actual_key} không phải là Story.",
                 changes=[],
                 next_actions=[],
             )
-        if new_due < self._today():
+        if actual_due < self._today():
             return ActionResult(
                 ok=False,
-                message=f"Không thể dời Due Date về ngày trong quá khứ ({new_due}).",
+                message=f"Không thể dời Due Date về ngày trong quá khứ ({actual_due}).",
                 changes=[],
                 next_actions=[],
             )
 
-        matched, avail = self._find_transition(story_key, "request_reschedule")
+        matched, avail = self._find_transition(actual_key, "request_reschedule")
         if not matched:
-            return self._unavailable_result(story_key, "request_reschedule", avail)
+            return self._unavailable_result(actual_key, "request_reschedule", avail)
 
         changes = [
-            f"Yêu cầu dời Due Date sang {new_due}",
+            f"Yêu cầu dời Due Date sang {actual_due}",
             f"Lý do: {reason}",
         ]
         if dry_run:
             return ActionResult(
                 ok=True,
-                message=f"[Dry-run] Sẽ yêu cầu dời Due Date cho {story_key}",
+                message=f"[Dry-run] Sẽ yêu cầu dời Due Date cho {actual_key}",
                 changes=changes,
                 next_actions=["decide_reschedule"],
             )
 
         payload = issue_fields_for_write(
             self.cfg,
-            proposed_end=new_due,
+            proposed_end=actual_due,
             reschedule_reason=reason,
             reschedule_status=self.cfg.reschedule_pending_value,
             reschedule_requester=self.gateway.current_user(),
         )
         self.gateway.transition(
-            story_key, matched, fields=payload, comment=note if note else None
+            actual_key, matched, fields=payload, comment=note if note else None
         )
 
         return ActionResult(
