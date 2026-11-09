@@ -66,6 +66,7 @@ projects:
   HMKLOYAL:
     key: HMKLOYAL
     default_lead_ba: cuong.huynh
+    triage_owner: cuong.huynh
     chat_webhook: ${HOOK}/hmkloyal
     frozen: false
   BUL:
@@ -109,6 +110,8 @@ projects:
         ("Bug stand-alone", True, None),
         ("Ad-hoc Task", False, "adhoc"),
         ("Ad-hoc Task", True, None),
+        ("User Report", False, "report"),
+        ("User Report", True, None),
         # Retired types -> None
         ("Testing Task", True, None),
         ("Testing Task", False, None),
@@ -130,9 +133,35 @@ def test_type_logical_table(jira_name, is_subtask, expected):
             "bug_sub": ["Bug"],
             "adhoc": ["Ad-hoc Task"],
             "bug": ["Bug stand-alone"],
+            "report": ["User Report"],
         },
     )
     assert cfg.type_logical(jira_name, is_subtask=is_subtask) == expected
+
+
+def test_resolution_logical():
+    cfg = EggsConfig(
+        lead_user="cuong.huynh",
+        report_resolutions={
+            "bug": "Is a Bug",
+            "guidance": "User Guidance",
+            "feature": "Feature Request",
+            "data_fix": "Data/Config Fix",
+            "duplicate": "Duplicate",
+            "cannot_reproduce": "Cannot Reproduce",
+            "third_party": "Third-party Issue",
+        },
+    )
+    assert cfg.resolution_logical("Is a Bug") == "bug"
+    assert cfg.resolution_logical("User Guidance") == "guidance"
+    assert cfg.resolution_logical("Feature Request") == "feature"
+    assert cfg.resolution_logical("Data/Config Fix") == "data_fix"
+    assert cfg.resolution_logical("Duplicate") == "duplicate"
+    assert cfg.resolution_logical("Cannot Reproduce") == "cannot_reproduce"
+    assert cfg.resolution_logical("Third-party Issue") == "third_party"
+    assert cfg.resolution_logical("Unknown Resolution") is None
+    assert cfg.resolution_logical("") is None
+    assert cfg.resolution_logical(None) is None
 
 
 def test_load_example_config():

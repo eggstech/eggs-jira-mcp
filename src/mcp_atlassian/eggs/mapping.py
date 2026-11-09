@@ -208,6 +208,13 @@ def issue_from_json(raw: dict, cfg: EggsConfig) -> Issue:
 
     status_chg = status_changed_at(raw.get("changelog"), cfg)
 
+    resolution = _parse_option(fields.get("resolution"))
+    report_source_raw = get_cf("report_source")
+    report_source = _parse_option(report_source_raw) if isinstance(report_source_raw, dict) else (str(report_source_raw) if report_source_raw is not None else None)
+    reported_by_raw = get_cf("reported_by")
+    reported_by = _parse_user(reported_by_raw) if isinstance(reported_by_raw, dict) else (str(reported_by_raw) if reported_by_raw is not None else None)
+    reported_at = parse_jira_dt(get_cf("reported_at"), cfg)
+
     return Issue(
         key=key,
         project=project,
@@ -239,13 +246,18 @@ def issue_from_json(raw: dict, cfg: EggsConfig) -> Issue:
         escalation_level=escalation_level,
         escalation_owner=escalation_owner,
         frozen=frozen,
+        report_source=report_source,
+        reported_by=reported_by,
+        reported_at=reported_at,
+        resolution=resolution,
     )
 
 
 # Field types categorization for serialization
 _DATE_FIELDS = frozenset({
     "planned_start", "planned_end", "baseline_end", "proposed_end",
-    "health_since", "blocked_since", "forecast_end", "due_date"
+    "health_since", "blocked_since", "forecast_end", "due_date",
+    "reported_at",
 })
 _USER_FIELDS = frozenset({
     "escalation_owner", "qc_owner", "reschedule_requester", "assignee"

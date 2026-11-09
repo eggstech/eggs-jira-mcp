@@ -57,6 +57,9 @@ def escalate(
             l0_candidate = issue.assignee
     elif issue.type == "story":
         l0_candidate = issue.assignee
+    elif issue.type == "report":
+        proj_cfg = cfg.projects.get(issue.project)
+        l0_candidate = issue.assignee or (proj_cfg.triage_owner if proj_cfg else None)
     else:
         l0_candidate = issue.assignee
 

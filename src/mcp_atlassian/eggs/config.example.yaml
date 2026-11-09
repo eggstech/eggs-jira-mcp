@@ -19,6 +19,7 @@ thresholds:
   escalate_l2_after: 2
   internal_block_escalate_after: 2
   qc_flow_buffer: 1
+  triage_working_days: 1
 
 # Fixed-date Vietnam public holidays for 2026.
 # NOTE: Lunar New Year (Tết Âm Lịch) and Hung Kings Commemoration (Giỗ Tổ Hùng Vương)
@@ -55,6 +56,9 @@ fields:
   forecast_end: null
   slip_days: null
   unscheduled_count: null
+  report_source: null
+  reported_by: null
+  reported_at: null
 
 # Status mappings (logical -> Jira status name)
 statuses:
@@ -84,6 +88,18 @@ issue_types:
     - Ad-hoc Task
   bug:
     - Bug stand-alone
+  report:
+    - User Report
+
+# Report resolutions (logical -> Jira resolution name)
+report_resolutions:
+  bug: Is a Bug
+  guidance: User Guidance
+  feature: Feature Request
+  data_fix: Data/Config Fix
+  duplicate: Duplicate
+  cannot_reproduce: Cannot Reproduce
+  third_party: Third-party Issue
 
 # Transition names (logical -> Jira transition name)
 transitions:
@@ -103,6 +119,8 @@ transitions:
   client_uat: Client UAT
   uat_signoff: UAT Sign-off
   uat_fail: UAT Fail
+  start_triage: Start Triage
+  close_report: Close Report
 
 # 27 projects from spec §3.1
 projects:
@@ -110,76 +128,91 @@ projects:
   ROCKY:
     key: ROCKY
     default_lead_ba: cuong.huynh
+    triage_owner: placeholder.user  # set per project
     chat_webhook: null
     frozen: false
   HMKPOS:
     key: HMKPOS
     default_lead_ba: cuong.huynh
+    triage_owner: placeholder.user  # set per project
     chat_webhook: null
     frozen: false
   HMKLOYAL:
     key: HMKLOYAL
     default_lead_ba: cuong.huynh
+    triage_owner: placeholder.user  # set per project
     chat_webhook: null
     frozen: false
   HH:
     key: HH
     default_lead_ba: cuong.huynh
+    triage_owner: placeholder.user  # set per project
     chat_webhook: null
     frozen: false
   LPPOS:
     key: LPPOS
     default_lead_ba: cuong.huynh
+    triage_owner: placeholder.user  # set per project
     chat_webhook: null
     frozen: false
   RFID:
     key: RFID
     default_lead_ba: cuong.huynh
+    triage_owner: placeholder.user  # set per project
     chat_webhook: null
     frozen: false
   CP:
     key: CP
     default_lead_ba: cuong.huynh
+    triage_owner: placeholder.user  # set per project
     chat_webhook: null
     frozen: false
   CRM:
     key: CRM
     default_lead_ba: cuong.huynh
+    triage_owner: placeholder.user  # set per project
     chat_webhook: null
     frozen: false
   EGG:
     key: EGG
     default_lead_ba: cuong.huynh
+    triage_owner: placeholder.user  # set per project
     chat_webhook: null
     frozen: false
   AILA:
     key: AILA
     default_lead_ba: cuong.huynh
+    triage_owner: placeholder.user  # set per project
     chat_webhook: null
     frozen: false
   FNB:
     key: FNB
     default_lead_ba: cuong.huynh
+    triage_owner: placeholder.user  # set per project
     chat_webhook: null
     frozen: false
   HMKAI:
     key: HMKAI
     default_lead_ba: cuong.huynh
+    triage_owner: placeholder.user  # set per project
     chat_webhook: null
     frozen: false
   AEON:
     key: AEON
     default_lead_ba: cuong.huynh
+    triage_owner: placeholder.user  # set per project
     chat_webhook: null
     frozen: false
   GSH:
     key: GSH
     default_lead_ba: cuong.huynh
+    triage_owner: placeholder.user  # set per project
     chat_webhook: null
     frozen: false
   RIV:
     key: RIV
     default_lead_ba: cuong.huynh
+    triage_owner: placeholder.user  # set per project
     chat_webhook: null
     frozen: false
 

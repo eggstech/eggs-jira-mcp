@@ -36,6 +36,10 @@ class Issue:
     escalation_level: int
     escalation_owner: str | None
     frozen: bool
+    report_source: str | None = None
+    reported_by: str | None = None
+    reported_at: datetime | None = None
+    resolution: str | None = None
 
     @property
     def is_resolved(self) -> bool:

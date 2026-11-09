@@ -134,6 +134,17 @@ def compute_flags(
             flags_by_key[issue.key] = frozenset()
             continue
 
+        if issue.type == "report":
+            if issue.status in {"open", "analyzing"} and issue.created:
+                days = cal.working_days_between(issue.created.date(), today)
+                if days >= cfg.thresholds.triage_working_days:
+                    flags_by_key[issue.key] = frozenset({"STALE"})
+                else:
+                    flags_by_key[issue.key] = frozenset()
+            else:
+                flags_by_key[issue.key] = frozenset()
+            continue
+
         item_flags: set[str] = set()
 
         if issue.blocked:

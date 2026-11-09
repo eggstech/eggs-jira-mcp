@@ -355,3 +355,42 @@ def test_new_flag_uses_today_as_since(cal, cfg):
     assert esc is not None
     assert esc.since == TODAY
     assert esc.level == 0
+
+
+def test_report_l0_owner_falls_back_to_triage_owner(cal, cfg):
+    cfg_with_triage = EggsConfig(
+        lead_user="cuong.huynh",
+        thresholds=cfg.thresholds,
+        projects={
+            "PROJ": ProjectConfig(
+                key="PROJ",
+                default_lead_ba="default.lead.ba",
+                triage_owner="triage.specialist",
+            )
+        },
+    )
+    # Unassigned report -> falls back to project triage_owner
+    report_unassigned = _make_issue(
+        key="PROJ-REP1",
+        issue_type="report",
+        status="open",
+        assignee=None,
+    )
+    flags = frozenset({"STALE"})
+    esc = escalate(report_unassigned, flags, story=None, epic=None, today=TODAY, cal=cal, cfg=cfg_with_triage)
+    assert esc is not None
+    assert esc.level == 0
+    assert esc.owner == "triage.specialist"
+
+    # Assigned report -> keeps assigned owner
+    report_assigned = _make_issue(
+        key="PROJ-REP2",
+        issue_type="report",
+        status="analyzing",
+        assignee="assigned.qc",
+    )
+    esc2 = escalate(report_assigned, flags, story=None, epic=None, today=TODAY, cal=cal, cfg=cfg_with_triage)
+    assert esc2 is not None
+    assert esc2.level == 0
+    assert esc2.owner == "assigned.qc"
+

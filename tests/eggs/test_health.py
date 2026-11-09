@@ -702,3 +702,62 @@ def test_missing_assignee_and_dates_does_not_crash(cal, cfg):
         cal=cal,
     )
     assert not_updated == []
+
+
+def test_report_stale_after_one_working_day(cal, cfg):
+    # Report created on Tuesday Nov 17, status is analyzing (or open).
+    # On Wednesday Nov 18: working_days_between(Nov 17, Nov 18) == 1 >= triage_working_days (1) -> STALE
+    report = _make_issue(
+        key="REP-1",
+        issue_type="report",
+        status="analyzing",
+        created=datetime(2026, 11, 17, 9, 0, tzinfo=TZ),
+    )
+    flags = compute_flags(
+        issues=[report],
+        worklogs=[],
+        stories={},
+        today=date(2026, 11, 18),
+        cal=cal,
+        cfg=cfg,
+        interruptions={},
+    )
+    assert flags["REP-1"] == frozenset({"STALE"})
+
+    # On Tuesday Nov 17 (same day): working_days_between == 0 -> NOT STALE
+    flags_same_day = compute_flags(
+        issues=[report],
+        worklogs=[],
+        stories={},
+        today=date(2026, 11, 17),
+        cal=cal,
+        cfg=cfg,
+        interruptions={},
+    )
+    assert flags_same_day["REP-1"] == frozenset()
+
+
+def test_report_created_friday_not_stale_monday_morning_weekend(cfg):
+    # Report created on Friday Nov 13, 2026.
+    # Calendar has Monday Nov 16 as a holiday (Review focus 1: holiday Monday counts as zero).
+    cal_holiday = WorkCalendar(frozenset({date(2026, 11, 16)}))
+    report = _make_issue(
+        key="REP-1",
+        issue_type="report",
+        status="open",
+        created=datetime(2026, 11, 13, 17, 30, tzinfo=TZ),
+    )
+
+    # Over weekend: Saturday Nov 14 and Sunday Nov 15 -> not stale
+    for d in [date(2026, 11, 14), date(2026, 11, 15)]:
+        f = compute_flags([report], [], {}, today=d, cal=cal_holiday, cfg=cfg, interruptions={})
+        assert "STALE" not in f["REP-1"]
+
+    # Monday Nov 16 (holiday morning): 0 working days elapsed -> not stale
+    f_mon = compute_flags([report], [], {}, today=date(2026, 11, 16), cal=cal_holiday, cfg=cfg, interruptions={})
+    assert "STALE" not in f_mon["REP-1"]
+
+    # Tuesday Nov 17: 1 working day elapsed -> STALE
+    f_tue = compute_flags([report], [], {}, today=date(2026, 11, 17), cal=cal_holiday, cfg=cfg, interruptions={})
+    assert "STALE" in f_tue["REP-1"]
+

@@ -1,6 +1,7 @@
 from datetime import date, datetime
 import json
 from pathlib import Path
+from zoneinfo import ZoneInfo
 import pytest
 
 from mcp_atlassian.eggs.config import EggsConfig, ProjectConfig
@@ -468,6 +469,45 @@ def test_frozen_label_and_impediment_value_from_config():
     issue = issue_from_json(raw_issue, custom_cfg)
     assert issue.frozen is True
     assert issue.blocked is True
+
+
+def test_user_report_type_and_fields_mapped(base_config):
+    cfg_with_report = EggsConfig(
+        lead_user="cuong.huynh",
+        fields={
+            **base_config.fields,
+            "report_source": "customfield_report_source",
+            "reported_by": "customfield_reported_by",
+            "reported_at": "customfield_reported_at",
+        },
+        issue_types={
+            **base_config.issue_types,
+            "report": ["User Report"],
+        },
+        statuses=base_config.statuses,
+    )
+    raw = {
+        "key": "HMKPOS-500",
+        "fields": {
+            "summary": "Customer app cannot checkout",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "User Report", "subtask": False},
+            "status": {"name": "Analyzing"},
+            "created": "2026-11-17T08:00:00.000+0700",
+            "customfield_report_source": "https://chat.google.com/room/ABC/msg/123",
+            "customfield_reported_by": "Support Team",
+            "customfield_reported_at": "2026-11-17T07:45:00.000+0700",
+            "resolution": {"name": "Is a Bug"},
+        },
+    }
+    issue = issue_from_json(raw, cfg_with_report)
+    assert issue.type == "report"
+    assert issue.is_work_item is False
+    assert issue.report_source == "https://chat.google.com/room/ABC/msg/123"
+    assert issue.reported_by == "Support Team"
+    assert issue.reported_at == datetime(2026, 11, 17, 7, 45, tzinfo=ZoneInfo("Asia/Ho_Chi_Minh"))
+    assert issue.resolution == "Is a Bug"
+
 
 
 

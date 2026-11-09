@@ -18,6 +18,7 @@ class Thresholds:
     escalate_l2_after: int = 2
     internal_block_escalate_after: int = 2
     qc_flow_buffer: int = 1
+    triage_working_days: int = 1
 
 
 @dataclass(frozen=True)
@@ -26,6 +27,7 @@ class ProjectConfig:
     default_lead_ba: str
     chat_webhook: str | None = None
     frozen: bool = False
+    triage_owner: str | None = None
 
 
 @dataclass(frozen=True)
@@ -36,10 +38,12 @@ class EggsConfig:
     flagged_impediment_value: str = "Impediment"
     reschedule_pending_value: str = "Chờ duyệt"
     blocked_internal_value: str = "Nội bộ"
+    ops_epic_prefix: str = "[OPS]"
     fields: dict[str, str] = field(default_factory=dict)
     statuses: dict[str, str] = field(default_factory=dict)
     issue_types: dict[str, list[str]] = field(default_factory=dict)
     transitions: dict[str, str] = field(default_factory=dict)
+    report_resolutions: dict[str, str] = field(default_factory=dict)
     thresholds: Thresholds = field(default_factory=Thresholds)
     holidays: frozenset[date] = field(default_factory=frozenset)
     projects: dict[str, ProjectConfig] = field(default_factory=dict)
@@ -54,6 +58,16 @@ class EggsConfig:
                 return logical
         return None
 
+    def resolution_logical(self, jira_name: str | None) -> str | None:
+        """Map Jira resolution name to logical resolution name."""
+        if not jira_name:
+            return None
+        cleaned = jira_name.strip().lower()
+        for logical, name in self.report_resolutions.items():
+            if name and name.strip().lower() == cleaned:
+                return logical
+        return None
+
     def type_logical(self, jira_name: str, is_subtask: bool) -> str | None:
         """Map Jira issue type name and is_subtask to logical issue type."""
         cleaned = jira_name.strip().lower()
@@ -62,7 +76,7 @@ class EggsConfig:
         candidate_types = (
             ("dev_task", "bug_sub")
             if is_subtask
-            else ("epic", "story", "adhoc", "bug")
+            else ("epic", "story", "adhoc", "bug", "report")
         )
         for logical in candidate_types:
             names = self.issue_types.get(logical, [])
@@ -117,6 +131,7 @@ def load_config(path: str | None = None) -> EggsConfig:
         escalate_l2_after=thresholds_data.get("escalate_l2_after", 2),
         internal_block_escalate_after=thresholds_data.get("internal_block_escalate_after", 2),
         qc_flow_buffer=thresholds_data.get("qc_flow_buffer", 1),
+        triage_working_days=thresholds_data.get("triage_working_days", 1),
     )
 
     # Parse holidays
@@ -135,11 +150,14 @@ def load_config(path: str | None = None) -> EggsConfig:
         if isinstance(pdata, dict):
             if "default_lead_ba" not in pdata or not pdata["default_lead_ba"]:
                 raise ValueError(f"Missing required 'default_lead_ba' for project '{key}'")
+            frozen = bool(pdata.get("frozen", False))
+            triage_owner = pdata.get("triage_owner")
             projects[key] = ProjectConfig(
                 key=pdata.get("key", key),
                 default_lead_ba=pdata["default_lead_ba"],
                 chat_webhook=pdata.get("chat_webhook"),
-                frozen=bool(pdata.get("frozen", False)),
+                frozen=frozen,
+                triage_owner=triage_owner,
             )
 
     if "lead_user" not in data or not data["lead_user"]:
@@ -152,10 +170,12 @@ def load_config(path: str | None = None) -> EggsConfig:
         flagged_impediment_value=data.get("flagged_impediment_value", "Impediment"),
         reschedule_pending_value=data.get("reschedule_pending_value", "Chờ duyệt"),
         blocked_internal_value=data.get("blocked_internal_value", "Nội bộ"),
+        ops_epic_prefix=data.get("ops_epic_prefix", "[OPS]"),
         fields=data.get("fields", {}),
         statuses=data.get("statuses", {}),
         issue_types=data.get("issue_types", {}),
         transitions=data.get("transitions", {}),
+        report_resolutions=data.get("report_resolutions", {}),
         thresholds=thresholds,
         holidays=frozenset(holidays_set),
         projects=projects,
