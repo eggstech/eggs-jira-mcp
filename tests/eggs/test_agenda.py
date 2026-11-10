@@ -37,6 +37,8 @@ def _make_issue(
     reschedule_status: str | None = None,
     proposed_end: date | None = None,
     actor_code: str | None = None,
+    part: str | None = None,
+    estimate_seconds: int | None = None,
     *,
     blocked: bool = False,
 ) -> Issue:
@@ -50,7 +52,7 @@ def _make_issue(
         summary=summary,
         assignee=assignee,
         components=comps,
-        part=None,
+        part=part,
         parent_type=parent_type,
         qc_owner=qc_owner,
         parent_key=parent_key,
@@ -61,7 +63,7 @@ def _make_issue(
         planned_end=None,
         baseline_end=None,
         due_date=None,
-        estimate_seconds=None,
+        estimate_seconds=estimate_seconds,
         reschedule_status=reschedule_status,
         reschedule_requester=None,
         proposed_end=proposed_end,
@@ -1716,3 +1718,147 @@ def test_agenda_bug_sub_in_dev_to_do_prioritized(cfg, cal):
     assert it_bug.priority == 7
     tools_bug = [a.tool for a in it_bug.actions]
     assert tools_bug == ["eggs_start"]
+
+
+def test_dev_sees_informational_item_for_unsplit_analyzed_stories(cfg, cal):
+    identity = Identity(
+        username="cuong.huynh",
+        display_name="Cuong Huynh",
+        roles={"EGGSBOX": {"dev"}},
+        is_lead=False,
+    )
+    now = datetime(2026, 11, 10, 10, 0, tzinfo=ZoneInfo("Asia/Ho_Chi_Minh"))
+
+    s60 = _make_issue(
+        "EGGSBOX-60",
+        issue_type="story",
+        status="analyzing",
+        project="EGGSBOX",
+        summary="Story 60",
+    )
+    s61 = _make_issue(
+        "EGGSBOX-61",
+        issue_type="story",
+        status="analyzing",
+        project="EGGSBOX",
+        summary="Story 61",
+    )
+    s62 = _make_issue(
+        "EGGSBOX-62",
+        issue_type="story",
+        status="analyzing",
+        project="EGGSBOX",
+        summary="Story 62",
+    )
+    snapshot = Snapshot(
+        issues={
+            s60.key: s60,
+            s61.key: s61,
+            s62.key: s62,
+        },
+        flags={},
+        escalations={},
+        flows={},
+        epics={},
+        not_updated=[],
+        today=date(2026, 11, 10),
+    )
+    agenda = build_agenda(snapshot, identity, cfg, now, cal)
+    assert len(agenda) == 1
+    it = agenda[0]
+    assert (
+        it.say
+        == "3 Story đã phân tích xong, chưa chia việc: EGGSBOX-60, EGGSBOX-61, EGGSBOX-62"
+    )
+    assert it.actions == []
+
+
+def test_stories_in_open_not_shown_to_devs(cfg, cal):
+    identity = Identity(
+        username="cuong.huynh",
+        display_name="Cuong Huynh",
+        roles={"EGGSBOX": {"dev"}},
+        is_lead=False,
+    )
+    now = datetime(2026, 11, 10, 10, 0, tzinfo=ZoneInfo("Asia/Ho_Chi_Minh"))
+
+    story_open = _make_issue(
+        "EGGSBOX-70",
+        issue_type="story",
+        status="open",
+        project="EGGSBOX",
+        summary="Story still in Open",
+    )
+    snapshot = Snapshot(
+        issues={story_open.key: story_open},
+        flags={},
+        escalations={},
+        flows={},
+        epics={},
+        not_updated=[],
+        today=date(2026, 11, 10),
+    )
+    agenda = build_agenda(snapshot, identity, cfg, now, cal)
+    assert agenda == []
+
+
+def test_lead_ba_sees_prompt_to_schedule_and_ready_for_dev(cfg, cal):
+    identity = Identity(
+        username="tuan.bui",
+        display_name="Tuan Bui",
+        roles={"EGGSBOX": {"lead_ba"}},
+        is_lead=False,
+    )
+    now = datetime(2026, 11, 10, 10, 0, tzinfo=ZoneInfo("Asia/Ho_Chi_Minh"))
+
+    story = _make_issue(
+        "EGGSBOX-60",
+        issue_type="story",
+        status="analyzing",
+        project="EGGSBOX",
+        summary="Story 60 with full tasks",
+    )
+    dt1 = _make_issue(
+        "EGGSBOX-61",
+        issue_type="dev_task",
+        parent_type="story",
+        parent_key="EGGSBOX-60",
+        part="BE",
+        estimate_seconds=7200,
+        status="todo",
+        project="EGGSBOX",
+        summary="BE task",
+    )
+    dt2 = _make_issue(
+        "EGGSBOX-62",
+        issue_type="dev_task",
+        parent_type="story",
+        parent_key="EGGSBOX-60",
+        part="FE APP",
+        estimate_seconds=14400,
+        status="todo",
+        project="EGGSBOX",
+        summary="FE task",
+    )
+    snapshot = Snapshot(
+        issues={
+            story.key: story,
+            dt1.key: dt1,
+            dt2.key: dt2,
+        },
+        flags={},
+        escalations={},
+        flows={},
+        epics={},
+        not_updated=[],
+        today=date(2026, 11, 10),
+    )
+    agenda = build_agenda(snapshot, identity, cfg, now, cal)
+    by_key = {it.key: it for it in agenda if it.key}
+    assert "EGGSBOX-60" in by_key
+    it = by_key["EGGSBOX-60"]
+    assert (
+        it.say
+        == "EGGSBOX-60 đã đủ Dev Task và estimate: chốt Due Date rồi Ready For Dev"
+    )
+    assert it.actions == []

@@ -15,7 +15,7 @@ from mcp_atlassian.eggs.plan_apply import (
 from mcp_atlassian.eggs.plan_validate import load_plan_context
 from tests.eggs.fakes import FakeGateway
 
-DEFAULT_FLOW_TRANSITIONS = ["Start Analysis", "Set Due Date", "Ready For Dev"]
+DEFAULT_FLOW_TRANSITIONS = ["Analysis Done", "Set Due Date", "Ready For Dev"]
 
 
 def make_cfg() -> EggsConfig:
@@ -35,7 +35,7 @@ def make_cfg() -> EggsConfig:
             "adhoc": ["Ad-hoc Task"],
         },
         transitions={
-            "start_analysis": "Start Analysis",
+            "analysis_done": "Analysis Done",
             "set_due": "Set Due Date",
             "ready_for_dev": "Ready For Dev",
         },
@@ -94,7 +94,7 @@ def test_creates_new_epic_story_parts():
         for name, args, _ in gateway.calls
         if name == "transition" and args[0] == res.plan.flows[0].key
     ]
-    assert "Start Analysis" in trans_calls
+    assert "Analysis Done" in trans_calls
     assert "Set Due Date" in trans_calls
     assert "Ready For Dev" in trans_calls
 
@@ -270,8 +270,8 @@ def test_existing_story_no_status_change():
     ]
     # Set Due Date is called because duedate was empty
     assert "Set Due Date" in trans_calls
-    # Start Analysis and Ready For Dev must NOT be called on existing Story!
-    assert "Start Analysis" not in trans_calls
+    # Analysis Done and Ready For Dev must NOT be called on existing Story!
+    assert "Analysis Done" not in trans_calls
     assert "Ready For Dev" not in trans_calls
 
 
@@ -366,11 +366,11 @@ def test_tbd_stays_analyzing():
         for name, args, _ in gateway.calls
         if name == "transition" and args[0] == story_key
     ]
-    assert "Start Analysis" in trans_calls
+    assert "Analysis Done" in trans_calls
     assert "Set Due Date" in trans_calls
     # Ready For Dev must NOT be called!
     assert "Ready For Dev" not in trans_calls
-    assert any("Analyzing" in w for w in res.warnings)
+    assert any("Analyzed" in w for w in res.warnings)
 
 
 def test_ready_for_dev_validator_error_reported_per_flow():
@@ -532,3 +532,75 @@ def test_dry_run_writes_nothing():
     }
     executed_writes = [c[0] for c in gateway.calls if c[0] in write_methods]
     assert executed_writes == []
+
+
+def test_story_with_full_fields_transitions_open_to_analyzed():
+    cfg = make_cfg()
+    gateway = FakeGateway(
+        components_map={"HMK": ["CH - CỬA HÀNG"]},
+        default_transitions=DEFAULT_FLOW_TRANSITIONS,
+    )
+    gateway.allowed_field_values = {("HMK", "Dev Task", "customfield_10701"): ["BE"]}
+    plan = Plan(
+        project="HMK",
+        epic=PlanEpic(summary="Workstream", due=date(2026, 11, 30), owner="ba.user"),
+        flows=[
+            PlanFlow(
+                code="CH-01",
+                actor="CH",
+                summary="Check-in flow",
+                ac=["AC 1 valid"],
+                ba="ba.user",
+                qc="qc.user",
+            )
+        ],
+    )
+    ctx = load_plan_context(gateway, cfg, plan, today=date(2026, 11, 10))
+    res = apply_plan(gateway, cfg, plan, ctx, dry_run=False)
+
+    assert res.ok
+    story_key = res.plan.flows[0].key
+    trans_calls = [
+        args[1]
+        for name, args, _ in gateway.calls
+        if name == "transition" and args[0] == story_key
+    ]
+    assert "Analysis Done" in trans_calls
+    assert any(f"{story_key} chuyển trạng thái -> Analyzed" in c for c in res.changes)
+
+
+def test_story_missing_ac_stays_open_with_message():
+    cfg = make_cfg()
+    gateway = FakeGateway(
+        components_map={"HMK": ["CH - CỬA HÀNG"]},
+        default_transitions=DEFAULT_FLOW_TRANSITIONS,
+    )
+    gateway.allowed_field_values = {("HMK", "Dev Task", "customfield_10701"): ["BE"]}
+    plan = Plan(
+        project="HMK",
+        epic=PlanEpic(summary="Workstream", due=date(2026, 11, 30), owner="ba.user"),
+        flows=[
+            PlanFlow(
+                code="CH-02",
+                actor="CH",
+                summary="Flow missing AC",
+                ac=[],  # Missing AC!
+                keep_description=True,
+                ba="ba.user",
+                qc="qc.user",
+            )
+        ],
+    )
+    ctx = load_plan_context(gateway, cfg, plan, today=date(2026, 11, 10))
+    res = apply_plan(gateway, cfg, plan, ctx, dry_run=False)
+
+    assert res.ok
+    story_key = res.plan.flows[0].key
+    trans_calls = [
+        args[1]
+        for name, args, _ in gateway.calls
+        if name == "transition" and args[0] == story_key
+    ]
+    # Analysis Done must NOT be called
+    assert "Analysis Done" not in trans_calls
+    assert any(f"{story_key} giữ nguyên Open: thiếu AC" in c for c in res.changes)

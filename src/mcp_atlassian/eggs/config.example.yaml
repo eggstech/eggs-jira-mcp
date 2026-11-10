@@ -100,7 +100,7 @@ fields:
 # Status mappings (logical -> Jira status name)
 statuses:
   open: Open
-  analyzing: Analyzing
+  analyzing: Analyzed
   ready_for_dev: Ready For Dev  # 10400
   todo: DEV To Do
   in_progress: Dev In Progress
@@ -159,7 +159,7 @@ transitions:
   uat_fail: UAT Fail
   start_triage: Start Triage
   close_report: Close Report
-  start_analysis: Start Analysis
+  analysis_done: Analysis Done
   set_due: Set Due Date
   ready_for_dev: Ready For Dev
   close_epic: Close Epic

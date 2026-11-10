@@ -873,6 +873,40 @@ def build_agenda(
                         )
                     )
 
+    # Priority 5 (Analyzed stories with Dev Tasks having Part + estimate for lead_ba):
+    for key, story in snapshot.issues.items():
+        if story.type == "story" and not story.frozen and not story.is_resolved:
+            status_logical = (
+                cfg.status_logical(story.status) or story.status or ""
+            ).lower()
+            if status_logical in ("analyzing", "analyzed"):
+                proj_roles = identity.roles.get(story.project, set())
+                if "lead_ba" in proj_roles or identity.is_lead:
+                    dev_tasks = [
+                        iss
+                        for iss in snapshot.issues.values()
+                        if iss.parent_key == key and iss.type == "dev_task"
+                    ]
+                    if dev_tasks and all(
+                        bool(dt.part) and dt.estimate_seconds is not None
+                        for dt in dev_tasks
+                    ):
+                        title = f"[{key}] Đã đủ Dev Task và estimate: {story.summary}"
+                        say = (
+                            f"{key} đã đủ Dev Task và estimate: "
+                            "chốt Due Date rồi Ready For Dev"
+                        )
+                        items.append(
+                            AgendaItem(
+                                priority=5,
+                                key=key,
+                                project=story.project,
+                                title=title,
+                                say=say,
+                                actions=[],
+                            )
+                        )
+
     # Priority 6: "cập nhật cuối ngày" when now.hour >= end_day_hour
     # on working days (cal.is_working_day), and identity has no worklog dated today.
     # Convert now and every worklog.started to ZoneInfo(cfg.timezone)
@@ -1015,6 +1049,40 @@ def build_agenda(
             )
             seen_keys.add(key)
 
+    # Informational for Devs: Stories in Analyzed without Dev Tasks
+    for proj, roles in identity.roles.items():
+        if "dev" in roles:
+            unsplit_stories = [
+                k
+                for k, iss in snapshot.issues.items()
+                if iss.project == proj
+                and iss.type == "story"
+                and not iss.frozen
+                and not iss.is_resolved
+                and (cfg.status_logical(iss.status) or iss.status or "").lower()
+                in ("analyzing", "analyzed")
+                and not any(
+                    child.parent_key == k and child.type == "dev_task"
+                    for child in snapshot.issues.values()
+                )
+            ]
+            if unsplit_stories:
+                unsplit_stories.sort(key=lambda k: _natural_key(k))
+                count = len(unsplit_stories)
+                keys_str = ", ".join(unsplit_stories)
+                title = f"[{proj}] {count} Story đã phân tích xong, chưa chia việc"
+                say = f"{count} Story đã phân tích xong, chưa chia việc: {keys_str}"
+                items.append(
+                    AgendaItem(
+                        priority=7,
+                        key=None,
+                        project=proj,
+                        title=title,
+                        say=say,
+                        actions=[],
+                    )
+                )
+
     # Filter out projects where identity has no role
     # (except for the lead, who sees priority 1–2 items escalated to them)
     filtered_items: list[AgendaItem] = []
@@ -1030,7 +1098,7 @@ def build_agenda(
 
     # Sort items: by priority then natural key. For priority 1: L2/L1 before L0.
     def sort_key(it: AgendaItem) -> tuple[int, int, str, int]:
-        proj, num = _natural_key(it.key)
+        proj, num = _natural_key(it.key) if it.key else (it.project or "", 0)
         if it.priority == 1 and it.key and it.key in snapshot.escalations:
             esc = snapshot.escalations[it.key]
             # Higher level first (-2 before -1 before 0)

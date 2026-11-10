@@ -252,21 +252,40 @@ def apply_plan(
                         )
 
                     # Transitions for new Story
-                    start_trans = cfg.transitions.get(
-                        "start_analysis", "Start Analysis"
-                    )
-                    gateway.transition(story_key, start_trans)
-                    changes.append(f"{story_key} chuyển trạng thái -> Analyzing")
+                    has_comp = bool(comp_name)
+                    has_qc = bool(flow.qc)
+                    has_ac = bool(flow.ac)
+                    missing_parts: list[str] = []
+                    if not has_comp:
+                        missing_parts.append("Component")
+                    if not has_qc:
+                        missing_parts.append("QC Owner")
+                    if not has_ac:
+                        missing_parts.append("AC")
 
-                    if flow.due:
-                        set_due_trans = cfg.transitions.get("set_due", "Set Due Date")
-                        gateway.transition(
-                            story_key,
-                            set_due_trans,
-                            fields={"duedate": str(flow.due)},
-                            comment=f"Đặt Due Date: {flow.due}",
+                    if missing_parts:
+                        missing_str = "/".join(missing_parts)
+                        changes.append(
+                            f"{story_key} giữ nguyên Open: thiếu {missing_str}"
                         )
-                        changes.append(f"Đặt Due Date cho {story_key} = {flow.due}")
+                    else:
+                        analysis_trans = cfg.transitions.get(
+                            "analysis_done", "Analysis Done"
+                        )
+                        gateway.transition(story_key, analysis_trans)
+                        changes.append(f"{story_key} chuyển trạng thái -> Analyzed")
+
+                        if flow.due:
+                            set_due_trans = cfg.transitions.get(
+                                "set_due", "Set Due Date"
+                            )
+                            gateway.transition(
+                                story_key,
+                                set_due_trans,
+                                fields={"duedate": str(flow.due)},
+                                comment=f"Đặt Due Date: {flow.due}",
+                            )
+                            changes.append(f"Đặt Due Date cho {story_key} = {flow.due}")
 
             # 5. Parts under this Story
             existing_dev_tasks: list[dict[str, Any]] = []
@@ -485,7 +504,7 @@ def apply_plan(
                     reason_str = ", ".join(reasons)
                     msg = (
                         f"Luồng '{flow.code or flow.summary}' ({story_key}) "
-                        f"ở lại trạng thái Analyzing vì {reason_str}"
+                        f"ở lại trạng thái Analyzed vì {reason_str}"
                     )
                     warnings.append(msg)
 

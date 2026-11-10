@@ -10,6 +10,7 @@ from mcp_atlassian.eggs.health import (
     detect_interruptions,
     people_not_updated,
 )
+from mcp_atlassian.eggs.mapping import issue_from_json
 from mcp_atlassian.eggs.model import Issue, Worklog
 
 TZ = ZoneInfo("Asia/Ho_Chi_Minh")
@@ -425,6 +426,33 @@ def test_story_without_due_after_ready_is_unscheduled(cal, cfg):
     assert "UNSCHEDULED" in flags["STORY-1"]
     assert "UNSCHEDULED" not in flags["STORY-2"]
     assert "UNSCHEDULED" not in flags["STORY-3"]
+
+
+def test_story_in_analyzed_status_without_due_date_not_unscheduled(cal, cfg):
+    # Live Jira status name is 'Analyzed'
+    cfg.statuses["analyzing"] = "Analyzed"
+    raw_story = {
+        "key": "STORY-ANALYZED",
+        "fields": {
+            "summary": "Story Analyzed",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Story", "subtask": False},
+            "status": {"name": "Analyzed"},
+            "duedate": None,
+        },
+    }
+    story = issue_from_json(raw_story, cfg)
+    assert story.status == "analyzing"
+    flags = compute_flags(
+        issues=[story],
+        worklogs=[],
+        stories={},
+        today=TODAY,
+        cal=cal,
+        cfg=cfg,
+        interruptions={},
+    )
+    assert "UNSCHEDULED" not in flags["STORY-ANALYZED"]
 
 
 def test_own_flow_bug_is_not_interruption(cal, cfg):

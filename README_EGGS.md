@@ -264,3 +264,13 @@ Hệ thống hỗ trợ BA/Lead chuyển đổi tài liệu yêu cầu thành c�
 - **`eggs_plan_apply`**: Áp dụng kế hoạch `plan.yaml` lên Jira (hỗ trợ `dry_run=True` để xem trước thay đổi). Tự động tạo/cập nhật Epic, Story, Dev Task, Ad-hoc Task và liên kết `Blocks` giữa các luồng.
 - **`eggs_migrate_epic`**: Trích xuất Epic hiện có trên Jira thành file `plan.yaml` mẫu kèm thống kê các thông tin còn thiếu (actor, due date, qc) để bổ sung trước khi chuẩn hóa.
 
+### Vòng đời của Story (Story Workflow Lifecycle)
+
+Quy trình chuẩn hóa Story:
+1. **Open**: Story khởi tạo từ kế hoạch hoặc tạo mới.
+2. **Analyzed**: Chuyển trạng thái qua transition `Analysis Done` khi Story có đầy đủ Component (Actor), QC Owner và Acceptance Criteria (AC). Nếu thiếu một trong ba thông tin này, Story giữ nguyên ở trạng thái `Open`.
+3. **Ready For Dev**: Chuyển trạng thái khi tất cả Dev Task con đã có Part và estimate, kèm Due Date được chốt bởi BA/Lead.
+4. **DEV To Do / Dev In Progress**: Dev thực hiện các phần việc.
+5. **QC TO DO / Test In Progress**: QC thực hiện kiểm thử.
+6. **Ready For UAT / Wait For Review / Done**: Khách hàng nghiệm thu và hoàn tất.
+

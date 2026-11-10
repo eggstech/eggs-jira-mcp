@@ -27,7 +27,7 @@ def make_cfg() -> EggsConfig:
             "adhoc": ["Ad-hoc Task"],
         },
         transitions={
-            "start_analysis": "Start Analysis",
+            "analysis_done": "Analysis Done",
             "set_due": "Set Due Date",
             "ready_for_dev": "Ready For Dev",
         },
