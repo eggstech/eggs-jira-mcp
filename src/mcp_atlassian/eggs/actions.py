@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -8,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 from .calendar import WorkCalendar
 from .config import EggsConfig
-from .gateway import JiraError
+from .gateway import JiraError, JiraGateway
 from .mapping import issue_fields_for_write, issue_from_json
 from .model import Issue
 
@@ -49,6 +51,7 @@ class Actions:
         cfg: EggsConfig,
         cal: WorkCalendar,
         today_fn: Callable[[], date] | None = None,
+        bot_gateway: Any = None,
     ) -> None:
         self.gateway = gateway
         self.cfg = cfg
@@ -56,6 +59,7 @@ class Actions:
         self.today_fn = today_fn or (
             lambda: datetime.now(ZoneInfo(cfg.timezone)).date()
         )
+        self.bot_gateway = bot_gateway
 
     def _today(self) -> date:
         return self.today_fn()
@@ -2799,3 +2803,229 @@ class Actions:
             changes=changes,
             next_actions=[],
         )
+
+    def create_component(
+        self,
+        project: str,
+        code: str,
+        name: str,
+        description: str | None = None,
+        *,
+        creator: str | None = None,
+        creator_roles: set[str] | None = None,
+        is_lead: bool = False,
+        bot_gateway: Any = None,
+        dry_run: bool = False,
+    ) -> ActionResult:
+        """Tạo mới Component (Actor) cho dự án."""
+        if project not in self.cfg.projects:
+            return ActionResult(
+                ok=False,
+                message=f"Dự án {project} không có trong cấu hình.",
+                changes=[],
+                next_actions=[],
+            )
+
+        allowed_roles = set(getattr(self.cfg, "component_roles", ["lead_ba", "qc"]))
+        effective_roles = set(creator_roles or [])
+        if not is_lead and not (effective_roles & allowed_roles):
+            role_names = ", ".join(sorted(allowed_roles))
+            return ActionResult(
+                ok=False,
+                message=(
+                    f"Bạn không có quyền tạo component trong dự án {project}. "
+                    f"Cần vai trò: {role_names}."
+                ),
+                changes=[],
+                next_actions=[],
+            )
+
+        if not code or not re.match(r"^[A-Z]{2,5}$", code):
+            return ActionResult(
+                ok=False,
+                message=(
+                    f"Mã Component '{code}' không hợp lệ. "
+                    "Mã phải gồm 2-5 chữ cái in hoa (A-Z), ví dụ: KT, CH, KH."
+                ),
+                changes=[],
+                next_actions=[],
+            )
+
+        if not name or not name.strip():
+            return ActionResult(
+                ok=False,
+                message="Tên Component không được để trống.",
+                changes=[],
+                next_actions=[],
+            )
+
+        name = name.strip()
+        full_name = f"{code} - {name.upper()}"
+
+        existing_comps: list[str] = []
+        if hasattr(self.gateway, "components"):
+            existing_comps = self.gateway.components(project)
+        elif hasattr(self.gateway, "get_components"):
+            raw_comps = self.gateway.get_components(project)
+            existing_comps = [
+                c["name"] for c in raw_comps if isinstance(c, dict) and "name" in c
+            ]
+
+        comps_str = ", ".join(existing_comps) if existing_comps else "không có"
+        for comp in existing_comps:
+            comp_code = (
+                comp.split(" - ", 1)[0].strip().upper()
+                if " - " in comp
+                else comp.strip().upper()
+            )
+            if comp_code == code:
+                return ActionResult(
+                    ok=False,
+                    message=(
+                        f"Mã Component '{code}' đã được sử dụng bởi {comp}. "
+                        f"Danh sách hiện có: {comps_str}."
+                    ),
+                    changes=[],
+                    next_actions=[],
+                )
+
+        norm_new = _normalize_name(name)
+        for comp in existing_comps:
+            existing_name_part = (
+                comp.split(" - ", 1)[1].strip() if " - " in comp else comp.strip()
+            )
+            norm_existing = _normalize_name(existing_name_part)
+            if (
+                norm_new
+                and norm_existing
+                and (
+                    norm_new == norm_existing
+                    or norm_new in norm_existing
+                    or norm_existing in norm_new
+                )
+            ):
+                return ActionResult(
+                    ok=False,
+                    message=(
+                        f"Đã có Component gần giống: {comp}. "
+                        "Dùng Component này, hoặc đặt tên khác "
+                        "nếu thật sự là Actor mới."
+                    ),
+                    changes=[],
+                    next_actions=[],
+                )
+
+        user = creator or "unknown"
+        if dry_run:
+            return ActionResult(
+                ok=True,
+                message=(
+                    f'Sẽ làm: tạo Component "{full_name}" trong {project} '
+                    f"(bot eggsbot, ghi người yêu cầu {user})."
+                ),
+                changes=[],
+                next_actions=[],
+            )
+
+        today_str = self._today().isoformat()
+        creator_tag = f"Tạo qua /eggs bởi {user}, {today_str}."
+        final_description = (
+            f"{description.strip()}\n{creator_tag}"
+            if description and description.strip()
+            else creator_tag
+        )
+
+        gw = bot_gateway or self.bot_gateway or self.gateway
+        try:
+            res = gw.create_component(
+                project=project,
+                name=full_name,
+                description=final_description,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return ActionResult(
+                ok=False,
+                message=f"Lỗi khi tạo Component '{full_name}': {exc}",
+                changes=[],
+                next_actions=[],
+            )
+
+        comp_id = res.get("id", "") if isinstance(res, dict) else ""
+        msg = f"Đã tạo Component '{full_name}'"
+        if comp_id:
+            msg += f" (id: {comp_id})"
+        msg += f" trong dự án {project}."
+        change_desc = f"Tạo Component {full_name}"
+        if comp_id:
+            change_desc += f" (id: {comp_id})"
+        return ActionResult(
+            ok=True,
+            message=msg,
+            changes=[change_desc],
+            next_actions=[],
+        )
+
+    def components(self, project: str) -> str:
+        """Liệt kê các Component trong dự án kèm số lượng Story đang mở."""
+        return get_components_summary(self.gateway, project)
+
+
+def _normalize_name(text: str) -> str:
+    text = text.replace("đ", "d").replace("Đ", "D")
+    normalized = unicodedata.normalize("NFD", text)
+    stripped = "".join(c for c in normalized if unicodedata.category(c) != "Mn")
+    stripped = stripped.casefold()
+    return re.sub(r"\s+", " ", stripped).strip()
+
+
+def get_components_summary(gateway: JiraGateway, project: str) -> str:
+    """Liệt kê các Component trong dự án kèm số lượng Story đang mở."""
+    if hasattr(gateway, "components"):
+        comp_names = gateway.components(project)
+    elif hasattr(gateway, "get_components"):
+        comp_names = [
+            c["name"]
+            for c in gateway.get_components(project)
+            if isinstance(c, dict) and "name" in c
+        ]
+    else:
+        comp_names = []
+
+    jql = f"project = {project} AND issuetype = Story AND statusCategory != Done"
+    raw_issues = gateway.search(
+        jql, fields=["components", "issuetype", "status", "project"]
+    )
+
+    story_counts: dict[str, int] = dict.fromkeys(comp_names, 0)
+    for issue in raw_issues:
+        fields = issue.get("fields", {}) if isinstance(issue, dict) else {}
+        iss_proj = (
+            fields.get("project", {}).get("key") or issue.get("key", "").split("-")[0]
+        )
+        if iss_proj and iss_proj.upper() != project.upper():
+            continue
+        itype = fields.get("issuetype", {}).get("name")
+        if itype and itype.lower() != "story":
+            continue
+        status_cat = fields.get("status", {}).get("statusCategory", {}).get("key")
+        status_name = fields.get("status", {}).get("name", "").lower()
+        if status_cat == "done" or status_name in ("done", "closed", "cancelled"):
+            continue
+
+        issue_comps = fields.get("components", []) or []
+        for c in issue_comps:
+            c_name = c.get("name") if isinstance(c, dict) else str(c)
+            if c_name in story_counts:
+                story_counts[c_name] += 1
+            else:
+                story_counts[c_name] = 1
+
+    lines = [f"Danh sách Component trong dự án {project}:"]
+    if not comp_names and not story_counts:
+        lines.append("- (Không có component nào)")
+    else:
+        all_comps = sorted(set(comp_names) | set(story_counts.keys()))
+        for name in all_comps:
+            count = story_counts.get(name, 0)
+            lines.append(f"- {name}: {count} open Stories")
+    return "\n".join(lines)

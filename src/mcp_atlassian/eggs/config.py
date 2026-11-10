@@ -91,6 +91,7 @@ class EggsConfig:
             "bug_sub": ["qc", "lead_ba"],
         }
     )
+    component_roles: list[str] = field(default_factory=lambda: ["lead_ba", "qc"])
 
     def __post_init__(self) -> None:
         if self.roles:
@@ -310,4 +311,5 @@ def load_config(path: str | None = None) -> EggsConfig:
                 "bug_sub": ["qc", "lead_ba"],
             },
         ),
+        component_roles=data.get("component_roles", ["lead_ba", "qc"]),
     )

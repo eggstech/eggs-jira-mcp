@@ -295,6 +295,46 @@ class FakeGateway(JiraGateway):
         self._record("components", project)
         return list(self.components_map.get(project, []))
 
+    def create_component(
+        self, project: str, name: str, description: str | None = None
+    ) -> dict[str, Any]:
+        self._record("create_component", project, name, description)
+        if not hasattr(self, "components_map"):
+            self.components_map = {}
+        if project not in self.components_map:
+            self.components_map[project] = []
+        if name in self.components_map[project]:
+            err_msg = f"Component '{name}' already exists in project '{project}'."
+            err_details = [f"A component with the name {name} already exists."]
+            raise JiraError(
+                err_msg,
+                status_code=400,
+                error_messages=err_details,
+            )
+        self.components_map[project].append(name)
+        if not hasattr(self, "components_detail"):
+            self.components_detail = {}
+        if project not in self.components_detail:
+            self.components_detail[project] = []
+        comp_id = str(len(self.components_detail[project]) + 1)
+        comp_obj = {
+            "id": comp_id,
+            "name": name,
+            "project": project,
+            "description": description or "",
+        }
+        self.components_detail[project].append(comp_obj)
+        return comp_obj
+
+    def get_components(self, project: str) -> list[dict[str, Any]]:
+        self._record("get_components", project)
+        if hasattr(self, "components_detail") and project in self.components_detail:
+            return list(self.components_detail[project])
+        return [
+            {"name": name, "project": project, "description": ""}
+            for name in self.components_map.get(project, [])
+        ]
+
     def current_user(self) -> str:
         self._record("current_user")
         return self.user

@@ -18,7 +18,12 @@ from fastmcp.exceptions import ToolError
 from pydantic import Field
 
 from mcp_atlassian import __version__
-from mcp_atlassian.eggs.actions import ActionResult, Actions, EndDayEntry
+from mcp_atlassian.eggs.actions import (
+    ActionResult,
+    Actions,
+    EndDayEntry,
+    get_components_summary,
+)
 from mcp_atlassian.eggs.agenda import (
     AgendaItem,
     Intent,
@@ -62,6 +67,7 @@ READ_EGGS_TOOL_NAMES = frozenset(
         "eggs_pending_approvals",
         "eggs_plan_validate",
         "eggs_migrate_epic",
+        "eggs_components",
     }
 )
 
@@ -87,6 +93,7 @@ WRITE_EGGS_TOOL_NAMES = frozenset(
         "eggs_triage_close",
         "eggs_plan_apply",
         "eggs_create_issue",
+        "eggs_create_component",
     }
 )
 
@@ -705,6 +712,18 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
             "other_issues": len(exported_plan.other_issues),
         }
         return json.dumps(out, indent=2, ensure_ascii=False)
+
+    @server.tool(
+        tags=read_tags,
+        annotations={"title": "EGGS Components", "readOnlyHint": True},
+    )
+    async def eggs_components(
+        ctx: Context,
+        project: Annotated[str, Field(description="Mã dự án (ví dụ EGGSBOX)")],
+    ) -> str:
+        """Liệt kê các Component trong dự án kèm số lượng Story đang mở."""
+        user_gw = await get_user_gateway(ctx, write=False)
+        return await asyncio.to_thread(get_components_summary, user_gw, project.upper())
 
     # -------------------------------------------------------------------------
     # WRITE TOOLS (19)
@@ -1919,6 +1938,60 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
             creator_roles=creator_roles,
             is_lead=ident.is_lead,
             parent=parent,
+            dry_run=dry_run,
+        )
+        if res.ok and not dry_run:
+            now = datetime.now(ZoneInfo(cfg.timezone))
+            res = await asyncio.to_thread(
+                _attach_next_agenda_item, res, user_gw, ident, cfg, cal, now
+            )
+        return json.dumps(action_result_to_dict(res), indent=2, ensure_ascii=False)
+
+    @server.tool(tags=write_tags, annotations={"title": "EGGS Create Component"})
+    @eggs_check_write_access
+    async def eggs_create_component(
+        ctx: Context,
+        project: Annotated[str, Field(description="Mã dự án (ví dụ EGGSBOX)")],
+        code: Annotated[
+            str,
+            Field(
+                description="Mã Actor/Component (2-5 chữ cái in hoa, ví dụ KT, CH, KH)"
+            ),
+        ],
+        name: Annotated[
+            str,
+            Field(description="Tên Actor/Component (ví dụ KẾ TOÁN, CỬA HÀNG)"),
+        ],
+        description: Annotated[
+            str | None,
+            Field(description="Mô tả Component", default=None),
+        ] = None,
+        *,
+        dry_run: Annotated[
+            bool, Field(description="Chạy thử nghiệm không ghi", default=False)
+        ] = False,
+    ) -> str:
+        """Tạo mới Component (Actor) cho dự án."""
+        cfg = await asyncio.to_thread(load_config)
+        user_gw = await get_user_gateway(ctx, write=True)
+        roles_gw = await asyncio.to_thread(get_roles_reader, cfg)
+        ident = await asyncio.to_thread(
+            resolve_identity, user_gw, roles_gw, cfg, _identity_cache
+        )
+
+        cal = WorkCalendar(cfg.holidays)
+        actions = Actions(user_gw, cfg, cal, bot_gateway=roles_gw)
+        creator_roles = ident.roles.get(project.upper(), set())
+        res = await asyncio.to_thread(
+            actions.create_component,
+            project=project.upper(),
+            code=code,
+            name=name,
+            description=description,
+            creator=ident.username,
+            creator_roles=creator_roles,
+            is_lead=ident.is_lead,
+            bot_gateway=roles_gw,
             dry_run=dry_run,
         )
         if res.ok and not dry_run:

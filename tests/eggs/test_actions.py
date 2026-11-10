@@ -121,8 +121,8 @@ def cal():
     return WorkCalendar(holidays=frozenset())
 
 
-def _make_actions(gateway, cfg, cal):
-    return Actions(gateway, cfg, cal, today_fn=lambda: TODAY)
+def _make_actions(gateway, cfg, cal, bot_gateway=None):
+    return Actions(gateway, cfg, cal, today_fn=lambda: TODAY, bot_gateway=bot_gateway)
 
 
 def test_no_delete_method_exists():
@@ -4734,3 +4734,167 @@ def test_create_bug_sub_retry_returns_same_key(cfg, cal):
     # Only 1 create_issue call recorded
     create_calls = [c for c in gw.calls if c[0] == "create_issue"]
     assert len(create_calls) == 1
+
+
+def test_create_component_and_components_summary(cfg, cal):
+    from mcp_atlassian.eggs.config import ProjectConfig
+
+    cfg.projects["EGGSBOX"] = ProjectConfig(
+        key="EGGSBOX",
+        default_lead_ba="cuong.huynh",
+        triage_owner="tuan.bui",
+    )
+    user_gw = FakeGateway(components_map={"EGGSBOX": ["CH - CỬA HÀNG"]})
+    bot_gw = FakeGateway(components_map={"EGGSBOX": ["CH - CỬA HÀNG"]})
+    actions = _make_actions(user_gw, cfg, cal, bot_gateway=bot_gw)
+
+    # 1. QC creates KT - KẾ TOÁN
+    res = actions.create_component(
+        project="EGGSBOX",
+        code="KT",
+        name="Kế toán",
+        description="Bộ phận kế toán",
+        creator="tuan.bui",
+        creator_roles={"qc"},
+    )
+    assert res.ok is True
+    assert "KT - KẾ TOÁN" in res.message
+    # bot gateway used for the write
+    bot_create_calls = [c for c in bot_gw.calls if c[0] == "create_component"]
+    assert len(bot_create_calls) == 1
+    args = bot_create_calls[0][1]
+    assert args[0] == "EGGSBOX"
+    assert args[1] == "KT - KẾ TOÁN"
+    # description records caller
+    assert "Tạo qua /eggs bởi tuan.bui, 2026-11-18." in args[2]
+    # user gateway was not used for write
+    assert not any(c[0] == "create_component" for c in user_gw.calls)
+
+    # 2. dev refused
+    res_dev = actions.create_component(
+        project="EGGSBOX",
+        code="NV",
+        name="Nhân viên",
+        creator="cuong.huynh",
+        creator_roles={"dev"},
+    )
+    assert res_dev.ok is False
+    assert "Bạn không có quyền tạo component trong dự án EGGSBOX" in res_dev.message
+
+    # 3. duplicate code refused
+    res_dup = actions.create_component(
+        project="EGGSBOX",
+        code="CH",
+        name="Cửa hàng phụ",
+        creator="tuan.bui",
+        creator_roles={"qc"},
+    )
+    assert res_dup.ok is False
+    assert "Mã Component 'CH' đã được sử dụng bởi CH - CỬA HÀNG" in res_dup.message
+
+    # 4. 'cua hang' vs existing 'CH - CỬA HÀNG' refused as similar
+    res_similar = actions.create_component(
+        project="EGGSBOX",
+        code="CHM",
+        name="cua hang",
+        creator="tuan.bui",
+        creator_roles={"qc"},
+    )
+    assert res_similar.ok is False
+    assert res_similar.message == (
+        "Đã có Component gần giống: CH - CỬA HÀNG. "
+        "Dùng Component này, hoặc đặt tên khác nếu thật sự là Actor mới."
+    )
+
+    # 5. invalid code 'kt1' refused
+    res_invalid_code = actions.create_component(
+        project="EGGSBOX",
+        code="kt1",
+        name="Kiểm toán",
+        creator="tuan.bui",
+        creator_roles={"qc"},
+    )
+    assert res_invalid_code.ok is False
+    assert "Mã Component 'kt1' không hợp lệ" in res_invalid_code.message
+
+    # 6. dry run writes nothing
+    res_dry = actions.create_component(
+        project="EGGSBOX",
+        code="KTM",
+        name="Kế toán mới",
+        creator="tuan.bui",
+        creator_roles={"qc"},
+        dry_run=True,
+    )
+    assert res_dry.ok is True
+    assert res_dry.message == (
+        'Sẽ làm: tạo Component "KTM - KẾ TOÁN MỚI" trong EGGSBOX '
+        "(bot eggsbot, ghi người yêu cầu tuan.bui)."
+    )
+    assert len([c for c in bot_gw.calls if c[0] == "create_component"]) == 1
+
+    # 7. eggs_create_issue with unknown component refused with hint
+    res_unknown = actions.create_issue(
+        project="EGGSBOX",
+        issue_type="adhoc",
+        summary="Test Adhoc",
+        component="UNKNOWN",
+        creator="tuan.bui",
+        creator_roles={"qc"},
+    )
+    assert res_unknown.ok is False
+    assert (
+        "Chưa có Component UNKNOWN trong EGGSBOX. "
+        "Chọn một Component có sẵn: CH - CỬA HÀNG hoặc tạo mới bằng eggs_create_component."
+        in res_unknown.message
+    )
+
+    # 8. eggs_components counts open Stories
+    gw_comp = FakeGateway(
+        components_map={"EGGSBOX": ["CH - CỬA HÀNG", "KH - KHÁCH HÀNG"]},
+        issues={
+            "EGGSBOX-1": {
+                "key": "EGGSBOX-1",
+                "fields": {
+                    "project": {"key": "EGGSBOX"},
+                    "issuetype": {"name": "Story"},
+                    "status": {"name": "Open", "statusCategory": {"key": "new"}},
+                    "components": [{"name": "CH - CỬA HÀNG"}],
+                },
+            },
+            "EGGSBOX-2": {
+                "key": "EGGSBOX-2",
+                "fields": {
+                    "project": {"key": "EGGSBOX"},
+                    "issuetype": {"name": "Story"},
+                    "status": {
+                        "name": "In Progress",
+                        "statusCategory": {"key": "indeterminate"},
+                    },
+                    "components": [{"name": "CH - CỬA HÀNG"}],
+                },
+            },
+            "EGGSBOX-3": {
+                "key": "EGGSBOX-3",
+                "fields": {
+                    "project": {"key": "EGGSBOX"},
+                    "issuetype": {"name": "Story"},
+                    "status": {"name": "Done", "statusCategory": {"key": "done"}},
+                    "components": [{"name": "CH - CỬA HÀNG"}],
+                },
+            },
+            "EGGSBOX-4": {
+                "key": "EGGSBOX-4",
+                "fields": {
+                    "project": {"key": "EGGSBOX"},
+                    "issuetype": {"name": "Story"},
+                    "status": {"name": "Open", "statusCategory": {"key": "new"}},
+                    "components": [{"name": "KH - KHÁCH HÀNG"}],
+                },
+            },
+        },
+    )
+    actions_comp = _make_actions(gw_comp, cfg, cal)
+    summary_text = actions_comp.components("EGGSBOX")
+    assert "CH - CỬA HÀNG: 2 open Stories" in summary_text
+    assert "KH - KHÁCH HÀNG: 1 open Stories" in summary_text

@@ -115,6 +115,16 @@ class JiraGateway(Protocol):
         """Get component names for a project."""
         ...
 
+    def create_component(
+        self, project: str, name: str, description: str | None = None
+    ) -> dict[str, Any]:
+        """Create a component via POST rest/api/2/component using bot client."""
+        ...
+
+    def get_components(self, project: str) -> list[dict[str, Any]]:
+        """Get component objects for a project: [{'name': ..., 'description': ...}]."""
+        ...
+
     def current_user(self) -> str:
         """Get the current authenticated user's name/key."""
         ...

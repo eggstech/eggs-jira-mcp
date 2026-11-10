@@ -223,8 +223,9 @@ def validate_plan(plan: Plan, ctx: PlanContext, cfg: EggsConfig) -> ValidationRe
         if not flow.actor or flow.actor not in ctx.components:
             allowed = ", ".join(sorted(ctx.components.keys()))
             msg = (
-                f"Luồng '{label}': Actor '{flow.actor}' không hợp lệ. "
-                f"Các Actor hợp lệ: {allowed}"
+                f"Chưa có Component {flow.actor} trong {plan.project}. "
+                f"Chọn một Component có sẵn: {allowed} hoặc "
+                "tạo mới bằng eggs_create_component."
             )
             findings.append(Finding("error", f"flows[{i}].actor", msg))
 

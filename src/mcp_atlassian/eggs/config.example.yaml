@@ -50,6 +50,10 @@ create_roles:
     - lead_ba
     - dev
 
+component_roles:
+  - lead_ba
+  - qc
+
 link_types:
   interrupts: "Interrupts"
   causes: "Causes"

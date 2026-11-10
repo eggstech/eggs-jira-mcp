@@ -72,6 +72,20 @@ INTENTS: list[Intent] = [
         required=["parent", "summary"],
     ),
     Intent(
+        name="create_component",
+        roles=frozenset({"qc", "lead_ba"}),
+        examples=["tạo component", "thêm actor kế toán"],
+        tool="eggs_create_component",
+        required=["project", "code", "name"],
+    ),
+    Intent(
+        name="list_components",
+        roles=frozenset({"any"}),
+        examples=["có những component nào"],
+        tool="eggs_components",
+        required=["project"],
+    ),
+    Intent(
         name="log_work",
         roles=frozenset({"any"}),
         examples=["hôm qua làm 4h RFID-128", "ghi 2h vào RFID-10", "log work 1d"],
