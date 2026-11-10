@@ -29,6 +29,28 @@ def test_update_fields_with_notify_users_false(mock_client):
     )
 
 
+def test_update_fields_http_error_wrapped_into_jira_error(mock_client):
+    from requests.exceptions import HTTPError
+    gateway = AtlassianGateway(mock_client)
+    resp = MagicMock()
+    resp.status_code = 400
+    resp.json.return_value = {
+        "errorMessages": ["Field 'part' cannot be set"],
+        "errors": {"planned_start": "Date is required"},
+    }
+    mock_client.put.side_effect = HTTPError("400 Client Error", response=resp)
+
+    with pytest.raises(JiraError) as exc_info:
+        gateway.update_fields("PROJ-123", {"part": "INVALID"})
+
+    err = exc_info.value
+    assert err.status_code == 400
+    assert err.error_messages == ["Field 'part' cannot be set"]
+    assert err.errors == {"planned_start": "Date is required"}
+    assert "Field 'part' cannot be set" in str(err)
+    assert "Date is required" in str(err)
+
+
 def test_get_subtasks(mock_client):
     gateway = AtlassianGateway(mock_client)
     mock_client.get.return_value = {

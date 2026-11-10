@@ -94,8 +94,9 @@ def post_to_chat(
     """Post a text message to a Google Chat incoming webhook.
 
     - Splits messages exceeding 4000 characters.
-    - Retries once on HTTP 5xx or timeout (with 1s backoff).
-    - 4xx fails immediately without retry.
+    - Retries once on HTTP 429 (honouring Retry-After up to 30s, default 5s),
+      HTTP 5xx or timeout.
+    - Other 4xx fail immediately without retry.
     - Never leaks the webhook URL or secret; logs only project key and HTTP status.
     - Raises RuntimeError without chaining causes (`from None`).
     """
@@ -123,11 +124,12 @@ def post_to_chat(
                 break
             except Exception as e:  # noqa: BLE001
                 status: int | None = None
-                if hasattr(e, "response") and getattr(e, "response", None) is not None:
-                    status = getattr(e.response, "status_code", None)
+                resp_obj = getattr(e, "response", None)
+                if hasattr(e, "response") and resp_obj is not None:
+                    status = getattr(resp_obj, "status_code", None)
 
-                # 4xx client error: no retry, log status + project key (no URL)
-                if status is not None and 400 <= status < 500:
+                # 4xx client error (except 429): no retry, log status + project key
+                if status is not None and 400 <= status < 500 and status != 429:
                     logger.error(
                         "Chat post failed for %s (chunk %d/%d) with HTTP %d",
                         target,
@@ -141,12 +143,14 @@ def post_to_chat(
                     )
                     raise RuntimeError(err_msg) from None
 
-                # Retryable: 5xx, timeout, or connection error
+                # Retryable: 429, 5xx, timeout, or connection error
+                is_429 = status == 429
                 is_5xx = status is not None and status >= 500
                 is_timeout = isinstance(e, requests.exceptions.Timeout)
                 is_conn = isinstance(e, requests.exceptions.ConnectionError)
 
-                if (is_5xx or is_timeout or is_conn) and attempts < max_attempts:
+                is_retryable = is_429 or is_5xx or is_timeout or is_conn
+                if is_retryable and attempts < max_attempts:
                     logger.warning(
                         "Chat post failed for %s (chunk %d/%d, attempt %d/%d): "
                         "%s. Retrying...",
@@ -157,7 +161,22 @@ def post_to_chat(
                         max_attempts,
                         _sanitize_error(e, webhook),
                     )
-                    sleep(1)
+                    backoff = 1.0
+                    if is_429:
+                        backoff = 5.0
+                        if hasattr(e, "response") and resp_obj is not None:
+                            headers = getattr(resp_obj, "headers", None) or {}
+                            retry_after = (
+                                headers.get("Retry-After")
+                                or headers.get("retry-after")
+                            )
+                            if retry_after is not None:
+                                try:
+                                    val = float(str(retry_after).strip())
+                                    backoff = min(30.0, max(0.0, val))
+                                except (ValueError, TypeError):
+                                    backoff = 5.0
+                    sleep(backoff)
                     continue
 
                 # Permanent failure

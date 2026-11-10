@@ -13,6 +13,28 @@ from .model import Worklog
 logger = logging.getLogger(__name__)
 
 
+def _handle_http_error(e: HTTPError) -> JiraError:
+    status_code = e.response.status_code if e.response is not None else None
+    error_messages: list[str] = []
+    errors_dict: dict[str, str] = {}
+    if e.response is not None:
+        try:
+            data = e.response.json()
+            if isinstance(data, dict):
+                error_messages = data.get("errorMessages") or []
+                errors_dict = data.get("errors") or {}
+        except Exception:  # noqa: BLE001, S110
+            pass
+    all_errs = list(error_messages) + list(errors_dict.values())
+    msg = "\n".join(all_errs) if all_errs else str(e)
+    return JiraError(
+        msg,
+        status_code=status_code,
+        error_messages=error_messages,
+        errors=errors_dict,
+    )
+
+
 class AtlassianGateway(JiraGateway):
     """Adapter implementing JiraGateway on top of the upstream Jira client."""
 
@@ -92,25 +114,7 @@ class AtlassianGateway(JiraGateway):
         try:
             self.client.post(f"rest/api/2/issue/{key}/transitions", data=payload)
         except HTTPError as e:
-            status_code = e.response.status_code if e.response is not None else None
-            error_messages: list[str] = []
-            errors_dict: dict[str, str] = {}
-            if e.response is not None:
-                try:
-                    data = e.response.json()
-                    if isinstance(data, dict):
-                        error_messages = data.get("errorMessages") or []
-                        errors_dict = data.get("errors") or {}
-                except Exception:  # noqa: BLE001, S110
-                    pass
-            all_errs = list(error_messages) + list(errors_dict.values())
-            msg = "\n".join(all_errs) if all_errs else str(e)
-            raise JiraError(
-                msg,
-                status_code=status_code,
-                error_messages=error_messages,
-                errors=errors_dict,
-            ) from e
+            raise _handle_http_error(e) from e
 
     def update_fields(
         self,
@@ -121,11 +125,14 @@ class AtlassianGateway(JiraGateway):
     ) -> None:
         """Update fields on an issue."""
         params = {"notifyUsers": "false"} if not notify_users else None
-        self.client.put(
-            f"rest/api/2/issue/{key}",
-            data={"fields": fields},
-            params=params,
-        )
+        try:
+            self.client.put(
+                f"rest/api/2/issue/{key}",
+                data={"fields": fields},
+                params=params,
+            )
+        except HTTPError as e:
+            raise _handle_http_error(e) from e
 
     def add_comment(self, key: str, body: str) -> None:
         """Add a comment to an issue."""

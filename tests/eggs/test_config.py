@@ -445,3 +445,50 @@ projects:
     assert cfg.fields["epic_name"] == "customfield_10102"
 
 
+def test_webhook_repr_redaction():
+    from mcp_atlassian.eggs.config import EggsConfig, ProjectConfig
+
+    proj = ProjectConfig(
+        key="PROJ",
+        default_lead_ba="ba",
+        triage_owner="qc",
+        chat_webhook="https://chat.googleapis.com/secret_proj_hook",
+    )
+    assert "secret_proj_hook" not in repr(proj)
+    assert proj.chat_webhook == "https://chat.googleapis.com/secret_proj_hook"
+
+    cfg = EggsConfig(
+        lead_user="cuong.huynh",
+        jira_url="https://jira.eggstech.io.vn",
+        lead_chat_webhook="https://chat.googleapis.com/secret_lead_hook",
+    )
+    assert "secret_lead_hook" not in repr(cfg)
+    assert cfg.lead_chat_webhook == "https://chat.googleapis.com/secret_lead_hook"
+
+
+def test_load_config_fields_none_dropped_keeps_default_fields(tmp_path):
+    yaml_content = """
+lead_user: cuong.huynh
+jira_url: https://jira.eggstech.io.vn
+link_types:
+  interrupts: "is interrupted by"
+  causes: "causes"
+  relates: "relates to"
+  duplicates: "duplicates"
+fields:
+  epic_name: null
+  planned_start: customfield_99999
+projects:
+  PROJ:
+    default_lead_ba: cuong.huynh
+    triage_owner: cuong.huynh
+"""
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(yaml_content)
+
+    cfg = load_config(str(cfg_file))
+    assert cfg.fields["epic_name"] == "customfield_10102"
+    assert cfg.fields["planned_start"] == "customfield_99999"
+
+
+

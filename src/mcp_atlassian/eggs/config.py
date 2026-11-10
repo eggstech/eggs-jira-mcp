@@ -32,7 +32,7 @@ class ProjectConfig:
     key: str
     default_lead_ba: str
     triage_owner: str
-    chat_webhook: str | None = None
+    chat_webhook: str | None = field(default=None, repr=False)
     frozen: bool = False
 
 
@@ -69,7 +69,7 @@ class EggsConfig:
     thresholds: Thresholds = field(default_factory=Thresholds)
     holidays: frozenset[date] = field(default_factory=frozenset)
     projects: dict[str, ProjectConfig] = field(default_factory=dict)
-    lead_chat_webhook: str | None = None
+    lead_chat_webhook: str | None = field(default=None, repr=False)
     kit_min_version: str = "0.1.0"
     roles: dict[str, list[str]] = field(
         default_factory=lambda: {
@@ -243,6 +243,9 @@ def load_config(path: str | None = None) -> EggsConfig:
             "dev": ["Developers"],
         }
 
+    fields_raw = data.get("fields") or {}
+    clean_fields = {k: v for k, v in fields_raw.items() if v is not None}
+
     return EggsConfig(
         lead_user=data["lead_user"],
         jira_url=data["jira_url"],
@@ -261,7 +264,7 @@ def load_config(path: str | None = None) -> EggsConfig:
         ),
         hotfix_prefix=data.get("hotfix_prefix", "[HOTFIX]"),
         bot_user=data.get("bot_user", "eggsbot"),
-        fields=dict(DEFAULT_FIELDS, **(data.get("fields") or {})),
+        fields=dict(DEFAULT_FIELDS, **clean_fields),
         statuses=data.get("statuses", {}),
         issue_types=data.get("issue_types", {}),
         transitions=data.get("transitions", {}),

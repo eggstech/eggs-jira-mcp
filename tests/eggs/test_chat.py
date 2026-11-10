@@ -209,3 +209,134 @@ def test_sanitize_error_redacts_path_and_query():
     assert "key=K" not in sanitized
     assert "token=T" not in sanitized
     assert "/v1/spaces" not in sanitized
+
+
+def test_post_to_chat_429_retries_honours_retry_after(caplog):
+    webhook = "https://chat.googleapis.com/v1/spaces/SPACE429/messages?key=secret&token=token"
+    calls = []
+    sleeps = []
+
+    def rate_limited_then_ok_post(url: str, json: dict[str, Any] | None = None, **kwargs: Any) -> Any:
+        calls.append((url, json))
+        if len(calls) == 1:
+            resp = requests.Response()
+            resp.status_code = 429
+            resp.headers["Retry-After"] = "12"
+            err_msg = f"429 Too Many Requests for url: {url}"
+            raise requests.exceptions.HTTPError(err_msg, response=resp)
+        resp = requests.Response()
+        resp.status_code = 200
+        return resp
+
+    with caplog.at_level(logging.INFO):
+        post_to_chat(
+            webhook,
+            "Rate limited message",
+            http_post=rate_limited_then_ok_post,
+            project_key="RFID",
+            sleep=lambda s: sleeps.append(s),
+        )
+
+    assert len(calls) == 2
+    assert sleeps == [12.0]
+    for rec in caplog.records:
+        assert "secret" not in rec.message
+        assert "token" not in rec.message
+        assert "/v1/spaces" not in rec.message
+
+
+def test_post_to_chat_429_retries_caps_retry_after_at_30s():
+    webhook = "https://chat.googleapis.com/v1/spaces/SPACE429/messages?key=secret&token=token"
+    calls = []
+    sleeps = []
+
+    def rate_limited_then_ok_post(url: str, json: dict[str, Any] | None = None, **kwargs: Any) -> Any:
+        calls.append((url, json))
+        if len(calls) == 1:
+            resp = requests.Response()
+            resp.status_code = 429
+            resp.headers["Retry-After"] = "60"
+            err_msg = f"429 Too Many Requests for url: {url}"
+            raise requests.exceptions.HTTPError(err_msg, response=resp)
+        resp = requests.Response()
+        resp.status_code = 200
+        return resp
+
+    post_to_chat(
+        webhook,
+        "Capped message",
+        http_post=rate_limited_then_ok_post,
+        project_key="RFID",
+        sleep=lambda s: sleeps.append(s),
+    )
+
+    assert len(calls) == 2
+    assert sleeps == [30.0]
+
+
+def test_post_to_chat_429_default_5s_when_missing_or_non_numeric_header():
+    webhook = "https://chat.googleapis.com/v1/spaces/SPACE429/messages?key=secret&token=token"
+    # Case 1: missing Retry-After header
+    calls1: list[Any] = []
+    sleeps1: list[float] = []
+
+    def post1(url: str, json: dict[str, Any] | None = None, **kwargs: Any) -> Any:
+        calls1.append((url, json))
+        if len(calls1) == 1:
+            resp = requests.Response()
+            resp.status_code = 429
+            raise requests.exceptions.HTTPError("429 Too Many Requests", response=resp)
+        resp = requests.Response()
+        resp.status_code = 200
+        return resp
+
+    post_to_chat(webhook, "Msg1", http_post=post1, project_key="RFID", sleep=lambda s: sleeps1.append(s))
+    assert len(calls1) == 2
+    assert sleeps1 == [5.0]
+
+    # Case 2: non-numeric Retry-After header
+    calls2: list[Any] = []
+    sleeps2: list[float] = []
+
+    def post2(url: str, json: dict[str, Any] | None = None, **kwargs: Any) -> Any:
+        calls2.append((url, json))
+        if len(calls2) == 1:
+            resp = requests.Response()
+            resp.status_code = 429
+            resp.headers["Retry-After"] = "Wed, 21 Oct 2026 07:28:00 GMT"
+            raise requests.exceptions.HTTPError("429 Too Many Requests", response=resp)
+        resp = requests.Response()
+        resp.status_code = 200
+        return resp
+
+    post_to_chat(webhook, "Msg2", http_post=post2, project_key="RFID", sleep=lambda s: sleeps2.append(s))
+    assert len(calls2) == 2
+    assert sleeps2 == [5.0]
+
+
+def test_post_to_chat_429_twice_raises_runtime_error():
+    webhook = "https://chat.googleapis.com/v1/spaces/SPACE429/messages?key=secret&token=token"
+    calls = []
+    sleeps = []
+
+    def always_429_post(url: str, json: dict[str, Any] | None = None, **kwargs: Any) -> Any:
+        calls.append((url, json))
+        resp = requests.Response()
+        resp.status_code = 429
+        resp.headers["Retry-After"] = "10"
+        raise requests.exceptions.HTTPError("429 Too Many Requests", response=resp)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        post_to_chat(
+            webhook,
+            "Permanent 429",
+            http_post=always_429_post,
+            project_key="RFID",
+            sleep=lambda s: sleeps.append(s),
+        )
+
+    assert len(calls) == 2
+    assert sleeps == [10.0]
+    assert "429" in str(exc_info.value)
+    assert "secret" not in str(exc_info.value)
+    assert "/v1/spaces" not in str(exc_info.value)
