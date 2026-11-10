@@ -10,8 +10,8 @@ Hệ thống triển khai bằng Docker Compose gồm hai service chạy song so
 
 1. **`mcp`**:
    - Chạy server FastMCP giao thức Streamable HTTP trên cổng 9000.
-   - Cung cấp 28 công cụ nghiệp vụ `eggs_*` và 7 công cụ Jira chỉ đọc (`jira_search`, `jira_get_issue`, `jira_get_worklog`, `jira_batch_get_changelogs`, `jira_get_project_epic_hierarchy`, `jira_get_transitions`, `jira_search_fields`).
-   - Mọi thao tác ghi của người dùng bắt buộc qua công cụ `eggs_*`. Mọi công cụ ghi Jira thô đều bị chặn.
+   - Cung cấp các công cụ nghiệp vụ `eggs_*`, toàn bộ công cụ Jira đọc trên Jira Server/DC (loại trừ `cloud_only`), và 6 công cụ ghi an toàn (`jira_add_comment`, `jira_edit_comment`, `jira_add_watcher`, `jira_remove_watcher`, `jira_create_issue_link`, `jira_create_remote_issue_link`).
+   - Các công cụ ghi Jira thô làm vòng qua quy trình (tạo/sửa/xóa issue, transition, worklog, v.v.) đều bị chặn.
    - Xác thực người dùng bằng Personal Access Token (PAT) cá nhân qua header HTTP.
 
 2. **`guardian`**:

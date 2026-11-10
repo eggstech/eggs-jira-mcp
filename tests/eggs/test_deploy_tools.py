@@ -9,8 +9,9 @@ import yaml
 from mcp_atlassian.eggs.tools import (
     ALL_EGGS_TOOL_NAMES,
     DEPLOY_ENABLED_TOOLS,
+    DEPLOY_RAW_READ_TOOLS,
+    DEPLOY_RAW_SAFE_WRITE_TOOLS,
     DEPLOY_TOOLSETS,
-    READ_ONLY_RAW_JIRA_TOOLS,
     register_eggs_tools,
 )
 from mcp_atlassian.jira import JiraConfig
@@ -65,17 +66,45 @@ class TestDeployToolFiltering:
             exposed_tools = await main_mcp._list_tools_mcp()
             exposed_names = {t.name for t in exposed_tools}
 
-        # 1. Every exposed raw jira_* tool MUST be in the read-only allow-list
+        # 1. Every exposed raw jira_* tool MUST be in the read-only allow-list or safe writes
         raw_jira_exposed = {
             name
             for name in exposed_names
             if name.startswith("jira_") and not name.startswith("jira_eggs_")
         }
-        assert raw_jira_exposed.issubset(READ_ONLY_RAW_JIRA_TOOLS), (
-            f"Unauthorized raw Jira tools exposed: {raw_jira_exposed - READ_ONLY_RAW_JIRA_TOOLS}"
+        allowed_raw = DEPLOY_RAW_READ_TOOLS | DEPLOY_RAW_SAFE_WRITE_TOOLS
+        assert raw_jira_exposed.issubset(allowed_raw), (
+            f"Unauthorized raw Jira tools exposed: {raw_jira_exposed - allowed_raw}"
         )
 
-        # 2. All 25 EGGS tools MUST be present
+        # 2. Exposed tool list contains every safe write
+        assert DEPLOY_RAW_SAFE_WRITE_TOOLS.issubset(exposed_names)
+
+        # 3. Contains no other tool tagged write except eggs tools
+        tools_by_name = {t.name: t for t in exposed_tools}
+        for name, t in tools_by_name.items():
+            tags = getattr(t, "tags", set()) or set()
+            if "write" in tags:
+                is_eggs = name.startswith("eggs_") or name.startswith("jira_eggs_")
+                is_safe_write = name in DEPLOY_RAW_SAFE_WRITE_TOOLS
+                assert is_eggs or is_safe_write, (
+                    f"Unauthorized write tool exposed: {name}"
+                )
+
+        # 4. Contains required read tools: jira_get_user_profile, jira_get_project_components, jira_download_attachments
+        assert {
+            "jira_get_user_profile",
+            "jira_get_project_components",
+            "jira_download_attachments",
+        }.issubset(exposed_names)
+
+        # 5. Contains no cloud_only tool
+        for name, t in tools_by_name.items():
+            tags = getattr(t, "tags", set()) or set()
+            assert "cloud_only" not in tags, f"cloud_only tool exposed: {name}"
+        assert "jira_batch_get_changelogs" not in exposed_names
+
+        # 6. All EGGS tools MUST be present
         eggs_exposed = {
             name
             for name in exposed_names
@@ -85,7 +114,7 @@ class TestDeployToolFiltering:
         for base_name in ALL_EGGS_TOOL_NAMES:
             assert f"jira_{base_name}" in exposed_names or base_name in exposed_names
 
-        # 3. No raw write tools are exposed
+        # 7. No blocked raw write tools are exposed
         forbidden_raw_writes = {
             "jira_create_issue",
             "jira_update_issue",
@@ -142,11 +171,18 @@ class TestDeployToolFiltering:
         tools = await main_mcp.list_tools()
         tools_by_name = {t.name: t for t in tools}
 
-        for raw_tool in READ_ONLY_RAW_JIRA_TOOLS:
+        for raw_tool in DEPLOY_RAW_READ_TOOLS:
             if raw_tool in tools_by_name:
                 tags = tools_by_name[raw_tool].tags
                 assert "write" not in tags, f"Tool {raw_tool} has write tag!"
                 assert "read" in tags, f"Tool {raw_tool} missing read tag!"
+
+        for safe_write in DEPLOY_RAW_SAFE_WRITE_TOOLS:
+            if safe_write in tools_by_name:
+                tags = tools_by_name[safe_write].tags
+                assert "write" in tags, (
+                    f"Safe write tool {safe_write} missing write tag!"
+                )
 
     def test_docker_compose_environment_matches_deploy_constants(self):
         compose_path = (

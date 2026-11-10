@@ -91,34 +91,66 @@ WRITE_EGGS_TOOL_NAMES = frozenset(
 
 ALL_EGGS_TOOL_NAMES = READ_EGGS_TOOL_NAMES | WRITE_EGGS_TOOL_NAMES
 
-READ_ONLY_RAW_JIRA_TOOLS = frozenset(
+DEPLOY_RAW_SAFE_WRITE_TOOLS = frozenset(
     {
-        "jira_search",
-        "jira_get_issue",
-        "jira_get_worklog",
-        "jira_batch_get_changelogs",
-        "jira_get_project_epic_hierarchy",
-        "jira_get_transitions",
-        "jira_search_fields",
+        "jira_add_comment",
+        "jira_edit_comment",
+        "jira_add_watcher",
+        "jira_remove_watcher",
+        "jira_create_issue_link",
+        "jira_create_remote_issue_link",
     }
 )
 
-DEPLOY_TOOLSETS = (
-    "eggs",
-    "jira_issues",
-    "jira_worklog",
-    "jira_transitions",
-    "jira_fields",
-    "jira_project_analysis",
-)
 
-DEPLOY_ENABLED_TOOLS = tuple(
-    sorted(
-        READ_ONLY_RAW_JIRA_TOOLS
-        | {f"jira_{name}" for name in ALL_EGGS_TOOL_NAMES}
-        | ALL_EGGS_TOOL_NAMES
-    )
-)
+def _compute_deploy_raw_read_tools_and_toolsets() -> tuple[
+    frozenset[str], tuple[str, ...]
+]:
+    from mcp_atlassian.servers.jira import jira_mcp
+
+    lp = getattr(jira_mcp, "_local_provider", None)
+    read_tools: set[str] = set()
+    toolsets: set[str] = {"eggs"}
+
+    if lp and hasattr(lp, "_components"):
+        for k, v in lp._components.items():
+            if not k.startswith("tool:"):
+                continue
+            tags = getattr(v, "tags", set()) or set()
+            name = v.name if v.name.startswith("jira_") else f"jira_{v.name}"
+            if "read" in tags and "cloud_only" not in tags:
+                read_tools.add(name)
+            if name in read_tools or name in DEPLOY_RAW_SAFE_WRITE_TOOLS:
+                for tag in tags:
+                    if tag.startswith("toolset:"):
+                        toolsets.add(tag.removeprefix("toolset:"))
+
+    return frozenset(read_tools), tuple(sorted(toolsets))
+
+
+def __getattr__(name: str) -> Any:
+    if name in (
+        "DEPLOY_RAW_READ_TOOLS",
+        "DEPLOY_TOOLSETS",
+        "DEPLOY_ENABLED_TOOLS",
+        "READ_ONLY_RAW_JIRA_TOOLS",
+    ):
+        raw_read, toolsets = _compute_deploy_raw_read_tools_and_toolsets()
+        globals()["DEPLOY_RAW_READ_TOOLS"] = raw_read
+        globals()["DEPLOY_TOOLSETS"] = toolsets
+        globals()["READ_ONLY_RAW_JIRA_TOOLS"] = raw_read
+        globals()["DEPLOY_ENABLED_TOOLS"] = tuple(
+            sorted(
+                raw_read
+                | DEPLOY_RAW_SAFE_WRITE_TOOLS
+                | {f"jira_{n}" for n in ALL_EGGS_TOOL_NAMES}
+                | ALL_EGGS_TOOL_NAMES
+            )
+        )
+        return globals()[name]
+    msg = f"module {__name__!r} has no attribute {name!r}"
+    raise AttributeError(msg)
+
 
 EGGS_TOOLSET_NAME = "eggs"
 EGGS_TOOLSET_DEFINITION = ToolsetDefinition(
