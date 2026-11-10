@@ -71,10 +71,12 @@ def escalate(
         if issue.status in {"ready_for_qc", "testing"}:
             if issue.type == "adhoc":
                 l0_candidate = issue.qc_owner
-            elif issue.parent_type == "story" or (story and story.type == "story"):
+            elif (issue.parent_type in ("story", "adhoc")) or (
+                story and story.type in ("story", "adhoc")
+            ):
                 l0_candidate = story.qc_owner if story else None
             else:
-                l0_candidate = story.qc_owner if story else None
+                l0_candidate = None
         else:
             l0_candidate = issue.assignee
     elif issue.type == "story":

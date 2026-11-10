@@ -122,6 +122,23 @@ class Actions:
                     return True
         return False
 
+    def _get_open_subtasks(self, key: str) -> list[str]:
+        subtasks = self.gateway.get_subtasks(key)
+        open_keys: list[str] = []
+        for st in subtasks:
+            st_key = st.get("key", "") or str(st.get("id", ""))
+            fields = st.get("fields", {})
+            status_obj = fields.get("status", {})
+            status_name = status_obj.get("name", "")
+            logical = self.cfg.status_logical(status_name)
+            is_done = logical in ("done", "cancelled")
+            status_cat = status_obj.get("statusCategory", {}).get("key")
+            if not is_done and status_cat == "done":
+                is_done = True
+            if not is_done:
+                open_keys.append(st_key)
+        return open_keys
+
     # -------------------------------------------------------------------------
     # Work items
     # -------------------------------------------------------------------------
@@ -388,16 +405,37 @@ class Actions:
         dry_run: bool = False,
     ) -> ActionResult:
         issue = self._get_issue(key)
-        if issue.type == "dev_task" and issue.parent_type == "adhoc":
+        if issue.type == "dev_task" and issue.parent_type in ("adhoc", "bug"):
+            parent_desc = (
+                "Ad-hoc Task" if issue.parent_type == "adhoc" else "Bug stand-alone"
+            )
             return ActionResult(
                 ok=False,
                 message=(
-                    f"Dev Task {key} thuộc Ad-hoc Task không qua QC. "
+                    f"Dev Task {key} thuộc {parent_desc} không qua QC. "
                     "Vui lòng dùng finish() để hoàn thành."
                 ),
                 changes=[],
                 next_actions=["finish"],
             )
+
+        if issue.type in ("adhoc", "bug"):
+            open_subtasks = self._get_open_subtasks(key)
+            if open_subtasks:
+                sub_list = ", ".join(open_subtasks)
+                type_name = (
+                    "Ad-hoc Task" if issue.type == "adhoc" else "Bug stand-alone"
+                )
+                return ActionResult(
+                    ok=False,
+                    message=(
+                        f"{type_name} {key} vẫn còn sub-task chưa hoàn thành "
+                        f"({sub_list}). Cần hoàn thành tất cả sub-task trước khi "
+                        "Submit QC."
+                    ),
+                    changes=[],
+                    next_actions=[],
+                )
 
         fields: dict[str, Any] | None = None
         effective_qc_owner: str | None = None
@@ -986,6 +1024,24 @@ class Actions:
                     next_actions=[],
                 )
 
+        if issue.type in ("adhoc", "bug"):
+            open_subtasks = self._get_open_subtasks(key)
+            if open_subtasks:
+                sub_list = ", ".join(open_subtasks)
+                type_name = (
+                    "Ad-hoc Task" if issue.type == "adhoc" else "Bug stand-alone"
+                )
+                return ActionResult(
+                    ok=False,
+                    message=(
+                        f"{type_name} {key} vẫn còn sub-task chưa hoàn thành "
+                        f"({sub_list}). Cần hoàn thành tất cả sub-task trước khi "
+                        "QC Pass."
+                    ),
+                    changes=[],
+                    next_actions=[],
+                )
+
         matched, avail = self._find_transition(key, "qc_pass")
         if not matched:
             return self._unavailable_result(key, "qc_pass", avail)
@@ -1052,18 +1108,66 @@ class Actions:
         elif issue.type == "adhoc":
             target_story_key = issue.key
             code = issue.actor_code or "BUG"
+        elif issue.type == "bug":
+            if actual_bugs:
+                return ActionResult(
+                    ok=False,
+                    message=(
+                        "Bug stand-alone không có Bug con: chưa đạt thì QC Fail "
+                        "để trả về Dev; lỗi khác thì tạo Bug stand-alone mới "
+                        "và link 'relates to'."
+                    ),
+                    changes=[],
+                    next_actions=[],
+                )
+            target_story_key = issue.key
+            code = issue.actor_code or "BUG"
         else:
             if not issue.parent_key:
                 return ActionResult(
                     ok=False,
                     message=(
-                        f"Không thể QC Fail: phần việc {key} không thuộc một Story."
+                        f"Không thể QC Fail: phần việc {key} không thuộc một Story "
+                        "hoặc Ad-hoc Task."
                     ),
                     changes=[],
                     next_actions=[],
                 )
             parent = self._get_issue(issue.parent_key)
-            if parent.type != "story":
+            if parent.type == "bug":
+                if actual_bugs:
+                    return ActionResult(
+                        ok=False,
+                        message=(
+                            "Bug stand-alone không có Bug con: chưa đạt thì QC Fail "
+                            "để trả về Dev; lỗi khác thì tạo Bug stand-alone mới "
+                            "và link 'relates to'."
+                        ),
+                        changes=[],
+                        next_actions=[],
+                    )
+                return ActionResult(
+                    ok=False,
+                    message=(
+                        f"Không thể QC Fail: phần việc {key} thuộc Bug stand-alone "
+                        "không qua QC riêng."
+                    ),
+                    changes=[],
+                    next_actions=[],
+                )
+            if parent.type == "adhoc":
+                if issue.type != "bug_sub":
+                    return ActionResult(
+                        ok=False,
+                        message=(
+                            f"Không thể QC Fail: phần việc {key} không thuộc Story "
+                            "(thuộc Ad-hoc Task nhưng chỉ Bug sub-task mới qua "
+                            "QC riêng)."
+                        ),
+                        changes=[],
+                        next_actions=[],
+                    )
+            elif parent.type != "story":
                 return ActionResult(
                     ok=False,
                     message=(
@@ -1826,18 +1930,35 @@ class Actions:
                         changes=[],
                         next_actions=[],
                     )
-                if bug_story.type != "story":
+                if bug_story.type == "bug":
                     return ActionResult(
                         ok=False,
-                        message=f"Issue {bug_story_key} không phải là Story.",
+                        message=(
+                            "Bug stand-alone không có Bug con: chưa đạt thì QC Fail "
+                            "để trả về Dev; lỗi khác thì tạo Bug stand-alone mới "
+                            "và link 'relates to'."
+                        ),
+                        changes=[],
+                        next_actions=[],
+                    )
+                if bug_story.type not in ("story", "adhoc"):
+                    return ActionResult(
+                        ok=False,
+                        message=(
+                            f"Issue {bug_story_key} không phải là Story hoặc "
+                            "Ad-hoc Task."
+                        ),
                         changes=[],
                         next_actions=[],
                     )
                 if bug_story.is_resolved:
+                    parent_label = (
+                        "Story" if bug_story.type == "story" else "Ad-hoc Task"
+                    )
                     return ActionResult(
                         ok=False,
                         message=(
-                            "Không thể tạo Bug sub-task dưới Story đã "
+                            f"Không thể tạo Bug sub-task dưới {parent_label} đã "
                             "hoàn thành (Done)."
                         ),
                         changes=[],
@@ -1930,8 +2051,14 @@ class Actions:
         ]
         if verdict == "bug":
             if bug_story_key:
+                parent_label = (
+                    "Story"
+                    if bug_story and bug_story.type == "story"
+                    else "Ad-hoc Task"
+                )
                 changes.append(
-                    f"Tạo Bug sub-task dưới Story {bug_story_key} và liên kết Causes"
+                    f"Tạo Bug sub-task dưới {parent_label} {bug_story_key} "
+                    "và liên kết Causes"
                 )
             else:
                 changes.append(

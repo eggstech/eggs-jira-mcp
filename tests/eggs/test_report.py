@@ -98,6 +98,8 @@ def cfg():
             "escalation_owner": "customfield_escalation_owner",
             "blocked_by": "customfield_blocked_by",
             "flagged": "customfield_flagged",
+            "planned_end": "customfield_10109",
+            "qc_owner": "customfield_qc_owner",
         },
         statuses={
             "open": "Open",
@@ -219,6 +221,156 @@ def test_build_snapshot_fills_subtask_epic_from_parent(cfg, cal):
     subtask = snapshot.issues["HMKPOS-101"]
     assert subtask.parent_key == "HMKPOS-100"
     assert subtask.epic_key == "HMKPOS-10"
+
+
+def test_snapshot_subtasks_under_adhoc_and_bug(cfg, cal):
+    # Tests that subtasks under Ad-hoc Task and Bug stand-alone:
+    # 1. Do not crash build_snapshot
+    # 2. Are not counted as part of any Story (FlowMetrics or actors)
+    # 3. Escalations for subtask under adhoc look up parent adhoc's qc_owner
+    raw_epic = {
+        "key": "HMKPOS-10",
+        "fields": {
+            "summary": "Q4 POS Revamp",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Epic", "subtask": False},
+            "status": {"name": "Dev In Progress"},
+            "duedate": "2026-11-30",
+            "assignee": {"name": "epic.lead"},
+        },
+    }
+    raw_story = {
+        "key": "HMKPOS-100",
+        "fields": {
+            "summary": "Customer Login Flow",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Story", "subtask": False},
+            "status": {"name": "Dev In Progress"},
+            "customfield_epic_link": "HMKPOS-10",
+            "components": [{"name": "CH - CỬA HÀNG"}],
+            "duedate": "2026-11-25",
+            "customfield_qc_owner": {"name": "story.qc"},
+        },
+    }
+    raw_story_sub = {
+        "key": "HMKPOS-101",
+        "fields": {
+            "summary": "Dev task for Story",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Dev Task", "subtask": True},
+            "status": {"name": "Dev In Progress"},
+            "parent": {
+                "key": "HMKPOS-100",
+                "fields": {"issuetype": {"name": "Story", "subtask": False}},
+            },
+            "customfield_10109": "2026-11-20",
+        },
+    }
+    raw_adhoc = {
+        "key": "HMKPOS-200",
+        "fields": {
+            "summary": "Adhoc infra upgrade",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Ad-hoc Task", "subtask": False},
+            "status": {"name": "Dev In Progress"},
+            "customfield_epic_link": "HMKPOS-10",
+            "customfield_qc_owner": {"name": "adhoc.qc"},
+            "customfield_10109": "2026-11-22",
+        },
+    }
+    raw_adhoc_dev = {
+        "key": "HMKPOS-201",
+        "fields": {
+            "summary": "Dev task for Adhoc",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Dev Task", "subtask": True},
+            "status": {"name": "DEV To Do"},
+            "parent": {
+                "key": "HMKPOS-200",
+                "fields": {"issuetype": {"name": "Ad-hoc Task", "subtask": False}},
+            },
+        },
+    }
+    raw_adhoc_bug = {
+        "key": "HMKPOS-202",
+        "fields": {
+            "summary": "Bug sub for Adhoc",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Bug", "subtask": True},
+            "status": {"name": "QC TO DO"},
+            "parent": {
+                "key": "HMKPOS-200",
+                "fields": {"issuetype": {"name": "Ad-hoc Task", "subtask": False}},
+            },
+            "customfield_health_flags": [{"value": "STALE"}],
+            "customfield_health_since": "2026-11-19",
+        },
+    }
+    raw_bug = {
+        "key": "HMKPOS-300",
+        "fields": {
+            "summary": "Bug stand-alone payment crash",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Bug stand-alone", "subtask": False},
+            "status": {"name": "Dev In Progress"},
+            "customfield_epic_link": "HMKPOS-10",
+            "customfield_10109": "2026-11-21",
+        },
+    }
+    raw_bug_dev = {
+        "key": "HMKPOS-301",
+        "fields": {
+            "summary": "Dev task for Bug stand-alone",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Dev Task", "subtask": True},
+            "status": {"name": "Dev In Progress"},
+            "parent": {
+                "key": "HMKPOS-300",
+                "fields": {"issuetype": {"name": "Bug stand-alone", "subtask": False}},
+            },
+            "customfield_10109": "2026-11-21",
+        },
+    }
+
+    fake = FakeGateway(
+        issues={
+            "HMKPOS-10": raw_epic,
+            "HMKPOS-100": raw_story,
+            "HMKPOS-101": raw_story_sub,
+            "HMKPOS-200": raw_adhoc,
+            "HMKPOS-201": raw_adhoc_dev,
+            "HMKPOS-202": raw_adhoc_bug,
+            "HMKPOS-300": raw_bug,
+            "HMKPOS-301": raw_bug_dev,
+        },
+        search_filter=lambda jql, item: True,
+    )
+
+    since = datetime(2026, 11, 18, 0, 0, tzinfo=TZ)
+    snapshot = build_snapshot(fake, cfg, TODAY, cal, since)
+
+    # 1. Snapshot built without crashing
+    assert "HMKPOS-100" in snapshot.flows
+    assert "HMKPOS-200" not in snapshot.flows
+    assert "HMKPOS-300" not in snapshot.flows
+
+    # 2. Story FlowMetrics only includes its own child (HMKPOS-101), not adhoc/bug children
+    flow_100 = snapshot.flows["HMKPOS-100"]
+    assert flow_100.unscheduled == 0  # HMKPOS-101 is scheduled; HMKPOS-201 (unscheduled) must not count
+
+    # 3. Epic actors only count Stories
+    epic_metrics = snapshot.epics["HMKPOS-10"]
+    # Only 1 story in HMKPOS-10
+    total_flow_stories = sum(act.total for act in epic_metrics.actors)
+    assert total_flow_stories == 1
+
+    # 4. Dev task under adhoc in DEV To Do without planned_end is NOT flagged UNSCHEDULED
+    assert "UNSCHEDULED" not in snapshot.flags.get("HMKPOS-201", frozenset())
+
+    # 5. Bug sub under adhoc in ready_for_qc escalated at L0 is assigned to adhoc's qc_owner
+    esc_202 = snapshot.escalations.get("HMKPOS-202")
+    assert esc_202 is not None
+    assert esc_202.owner == "adhoc.qc"
 
 
 def test_report_section_counts_user_reports(cfg, cal):

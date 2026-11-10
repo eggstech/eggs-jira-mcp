@@ -161,7 +161,9 @@ def issue_from_json(raw: dict, cfg: EggsConfig) -> Issue:
     parent_data = fields.get("parent") or {}
     parent_key = parent_data.get("key")
     parent_fields = parent_data.get("fields") or {}
-    parent_issuetype = parent_fields.get("issuetype") or {}
+    parent_issuetype = (
+        parent_fields.get("issuetype") or parent_data.get("issuetype") or {}
+    )
     raw_parent_type = parent_issuetype.get("name")
     parent_is_subtask = bool(parent_issuetype.get("subtask", False))
     parent_type = (

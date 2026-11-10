@@ -852,3 +852,150 @@ def test_agenda_intent_examples_for_adhoc():
     submit_qc_intent = next(i for i in INTENTS if i.name == "submit_qc")
     assert "xong ADHOC-5, nhờ tuan.bui test" in submit_qc_intent.examples
 
+
+def test_agenda_dev_task_under_bug_and_bug_sub_under_adhoc(cfg, cal):
+    identity = Identity(
+        username="alice",
+        display_name="Alice Dev",
+        roles={"RFID": {"dev"}},
+        is_lead=False,
+    )
+    now = datetime(2026, 11, 9, 10, 0, tzinfo=ZoneInfo("Asia/Ho_Chi_Minh"))
+
+    # Dev Task under Bug stand-alone -> eggs_finish only
+    dev_under_bug = _make_issue(
+        "RFID-20",
+        issue_type="dev_task",
+        parent_type="bug",
+        status="in_progress",
+        assignee="alice",
+        summary="Dev Task under bug",
+    )
+    # Bug sub under Ad-hoc Task -> eggs_submit_qc only (never eggs_finish)
+    bug_sub_under_adhoc = _make_issue(
+        "RFID-21",
+        issue_type="bug_sub",
+        parent_type="adhoc",
+        status="in_progress",
+        assignee="alice",
+        summary="Bug sub under adhoc",
+    )
+
+    issues = {
+        dev_under_bug.key: dev_under_bug,
+        bug_sub_under_adhoc.key: bug_sub_under_adhoc,
+    }
+    snapshot = Snapshot(
+        issues=issues,
+        flags={},
+        escalations={},
+        flows={},
+        epics={},
+        not_updated=[],
+        today=date(2026, 11, 9),
+    )
+    agenda = build_agenda(snapshot, identity, cfg, now, cal)
+    by_key = {it.key: it for it in agenda}
+
+    # Dev Task under bug: eggs_finish + eggs_log_work
+    it_dev = by_key["RFID-20"]
+    tools_dev = [a.tool for a in it_dev.actions]
+    assert tools_dev == ["eggs_finish", "eggs_log_work"]
+
+    # Bug sub under adhoc: eggs_submit_qc + eggs_log_work (no eggs_finish)
+    it_bug = by_key["RFID-21"]
+    tools_bug = [a.tool for a in it_bug.actions]
+    assert tools_bug == ["eggs_submit_qc", "eggs_log_work"]
+
+
+def test_agenda_qc_queue_parent_adhoc_or_story(cfg, cal):
+    identity = Identity(
+        username="qc_alice",
+        display_name="QC Alice",
+        roles={"RFID": {"qc"}},
+        is_lead=False,
+    )
+    now = datetime(2026, 11, 9, 10, 0, tzinfo=ZoneInfo("Asia/Ho_Chi_Minh"))
+
+    # Parent Ad-hoc Task with qc_owner="qc_alice"
+    adhoc_parent = _make_issue(
+        "RFID-30",
+        issue_type="adhoc",
+        status="in_progress",
+        assignee="dev_user",
+        qc_owner="qc_alice",
+        summary="Adhoc parent",
+    )
+    # Bug (sub) under Ad-hoc Task in ready_for_qc
+    bug_under_adhoc = _make_issue(
+        "RFID-31",
+        issue_type="bug_sub",
+        parent_type="adhoc",
+        parent_key="RFID-30",
+        status="ready_for_qc",
+        assignee="dev_user",
+        summary="Bug sub under adhoc ready for qc",
+    )
+
+    # Parent Story with qc_owner="qc_alice"
+    story_parent = _make_issue(
+        "RFID-40",
+        issue_type="story",
+        status="in_progress",
+        assignee="ba_user",
+        qc_owner="qc_alice",
+        summary="Story parent",
+    )
+    # Dev Task under Story in ready_for_qc
+    dev_under_story = _make_issue(
+        "RFID-41",
+        issue_type="dev_task",
+        parent_type="story",
+        parent_key="RFID-40",
+        status="ready_for_qc",
+        assignee="dev_user",
+        summary="Dev task under story ready for qc",
+    )
+
+    # Parent Bug stand-alone
+    bug_parent = _make_issue(
+        "RFID-50",
+        issue_type="bug",
+        status="in_progress",
+        assignee="dev_user",
+        summary="Bug parent",
+    )
+    # Dev Task under Bug stand-alone in ready_for_qc
+    dev_under_bug = _make_issue(
+        "RFID-51",
+        issue_type="dev_task",
+        parent_type="bug",
+        parent_key="RFID-50",
+        status="ready_for_qc",
+        assignee="dev_user",
+        summary="Dev task under bug ready for qc",
+    )
+
+    issues = {
+        adhoc_parent.key: adhoc_parent,
+        bug_under_adhoc.key: bug_under_adhoc,
+        story_parent.key: story_parent,
+        dev_under_story.key: dev_under_story,
+        bug_parent.key: bug_parent,
+        dev_under_bug.key: dev_under_bug,
+    }
+    snapshot = Snapshot(
+        issues=issues,
+        flags={},
+        escalations={},
+        flows={},
+        epics={},
+        not_updated=[],
+        today=date(2026, 11, 9),
+    )
+    agenda = build_agenda(snapshot, identity, cfg, now, cal)
+    qc_queue_keys = [it.key for it in agenda if it.priority == 4]
+    assert "RFID-31" in qc_queue_keys
+    assert "RFID-41" in qc_queue_keys
+    assert "RFID-51" not in qc_queue_keys
+

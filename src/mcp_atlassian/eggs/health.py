@@ -193,13 +193,18 @@ def compute_flags(
             # UNSCHEDULED
             if (
                 issue.type == "dev_task"
+                and issue.parent_type == "story"
                 and issue.status == "todo"
                 and issue.planned_end is None
             ):
                 parent_story = (
                     stories.get(issue.parent_key) if issue.parent_key else None
                 )
-                if parent_story and parent_story.due_date is not None:
+                if (
+                    parent_story
+                    and parent_story.type == "story"
+                    and parent_story.due_date is not None
+                ):
                     days_to_due = cal.working_days_between(today, parent_story.due_date)
                     if days_to_due <= cfg.thresholds.unscheduled_window:
                         item_flags.add("UNSCHEDULED")

@@ -293,6 +293,85 @@ def test_mapping_retired_parent_type_maps_to_none(base_config):
     assert issue.parent_type is None
 
 
+def test_mapping_subtasks_under_adhoc_and_bug_standalone(base_config):
+    # 1. Dev Task under Ad-hoc Task -> parent_type is "adhoc"
+    raw_dev_adhoc = {
+        "key": "ADHOC-10",
+        "fields": {
+            "summary": "Dev Task under adhoc",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Dev Task", "subtask": True},
+            "status": {"name": "DEV To Do"},
+            "parent": {
+                "key": "ADHOC-1",
+                "fields": {
+                    "issuetype": {"name": "Ad-hoc Task", "subtask": False},
+                },
+            },
+        },
+    }
+    issue_dev_adhoc = issue_from_json(raw_dev_adhoc, base_config)
+    assert issue_dev_adhoc.type == "dev_task"
+    assert issue_dev_adhoc.parent_type == "adhoc"
+
+    # 2. Bug (sub) under Ad-hoc Task -> parent_type is "adhoc"
+    raw_bug_adhoc = {
+        "key": "ADHOC-11",
+        "fields": {
+            "summary": "Bug sub under adhoc",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Bug", "subtask": True},
+            "status": {"name": "DEV To Do"},
+            "parent": {
+                "key": "ADHOC-1",
+                "fields": {
+                    "issuetype": {"name": "Ad-hoc Task", "subtask": False},
+                },
+            },
+        },
+    }
+    issue_bug_adhoc = issue_from_json(raw_bug_adhoc, base_config)
+    assert issue_bug_adhoc.type == "bug_sub"
+    assert issue_bug_adhoc.parent_type == "adhoc"
+
+    # 3. Dev Task under Bug stand-alone -> parent_type is "bug"
+    raw_dev_bug = {
+        "key": "BUG-10",
+        "fields": {
+            "summary": "Dev Task under bug standalone",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Dev Task", "subtask": True},
+            "status": {"name": "DEV To Do"},
+            "parent": {
+                "key": "BUG-1",
+                "fields": {
+                    "issuetype": {"name": "Bug stand-alone", "subtask": False},
+                },
+            },
+        },
+    }
+    issue_dev_bug = issue_from_json(raw_dev_bug, base_config)
+    assert issue_dev_bug.type == "dev_task"
+    assert issue_dev_bug.parent_type == "bug"
+
+    # 4. Direct issuetype on parent without fields wrapper
+    raw_direct = {
+        "key": "ADHOC-12",
+        "fields": {
+            "summary": "Dev Task with direct parent issuetype",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Dev Task", "subtask": True},
+            "status": {"name": "DEV To Do"},
+            "parent": {
+                "key": "ADHOC-1",
+                "issuetype": {"name": "Ad-hoc Task", "subtask": False},
+            },
+        },
+    }
+    issue_direct = issue_from_json(raw_direct, base_config)
+    assert issue_direct.parent_type == "adhoc"
+
+
 def test_legacy_frozen_label_or_frozen_project(base_config):
     # legacy-frozen in labels -> frozen is True
     raw_with_label = {

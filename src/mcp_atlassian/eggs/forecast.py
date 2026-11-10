@@ -67,7 +67,13 @@ def flow_metrics(
     """Calculate metrics and forecast for a single flow (Story)."""
     due = story.due_date
 
-    unresolved_children = [c for c in children if not c.is_resolved and not c.frozen]
+    unresolved_children = [
+        c
+        for c in children
+        if not c.is_resolved
+        and not c.frozen
+        and (c.parent_type == "story" or c.parent_type is None)
+    ]
 
     unscheduled = sum(1 for c in unresolved_children if c.planned_end is None)
 
@@ -110,11 +116,15 @@ def epic_metrics(
     # planned_end of unresolved adhoc/bug in the epic)
     dates_to_compare: list[date] = []
     for s in stories:
+        if s.type != "story":
+            continue
         f = flow.get(s.key)
         if f and f.forecast_end is not None:
             dates_to_compare.append(f.forecast_end)
 
     for item in other_items:
+        if item.type not in {"adhoc", "bug"}:
+            continue
         if not item.is_resolved and not item.frozen and item.planned_end is not None:
             dates_to_compare.append(item.planned_end)
 
@@ -128,10 +138,14 @@ def epic_metrics(
     # Unscheduled count
     unscheduled = 0
     for s in stories:
+        if s.type != "story":
+            continue
         f = flow.get(s.key)
         if f:
             unscheduled += f.unscheduled
     for item in other_items:
+        if item.type not in {"adhoc", "bug"}:
+            continue
         if not item.is_resolved and not item.frozen and item.planned_end is None:
             unscheduled += 1
 
@@ -151,6 +165,8 @@ def epic_metrics(
     actor_code_map: dict[str, str | None] = {}
 
     for s in stories:
+        if s.type != "story":
+            continue
         if s.status == "cancelled":
             continue
 

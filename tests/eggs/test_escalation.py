@@ -55,6 +55,7 @@ def _make_issue(
     reschedule_status=None,
     reschedule_requester=None,
     parent_type="story",
+    parent_key="PROJ-STORY",
 ) -> Issue:
     return Issue(
         key=key,
@@ -67,7 +68,7 @@ def _make_issue(
         part="BE",
         parent_type=parent_type,
         qc_owner=qc_owner,
-        parent_key="PROJ-STORY",
+        parent_key=parent_key,
         epic_key="PROJ-EPIC",
         created=datetime(2026, 11, 1, 8, 0, tzinfo=TZ),
         status_changed_at=None,
@@ -192,6 +193,64 @@ def test_adhoc_task_in_qc_without_qc_owner_falls_back(cal, cfg):
     assert esc is not None
     assert esc.level == 0
     assert esc.owner == "epic.owner"
+
+
+def test_subtask_in_qc_under_adhoc_owned_by_parent_qc_owner(cal, cfg):
+    # Bug sub-task under Ad-hoc Task in ready_for_qc or testing -> L0 owner is parent adhoc's qc_owner
+    epic = _make_issue(key="PROJ-EPIC", issue_type="epic", assignee="epic.owner")
+    adhoc_parent = _make_issue(
+        key="PROJ-ADHOC",
+        issue_type="adhoc",
+        assignee="dev.worker",
+        qc_owner="qc.adhoc_tester",
+    )
+    bug_ready = _make_issue(
+        key="PROJ-21",
+        issue_type="bug_sub",
+        status="ready_for_qc",
+        assignee="dev.worker",
+        parent_type="adhoc",
+        parent_key="PROJ-ADHOC",
+    )
+    bug_testing = _make_issue(
+        key="PROJ-22",
+        issue_type="bug_sub",
+        status="testing",
+        assignee="dev.worker",
+        parent_type="adhoc",
+        parent_key="PROJ-ADHOC",
+    )
+
+    flags = frozenset({"STALE"})
+    esc1 = escalate(bug_ready, flags, story=adhoc_parent, epic=epic, today=TODAY, cal=cal, cfg=cfg)
+    assert esc1 is not None
+    assert esc1.level == 0
+    assert esc1.owner == "qc.adhoc_tester"
+
+    esc2 = escalate(bug_testing, flags, story=adhoc_parent, epic=epic, today=TODAY, cal=cal, cfg=cfg)
+    assert esc2 is not None
+    assert esc2.level == 0
+    assert esc2.owner == "qc.adhoc_tester"
+
+    # Sub-task under Bug stand-alone in ready_for_qc -> parent is NOT Story or Adhoc -> L0 owner falls back to epic assignee
+    bug_parent = _make_issue(
+        key="PROJ-BUG",
+        issue_type="bug",
+        assignee="dev.worker",
+        qc_owner="qc.should_not_use",
+    )
+    sub_under_bug = _make_issue(
+        key="PROJ-23",
+        issue_type="dev_task",
+        status="ready_for_qc",
+        assignee="dev.worker",
+        parent_type="bug",
+        parent_key="PROJ-BUG",
+    )
+    esc3 = escalate(sub_under_bug, flags, story=bug_parent, epic=epic, today=TODAY, cal=cal, cfg=cfg)
+    assert esc3 is not None
+    assert esc3.level == 0
+    assert esc3.owner == "epic.owner"
 
 
 def test_story_flag_owned_by_story_assignee(cal, cfg):

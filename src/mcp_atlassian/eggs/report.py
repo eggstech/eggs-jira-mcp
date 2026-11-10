@@ -124,12 +124,12 @@ def build_snapshot(
     for key, iss in issues.items():
         item_flags = flags.get(key, frozenset())
         if item_flags:
-            parent_story = stories.get(iss.parent_key) if iss.parent_key else None
+            parent_issue = issues.get(iss.parent_key) if iss.parent_key else None
             epic = issues.get(iss.epic_key) if iss.epic_key else None
             esc = escalate(
                 iss,
                 item_flags,
-                story=parent_story,
+                story=parent_issue,
                 epic=epic,
                 today=today,
                 cal=cal,

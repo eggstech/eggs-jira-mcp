@@ -183,6 +183,78 @@ def test_submit_qc_refused_under_adhoc(cfg, cal):
     res = actions.submit_qc("HMKPOS-102")
     assert res.ok is False
     assert "ad-hoc" in res.message.lower() or "adhoc" in res.message.lower() or "finish" in res.message.lower()
+    assert res.next_actions == ["finish"]
+
+
+def test_submit_qc_refused_under_bug_standalone(cfg, cal):
+    # dev_task whose parent is bug cannot submit QC (point to finish, no Jira call)
+    raw_bug = {
+        "key": "HMKPOS-80",
+        "fields": {
+            "summary": "Standalone Bug",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Bug stand-alone", "subtask": False},
+            "status": {"name": "Dev In Progress"},
+        },
+    }
+    raw_subtask = {
+        "key": "HMKPOS-81",
+        "fields": {
+            "summary": "Dev task under bug",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Dev Task", "subtask": True},
+            "status": {"name": "Dev In Progress"},
+            "parent": {
+                "key": "HMKPOS-80",
+                "fields": {"issuetype": {"name": "Bug stand-alone", "subtask": False}},
+            },
+        },
+    }
+    gateway = FakeGateway(
+        issues={"HMKPOS-80": raw_bug, "HMKPOS-81": raw_subtask},
+        transitions={"HMKPOS-81": ["Submit QC"]},
+    )
+    actions = _make_actions(gateway, cfg, cal)
+    res = actions.submit_qc("HMKPOS-81")
+    assert res.ok is False
+    assert "finish" in res.message.lower()
+    assert res.next_actions == ["finish"]
+    # Verify no transition Jira calls were made
+    assert not any(call[0] == "transition_issue" for call in gateway.calls)
+
+
+def test_submit_qc_allowed_for_bug_sub_under_adhoc(cfg, cal):
+    # Bug (sub) under an Ad-hoc Task is allowed to submit QC
+    raw_adhoc = {
+        "key": "HMKPOS-90",
+        "fields": {
+            "summary": "Tech adhoc",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Ad-hoc Task", "subtask": False},
+            "status": {"name": "Dev In Progress"},
+        },
+    }
+    raw_bug_sub = {
+        "key": "HMKPOS-91",
+        "fields": {
+            "summary": "Bug sub under adhoc",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Bug", "subtask": True},
+            "status": {"name": "Dev In Progress"},
+            "parent": {
+                "key": "HMKPOS-90",
+                "fields": {"issuetype": {"name": "Ad-hoc Task", "subtask": False}},
+            },
+        },
+    }
+    gateway = FakeGateway(
+        issues={"HMKPOS-90": raw_adhoc, "HMKPOS-91": raw_bug_sub},
+        transitions={"HMKPOS-91": ["Submit QC"]},
+    )
+    actions = _make_actions(gateway, cfg, cal)
+    res = actions.submit_qc("HMKPOS-91")
+    assert res.ok is True
+    assert any(call[0] == "transition" for call in gateway.calls)
 
 
 def test_submit_qc_adhoc_without_owner_refused(cfg, cal):
@@ -586,6 +658,167 @@ def test_triage_close_bug_under_story_links_and_resolves(cfg, cal):
     assert tr_calls[0][2]["fields"]["resolution"]["name"] == "Is a Bug"
     # Assert reply suggestion in message
     assert "gợi ý" in res.message.lower() or "reply" in res.message.lower()
+
+
+def test_triage_close_bug_under_adhoc_allowed(cfg, cal):
+    raw_report = {
+        "key": "HMKPOS-REP2",
+        "fields": {
+            "summary": "Database timeout report",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "User Report", "subtask": False},
+            "status": {"name": "Analyzing"},
+        },
+    }
+    raw_adhoc = {
+        "key": "HMKPOS-200",
+        "fields": {
+            "summary": "Database optimization",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Ad-hoc Task", "subtask": False},
+            "status": {"name": "Dev In Progress"},
+            "customfield_qc_owner": {"name": "qc.tester"},
+        },
+    }
+    gateway = FakeGateway(
+        issues={"HMKPOS-REP2": raw_report, "HMKPOS-200": raw_adhoc},
+        transitions={"HMKPOS-REP2": ["Close Report"]},
+    )
+    actions = _make_actions(gateway, cfg, cal)
+    res = actions.triage_close(
+        key="HMKPOS-REP2",
+        verdict="bug",
+        note="Bug found during database adhoc work",
+        time_spent="30m",
+        bug_story_key="HMKPOS-200",
+    )
+    assert res.ok is True
+    cr_calls = [c for c in gateway.calls if c[0] == "create_issue"]
+    assert len(cr_calls) == 1
+    assert cr_calls[0][1][0]["parent"]["key"] == "HMKPOS-200"
+
+
+def test_triage_close_refuses_bug_under_bug_standalone(cfg, cal):
+    raw_report = {
+        "key": "HMKPOS-REP3",
+        "fields": {
+            "summary": "Payment crash report",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "User Report", "subtask": False},
+            "status": {"name": "Analyzing"},
+        },
+    }
+    raw_bug = {
+        "key": "HMKPOS-300",
+        "fields": {
+            "summary": "Payment crash bug",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Bug stand-alone", "subtask": False},
+            "status": {"name": "Dev In Progress"},
+        },
+    }
+    gateway = FakeGateway(
+        issues={"HMKPOS-REP3": raw_report, "HMKPOS-300": raw_bug},
+        transitions={"HMKPOS-REP3": ["Close Report"]},
+    )
+    actions = _make_actions(gateway, cfg, cal)
+    res = actions.triage_close(
+        key="HMKPOS-REP3",
+        verdict="bug",
+        note="Another issue in payment crash",
+        time_spent="30m",
+        bug_story_key="HMKPOS-300",
+    )
+    assert res.ok is False
+    assert (
+        res.message
+        == "Bug stand-alone không có Bug con: chưa đạt thì QC Fail để trả về Dev; lỗi khác thì tạo Bug stand-alone mới và link 'relates to'."
+    )
+    assert not any(c[0] == "create_issue" for c in gateway.calls)
+
+
+def test_qc_fail_on_bug_standalone_with_bugs_refused(cfg, cal):
+    raw_bug = {
+        "key": "HMKPOS-300",
+        "fields": {
+            "summary": "Payment crash bug",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Bug stand-alone", "subtask": False},
+            "status": {"name": "Test In Progress"},
+        },
+    }
+    gateway = FakeGateway(
+        issues={"HMKPOS-300": raw_bug},
+        transitions={"HMKPOS-300": ["QC Fail"]},
+    )
+    actions = _make_actions(gateway, cfg, cal)
+    res = actions.qc_fail("HMKPOS-300", reason="Still broken", bugs=["Crash on retry"])
+    assert res.ok is False
+    assert (
+        res.message
+        == "Bug stand-alone không có Bug con: chưa đạt thì QC Fail để trả về Dev; lỗi khác thì tạo Bug stand-alone mới và link 'relates to'."
+    )
+    assert not any(c[0] == "create_issue" for c in gateway.calls)
+
+
+def test_qc_fail_on_dev_task_under_bug_with_bugs_refused(cfg, cal):
+    raw_bug = {
+        "key": "HMKPOS-300",
+        "fields": {
+            "summary": "Payment crash bug",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Bug stand-alone", "subtask": False},
+            "status": {"name": "Dev In Progress"},
+        },
+    }
+    raw_dev = {
+        "key": "HMKPOS-301",
+        "fields": {
+            "summary": "Dev task for bug",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Dev Task", "subtask": True},
+            "status": {"name": "Test In Progress"},
+            "parent": {
+                "key": "HMKPOS-300",
+                "fields": {"issuetype": {"name": "Bug stand-alone", "subtask": False}},
+            },
+        },
+    }
+    gateway = FakeGateway(
+        issues={"HMKPOS-300": raw_bug, "HMKPOS-301": raw_dev},
+        transitions={"HMKPOS-301": ["QC Fail"]},
+    )
+    actions = _make_actions(gateway, cfg, cal)
+    res = actions.qc_fail("HMKPOS-301", reason="Still broken", bugs=["Crash on retry"])
+    assert res.ok is False
+    assert (
+        res.message
+        == "Bug stand-alone không có Bug con: chưa đạt thì QC Fail để trả về Dev; lỗi khác thì tạo Bug stand-alone mới và link 'relates to'."
+    )
+    assert not any(c[0] == "create_issue" for c in gateway.calls)
+
+
+def test_qc_fail_on_adhoc_with_bugs_creates_subtask(cfg, cal):
+    raw_adhoc = {
+        "key": "HMKPOS-200",
+        "fields": {
+            "summary": "Adhoc task",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Ad-hoc Task", "subtask": False},
+            "status": {"name": "Test In Progress"},
+            "customfield_qc_owner": {"name": "qc.tester"},
+        },
+    }
+    gateway = FakeGateway(
+        issues={"HMKPOS-200": raw_adhoc},
+        transitions={"HMKPOS-200": ["QC Fail"]},
+    )
+    actions = _make_actions(gateway, cfg, cal)
+    res = actions.qc_fail("HMKPOS-200", reason="Failed QC", bugs=["New error in logs"])
+    assert res.ok is True
+    cr_calls = [c for c in gateway.calls if c[0] == "create_issue"]
+    assert len(cr_calls) == 1
+    assert cr_calls[0][1][0]["parent"]["key"] == "HMKPOS-200"
 
 
 def test_triage_close_bug_production_goes_to_ops(cfg, cal):
@@ -1365,6 +1598,176 @@ def test_qc_pass_adhoc_task_no_story_worklog_rule(cfg, cal):
     trans_calls = [c for c in gw.calls if c[0] == "transition"]
     assert len(trans_calls) == 1
     assert trans_calls[0][1] == ("HMKPOS-50", "QC Pass")
+
+
+def test_submit_qc_adhoc_with_open_subtasks_refused(cfg, cal):
+    raw_adhoc = {
+        "key": "HMKPOS-50",
+        "fields": {
+            "summary": "Tech adhoc",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Ad-hoc Task", "subtask": False},
+            "status": {"name": "Dev In Progress"},
+            "customfield_qc_owner": {"name": "qc.tester"},
+        },
+    }
+    raw_sub = {
+        "key": "HMKPOS-51",
+        "fields": {
+            "summary": "Dev task for adhoc",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Dev Task", "subtask": True},
+            "status": {"name": "Dev In Progress"},
+            "parent": {"key": "HMKPOS-50", "fields": {"issuetype": {"name": "Ad-hoc Task", "subtask": False}}},
+        },
+    }
+    gw = FakeGateway(
+        issues={"HMKPOS-50": raw_adhoc, "HMKPOS-51": raw_sub},
+        transitions={"HMKPOS-50": ["Submit QC"]},
+    )
+    actions = _make_actions(gw, cfg, cal)
+    res = actions.submit_qc("HMKPOS-50")
+    assert res.ok is False
+    assert "HMKPOS-51" in res.message
+    assert not any(c[0] == "transition" for c in gw.calls)
+
+
+def test_qc_pass_adhoc_with_open_subtasks_refused(cfg, cal):
+    raw_adhoc = {
+        "key": "HMKPOS-50",
+        "fields": {
+            "summary": "Tech adhoc",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Ad-hoc Task", "subtask": False},
+            "status": {"name": "Test In Progress"},
+            "customfield_qc_owner": {"name": "qc.tester"},
+        },
+    }
+    raw_sub = {
+        "key": "HMKPOS-51",
+        "fields": {
+            "summary": "Bug sub for adhoc",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Bug", "subtask": True},
+            "status": {"name": "DEV To Do"},
+            "parent": {"key": "HMKPOS-50", "fields": {"issuetype": {"name": "Ad-hoc Task", "subtask": False}}},
+        },
+    }
+    gw = FakeGateway(
+        issues={"HMKPOS-50": raw_adhoc, "HMKPOS-51": raw_sub},
+        transitions={"HMKPOS-50": ["QC Pass"]},
+        user="qc.tester",
+    )
+    actions = _make_actions(gw, cfg, cal)
+    res = actions.qc_pass("HMKPOS-50", note="Testing done")
+    assert res.ok is False
+    assert "HMKPOS-51" in res.message
+    assert not any(c[0] == "transition" for c in gw.calls)
+
+
+def test_submit_qc_bug_standalone_with_open_subtasks_refused(cfg, cal):
+    raw_bug = {
+        "key": "HMKPOS-60",
+        "fields": {
+            "summary": "Standalone bug",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Bug stand-alone", "subtask": False},
+            "status": {"name": "Dev In Progress"},
+        },
+    }
+    raw_sub = {
+        "key": "HMKPOS-61",
+        "fields": {
+            "summary": "Dev task for bug",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Dev Task", "subtask": True},
+            "status": {"name": "Dev In Progress"},
+            "parent": {"key": "HMKPOS-60", "fields": {"issuetype": {"name": "Bug stand-alone", "subtask": False}}},
+        },
+    }
+    gw = FakeGateway(
+        issues={"HMKPOS-60": raw_bug, "HMKPOS-61": raw_sub},
+        transitions={"HMKPOS-60": ["Submit QC"]},
+    )
+    actions = _make_actions(gw, cfg, cal)
+    res = actions.submit_qc("HMKPOS-60")
+    assert res.ok is False
+    assert "HMKPOS-61" in res.message
+    assert not any(c[0] == "transition" for c in gw.calls)
+
+
+def test_qc_pass_bug_standalone_with_open_subtasks_refused(cfg, cal):
+    raw_bug = {
+        "key": "HMKPOS-60",
+        "fields": {
+            "summary": "Standalone bug",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Bug stand-alone", "subtask": False},
+            "status": {"name": "Test In Progress"},
+        },
+    }
+    raw_sub = {
+        "key": "HMKPOS-61",
+        "fields": {
+            "summary": "Dev task for bug",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Dev Task", "subtask": True},
+            "status": {"name": "DEV To Do"},
+            "parent": {"key": "HMKPOS-60", "fields": {"issuetype": {"name": "Bug stand-alone", "subtask": False}}},
+        },
+    }
+    gw = FakeGateway(
+        issues={"HMKPOS-60": raw_bug, "HMKPOS-61": raw_sub},
+        transitions={"HMKPOS-60": ["QC Pass"]},
+        user="qc.tester",
+    )
+    actions = _make_actions(gw, cfg, cal)
+    res = actions.qc_pass("HMKPOS-60", note="Testing done")
+    assert res.ok is False
+    assert "HMKPOS-61" in res.message
+    assert not any(c[0] == "transition" for c in gw.calls)
+
+
+def test_submit_qc_and_qc_pass_with_closed_subtasks_allowed(cfg, cal):
+    raw_adhoc = {
+        "key": "HMKPOS-70",
+        "fields": {
+            "summary": "Tech adhoc",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Ad-hoc Task", "subtask": False},
+            "status": {"name": "Dev In Progress"},
+            "customfield_qc_owner": {"name": "qc.tester"},
+        },
+    }
+    raw_sub_done = {
+        "key": "HMKPOS-71",
+        "fields": {
+            "summary": "Dev task for adhoc done",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Dev Task", "subtask": True},
+            "status": {"name": "Done"},
+            "parent": {"key": "HMKPOS-70", "fields": {"issuetype": {"name": "Ad-hoc Task", "subtask": False}}},
+        },
+    }
+    raw_sub_cancelled = {
+        "key": "HMKPOS-72",
+        "fields": {
+            "summary": "Dev task for adhoc cancelled",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Dev Task", "subtask": True},
+            "status": {"name": "Cancelled"},
+            "parent": {"key": "HMKPOS-70", "fields": {"issuetype": {"name": "Ad-hoc Task", "subtask": False}}},
+        },
+    }
+    gw = FakeGateway(
+        issues={"HMKPOS-70": raw_adhoc, "HMKPOS-71": raw_sub_done, "HMKPOS-72": raw_sub_cancelled},
+        transitions={"HMKPOS-70": ["Submit QC"]},
+        user="qc.tester",
+    )
+    actions = _make_actions(gw, cfg, cal)
+    res = actions.submit_qc("HMKPOS-70")
+    assert res.ok is True
+    assert any(c[0] == "transition" for c in gw.calls)
 
 
 def test_qc_fail_adhoc_task_no_parent_story_or_open_bug_rule(cfg, cal):

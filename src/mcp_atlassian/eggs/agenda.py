@@ -99,6 +99,7 @@ INTENTS: list[Intent] = [
         roles=frozenset({"dev"}),
         examples=[
             "xong RFID-12, chuyển QC",
+            "xong bug dưới adhoc, chuyển QC",
             "chuyển kiểm thử",
             "submit qc",
             "xong ADHOC-5, nhờ tuan.bui test",
@@ -112,6 +113,7 @@ INTENTS: list[Intent] = [
         examples=[
             "hoàn thành việc không cần QC",
             "xong task adhoc",
+            "xong dev task dưới bug stand-alone",
             "finish",
             "xong ADHOC-5, không cần QC",
             "xong RFID-130, phần này không cần QC riêng",
@@ -350,7 +352,10 @@ def build_agenda(
                             missing=[] if issue.qc_owner else ["qc_owner"],
                         )
                     )
-                elif issue.parent_type == "adhoc":
+                elif issue.type == "dev_task" and issue.parent_type in (
+                    "adhoc",
+                    "bug",
+                ):
                     actions.append(
                         SuggestedAction(
                             tool="eggs_finish", args={"key": key}, missing=[]
@@ -478,20 +483,23 @@ def build_agenda(
             )
             seen_keys.add(key)
 
-    # Priority 4: QC queue (work items in ready_for_qc whose Story QC Owner
-    # is identity, and Stories in ready_for_qc where identity is QC Owner)
+    # Priority 4: QC queue (work items in ready_for_qc whose parent
+    # Story/Ad-hoc QC Owner is identity, and Stories in ready_for_qc
+    # where identity is QC Owner)
     for key, issue in snapshot.issues.items():
         if issue.frozen or issue.is_resolved or key in seen_keys:
             continue
         is_qc_target = False
         if issue.is_work_item and issue.status == "ready_for_qc":
-            parent_story = (
+            parent = (
                 snapshot.issues.get(issue.parent_key) if issue.parent_key else None
             )
-            story_qc = (
-                parent_story.qc_owner if parent_story else None
-            ) or issue.qc_owner
-            if story_qc == identity.username:
+            target_qc = None
+            if parent and parent.type in ("story", "adhoc"):
+                target_qc = parent.qc_owner
+            elif not parent:
+                target_qc = issue.qc_owner
+            if target_qc and target_qc == identity.username:
                 is_qc_target = True
         elif (
             issue.type == "story"
@@ -628,7 +636,10 @@ def build_agenda(
                         missing=[] if issue.qc_owner else ["qc_owner"],
                     )
                 )
-            elif issue.parent_type == "adhoc":
+            elif issue.type == "dev_task" and issue.parent_type in (
+                "adhoc",
+                "bug",
+            ):
                 actions.append(
                     SuggestedAction(tool="eggs_finish", args={"key": key}, missing=[])
                 )

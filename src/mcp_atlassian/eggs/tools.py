@@ -728,10 +728,12 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         """Hoàn thành phần việc và chuyển sang hàng đợi kiểm thử (QC TO DO).
 
         Đối với Dev Task: Dev lựa chọn dùng eggs_finish (không cần QC riêng, QC
-        kiểm thử ở cấp Story) hoặc eggs_submit_qc. Đối với Ad-hoc Task: Dev lựa
-        chọn dùng eggs_finish nếu không cần QC, hoặc eggs_submit_qc kèm qc_owner
-        nếu cần QC. Bug (sub và stand-alone) luôn dùng eggs_submit_qc (không có
-        eggs_finish).
+        kiểm thử ở cấp Story) hoặc eggs_submit_qc (khi thuộc Story). Dev Task thuộc
+        Ad-hoc Task hoặc Bug stand-alone không qua QC riêng, chỉ dùng eggs_finish.
+        Đối với Ad-hoc Task: Dev lựa chọn dùng eggs_finish nếu không cần QC, hoặc
+        eggs_submit_qc kèm qc_owner nếu cần QC. Bug (sub dưới Story hoặc Ad-hoc Task,
+        và Bug stand-alone) luôn qua QC bằng eggs_submit_qc (không có eggs_finish).
+        Ad-hoc Task và Bug stand-alone chỉ nộp QC khi mọi sub-task đã hoàn thành.
         """
         cfg = await asyncio.to_thread(load_config)
         user_gw = await get_user_gateway(ctx, write=True)
@@ -781,8 +783,9 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         """Hoàn thành trực tiếp việc đang làm (Dev In Progress -> Done).
 
         Đối với Dev Task: Dev lựa chọn dùng eggs_finish (không cần QC riêng, QC
-        kiểm thử ở cấp Story) hoặc eggs_submit_qc. Đối với Ad-hoc Task: Dev lựa
-        chọn dùng eggs_finish nếu không cần QC, hoặc eggs_submit_qc kèm qc_owner
+        kiểm thử ở cấp Story) hoặc eggs_submit_qc (khi thuộc Story). Dev Task thuộc
+        Ad-hoc Task hoặc Bug stand-alone chỉ dùng eggs_finish. Đối với Ad-hoc Task: Dev
+        lựa chọn dùng eggs_finish nếu không cần QC, hoặc eggs_submit_qc kèm qc_owner
         nếu cần QC. Bug (sub và stand-alone) không có finish, luôn qua QC
         (eggs_submit_qc).
         """
@@ -1595,7 +1598,10 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         ],
         bug_target: Annotated[
             str | None,
-            Field(description="Mã Story cho is_bug_flow", default=None),
+            Field(
+                description="Mã Story hoặc Ad-hoc Task cho is_bug_flow",
+                default=None,
+            ),
         ] = None,
         link_key: Annotated[
             str | None,
