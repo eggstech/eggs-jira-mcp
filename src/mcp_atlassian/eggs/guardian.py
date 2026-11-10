@@ -1,10 +1,23 @@
+"""EGGS Guardian CLI and periodic background tasks.
+
+Subcommands:
+- evaluate: Tính toán cờ sức khỏe, leo thang, ETA và ghi ngược Jira
+- report: Xuất báo cáo ngày và gửi Google Chat
+- remind: Nhắc nhở người chưa log work hôm nay
+- ops-epics: Đảm bảo tồn tại Epic [OPS] tháng hiện tại cho từng dự án
+- resolve-fields: Đọc danh sách trường Jira và ánh xạ tên logic
+- backfill-qc-owner: Back-fill trường QC Owner cho các Bug stand-alone chưa có
+"""
+
 from __future__ import annotations
 
 import argparse
 import calendar
 import logging
 import os
+import re
 import sys
+from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -516,6 +529,90 @@ def run_remind(
     return 1 if failures else 0
 
 
+@dataclass
+class BackfillResult:
+    found: int
+    written: int
+    failed: list[tuple[str, str]]
+    user: str
+    issues: list[tuple[str, str]] = field(default_factory=list)
+
+
+def backfill_qc_owner(
+    gateway: JiraGateway,
+    cfg: EggsConfig,
+    project: str,
+    qc_owner: str | None = None,
+    *,
+    dry_run: bool = False,
+) -> BackfillResult:
+    qc_field_id = cfg.fields.get("qc_owner")
+    if not qc_field_id:
+        raise ValueError("Cấu hình fields.qc_owner không tồn tại.")
+
+    proj_cfg = cfg.projects.get(project)
+    user = qc_owner or (proj_cfg.triage_owner if proj_cfg else None)
+    if not user:
+        msg = (
+            f"Dự án '{project}' không có triage_owner trong cấu hình "
+            "và không cung cấp qc_owner."
+        )
+        raise ValueError(msg)
+
+    cf_match = re.search(r"\d+", qc_field_id)
+    cf_id = cf_match.group(0) if cf_match else qc_field_id
+
+    bug_types = ", ".join(f'"{t}"' for t in cfg.issue_types["bug"])
+    jql = (
+        f"project = {project} AND issuetype in ({bug_types}) "
+        f"AND statusCategory != Done AND cf[{cf_id}] is EMPTY"
+    )
+
+    raw_issues = gateway.search(jql, fields=["key", "status"])
+    issue_tuples = [
+        (
+            raw.get("key") or str(raw.get("id")),
+            raw.get("fields", {}).get("status", {}).get("name", "Unknown"),
+        )
+        for raw in raw_issues
+    ]
+    found = len(raw_issues)
+
+    if dry_run:
+        return BackfillResult(
+            found=found,
+            written=0,
+            failed=[],
+            user=user,
+            issues=issue_tuples,
+        )
+
+    written = 0
+    failed: list[tuple[str, str]] = []
+
+    for i, raw in enumerate(raw_issues):
+        key = raw.get("key") or str(raw.get("id"))
+        try:
+            gateway.update_fields(
+                key,
+                {qc_field_id: {"name": user}},
+                notify_users=False,
+            )
+            written += 1
+        except Exception as exc:
+            if i == 0:
+                raise
+            failed.append((key, str(exc)))
+
+    return BackfillResult(
+        found=found,
+        written=written,
+        failed=failed,
+        user=user,
+        issues=issue_tuples,
+    )
+
+
 def resolve_fields_cli(gateway: JiraGateway) -> None:
     """Print logical field -> id by matching Jira field names."""
     fields = gateway.get_fields()
@@ -582,6 +679,18 @@ def main(
         "resolve-fields", help="Đọc danh sách trường Jira và ánh xạ tên logic"
     )
 
+    # backfill-qc-owner
+    p_backfill = subparsers.add_parser(
+        "backfill-qc-owner",
+        help="Back-fill trường QC Owner cho các Bug stand-alone chưa có",
+    )
+    p_backfill.add_argument("--project", required=True, help="Mã dự án (project key)")
+    p_backfill.add_argument(
+        "--qc-owner",
+        help="Jira username của QC Owner (mặc định lấy triage_owner của project)",
+    )
+    p_backfill.add_argument("--dry-run", action="store_true", help="Không ghi vào Jira")
+
     args = parser.parse_args(argv)
 
     # Validate required environment variables after argparse so --help works
@@ -612,10 +721,26 @@ def main(
     today = now.date()
 
     # Every subcommand exits 0 on a non-working day without calling Jira,
-    # except resolve-fields
-    if not cal.is_working_day(today):
+    # except resolve-fields and backfill-qc-owner
+    if args.subcommand not in (
+        "resolve-fields",
+        "backfill-qc-owner",
+    ) and not cal.is_working_day(today):
         logger.info("Ngày nghỉ (%s), bỏ qua chạy %s.", today, args.subcommand)
         return 0
+
+    if args.subcommand == "backfill-qc-owner":
+        if not cfg.fields.get("qc_owner"):
+            sys.stderr.write("Lỗi: Cấu hình fields.qc_owner không tồn tại.\n")
+            sys.exit(2)
+        proj_cfg = cfg.projects.get(args.project)
+        user = args.qc_owner or (proj_cfg.triage_owner if proj_cfg else None)
+        if not user:
+            sys.stderr.write(
+                f"Lỗi: Dự án '{args.project}' không có triage_owner "
+                "trong cấu hình và không cung cấp --qc-owner.\n"
+            )
+            sys.exit(2)
 
     gw = gateway or _build_gateway_from_env(cfg)
 
@@ -644,6 +769,39 @@ def main(
     elif args.subcommand == "ops-epics":
         res = ensure_ops_epics(gw, cfg, today, cal, dry_run=args.dry_run)
         return getattr(res, "exit_code", 0)
+    elif args.subcommand == "backfill-qc-owner":
+        try:
+            res = backfill_qc_owner(
+                gw,
+                cfg,
+                args.project,
+                qc_owner=args.qc_owner,
+                dry_run=args.dry_run,
+            )
+        except Exception as e:  # noqa: BLE001
+            sys.stderr.write(f"Lỗi khi cập nhật issue đầu tiên: {e}\n")
+            return 1
+
+        if args.dry_run:
+            sys.stdout.write(
+                f"[Dry-run] Tìm thấy {res.found} Bug stand-alone "
+                f"cần gán QC Owner '{res.user}':\n"
+            )
+            for k, st in res.issues:
+                sys.stdout.write(f"- {k}: {st}\n")
+            return 0
+
+        sys.stdout.write(
+            f"Hoàn thành backfill QC Owner '{res.user}' cho dự án {args.project}:\n"
+            f"- Tìm thấy: {res.found}\n"
+            f"- Đã ghi: {res.written}\n"
+            f"- Thất bại: {len(res.failed)}\n"
+        )
+        if res.failed:
+            for k, err in res.failed:
+                sys.stdout.write(f"  * {k}: {err}\n")
+            return 1
+        return 0
 
     return 0
 

@@ -1064,3 +1064,204 @@ def test_missing_env_exits_2(monkeypatch: pytest.MonkeyPatch):
     with pytest.raises(SystemExit) as exc:
         main(["evaluate"])
     assert exc.value.code == 2
+
+
+def test_backfill_qc_owner_dry_run_writes_nothing(cfg: EggsConfig):
+    from mcp_atlassian.eggs.guardian import backfill_qc_owner
+
+    issues = {
+        "RFID-10": {
+            "key": "RFID-10",
+            "fields": {"status": {"name": "QC TO DO"}},
+        },
+        "RFID-11": {
+            "key": "RFID-11",
+            "fields": {"status": {"name": "Dev In Progress"}},
+        },
+    }
+    gw = FakeGateway(issues=issues)
+    res = backfill_qc_owner(gw, cfg, "RFID", dry_run=True)
+    assert res.found == 2
+    assert res.written == 0
+    assert res.failed == []
+    assert res.user == "cuong.huynh"
+    update_calls = [c for c in gw.calls if c[0] == "update_fields"]
+    assert len(update_calls) == 0
+
+
+def test_backfill_qc_owner_default_user_is_triage_owner(cfg: EggsConfig):
+    from mcp_atlassian.eggs.guardian import backfill_qc_owner
+
+    issues = {
+        "RFID-10": {
+            "key": "RFID-10",
+            "fields": {"status": {"name": "QC TO DO"}},
+        },
+    }
+    gw = FakeGateway(issues=issues)
+    res = backfill_qc_owner(gw, cfg, "RFID")
+    assert res.found == 1
+    assert res.written == 1
+    assert res.failed == []
+    assert res.user == "cuong.huynh"
+    update_calls = [c for c in gw.calls if c[0] == "update_fields"]
+    assert len(update_calls) == 1
+    assert update_calls[0][1] == (
+        "RFID-10",
+        {"customfield_10702": {"name": "cuong.huynh"}},
+    )
+    assert update_calls[0][2] == {"notify_users": False}
+
+
+def test_backfill_qc_owner_qc_owner_flag_overrides(cfg: EggsConfig):
+    from mcp_atlassian.eggs.guardian import backfill_qc_owner
+
+    issues = {
+        "RFID-10": {
+            "key": "RFID-10",
+            "fields": {"status": {"name": "QC TO DO"}},
+        },
+    }
+    gw = FakeGateway(issues=issues)
+    res = backfill_qc_owner(gw, cfg, "RFID", qc_owner="override.qc")
+    assert res.user == "override.qc"
+    assert res.written == 1
+    update_calls = [c for c in gw.calls if c[0] == "update_fields"]
+    assert update_calls[0][1] == (
+        "RFID-10",
+        {"customfield_10702": {"name": "override.qc"}},
+    )
+
+
+def test_backfill_qc_owner_first_write_failure_stops(cfg: EggsConfig):
+    from mcp_atlassian.eggs.guardian import backfill_qc_owner
+
+    issues = {
+        "RFID-10": {"key": "RFID-10", "fields": {"status": {"name": "Open"}}},
+        "RFID-11": {"key": "RFID-11", "fields": {"status": {"name": "Open"}}},
+    }
+    gw = FakeGateway(issues=issues)
+
+    def fail_first(key: str, fields: dict, *, notify_users: bool = True) -> None:
+        raise JiraError("User does not exist")
+
+    gw.update_fields = fail_first
+
+    with pytest.raises(JiraError) as exc_info:
+        backfill_qc_owner(gw, cfg, "RFID")
+    assert "User does not exist" in str(exc_info.value)
+
+
+def test_backfill_qc_owner_later_failure_continues_and_is_reported(cfg: EggsConfig):
+    from mcp_atlassian.eggs.guardian import backfill_qc_owner
+
+    issues = {
+        "RFID-10": {"key": "RFID-10", "fields": {"status": {"name": "Open"}}},
+        "RFID-11": {"key": "RFID-11", "fields": {"status": {"name": "Open"}}},
+        "RFID-12": {"key": "RFID-12", "fields": {"status": {"name": "Open"}}},
+    }
+    gw = FakeGateway(issues=issues)
+    attempts: list[str] = []
+
+    def fail_second(key: str, fields: dict, *, notify_users: bool = True) -> None:
+        attempts.append(key)
+        if key == "RFID-11":
+            raise JiraError("Field not on screen for RFID-11")
+
+    gw.update_fields = fail_second
+
+    res = backfill_qc_owner(gw, cfg, "RFID")
+    assert res.found == 3
+    assert res.written == 2
+    assert len(res.failed) == 1
+    assert res.failed[0][0] == "RFID-11"
+    assert "Field not on screen" in res.failed[0][1]
+    assert attempts == ["RFID-10", "RFID-11", "RFID-12"]
+
+
+def test_backfill_qc_owner_missing_config_or_project_exits_2(
+    cfg: EggsConfig, monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    config_file = tmp_path / "eggs.yaml"
+    config_file.write_text(yaml.safe_dump(dataclasses.asdict(cfg), allow_unicode=True))
+
+    monkeypatch.setenv("JIRA_URL", cfg.jira_url)
+    monkeypatch.setenv("EGGS_BOT_TOKEN", "dummy_token")
+    monkeypatch.setenv("EGGS_CONFIG", str(config_file))
+
+    gw = FakeGateway()
+
+    # 1. Project not in config and no --qc-owner
+    with pytest.raises(SystemExit) as exc1:
+        main(["backfill-qc-owner", "--project", "UNKNOWN_PROJ"], gateway=gw)
+    assert exc1.value.code == 2
+    assert len(gw.calls) == 0
+
+    # 2. Config has no qc_owner field
+    cfg_no_qc = dataclasses.replace(
+        cfg, fields={k: v for k, v in cfg.fields.items() if k != "qc_owner"}
+    )
+    config_file.write_text(
+        yaml.safe_dump(dataclasses.asdict(cfg_no_qc), allow_unicode=True)
+    )
+    with pytest.raises(SystemExit) as exc2:
+        main(["backfill-qc-owner", "--project", "RFID"], gateway=gw)
+    assert exc2.value.code == 2
+    assert len(gw.calls) == 0
+
+
+def test_backfill_qc_owner_runs_on_non_working_day(
+    cfg: EggsConfig, monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    config_file = tmp_path / "eggs.yaml"
+    config_file.write_text(yaml.safe_dump(dataclasses.asdict(cfg), allow_unicode=True))
+
+    monkeypatch.setenv("JIRA_URL", cfg.jira_url)
+    monkeypatch.setenv("EGGS_BOT_TOKEN", "dummy_token")
+    monkeypatch.setenv("EGGS_CONFIG", str(config_file))
+
+    # Saturday 2026-11-21
+    saturday = datetime(2026, 11, 21, 10, 0, tzinfo=TZ)
+    monkeypatch.setattr(
+        "mcp_atlassian.eggs.guardian.datetime",
+        type(
+            "MockDT",
+            (),
+            {
+                "now": lambda tz=None: saturday,
+                "combine": datetime.combine,
+            },
+        ),
+    )
+
+    gw = FakeGateway(
+        issues={
+            "RFID-10": {"key": "RFID-10", "fields": {"status": {"name": "QC TO DO"}}}
+        }
+    )
+
+    code = main(["backfill-qc-owner", "--project", "RFID", "--dry-run"], gateway=gw)
+    assert code == 0
+    search_calls = [c for c in gw.calls if c[0] == "search"]
+    assert len(search_calls) == 1
+
+
+def test_backfill_qc_owner_jql_contains_cf_id_quoted_types_and_is_empty(
+    cfg: EggsConfig,
+):
+    from mcp_atlassian.eggs.guardian import backfill_qc_owner
+
+    gw = FakeGateway()
+    backfill_qc_owner(gw, cfg, "RFID", dry_run=True)
+
+    search_calls = [c for c in gw.calls if c[0] == "search"]
+    assert len(search_calls) == 1
+    jql = search_calls[0][1][0]
+    fields = search_calls[0][1][1]
+
+    assert fields == ["key", "status"]
+    assert "project = RFID" in jql
+    assert '"Bug stand-alone"' in jql
+    assert "cf[10702]" in jql
+    assert "statusCategory != Done" in jql
+    assert "is EMPTY" in jql
