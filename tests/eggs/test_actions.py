@@ -1049,7 +1049,7 @@ def test_triage_close_refuses_bug_under_bug_standalone(cfg, cal):
     assert res.ok is False
     assert (
         res.message
-        == "Bug stand-alone không có Bug con: chưa đạt thì QC Fail để trả về Dev; lỗi khác thì tạo Bug stand-alone mới và link 'relates to'."
+        == 'Bug stand-alone không có Bug con: chưa đạt thì QC Fail để trả về Dev; lỗi khác thì tạo Bug stand-alone mới bằng eggs_create_issue(issue_type="bug", related_to="HMKPOS-300").'
     )
     assert not any(c[0] == "create_issue" for c in gateway.calls)
 
@@ -1075,7 +1075,7 @@ def test_qc_fail_on_bug_standalone_with_bugs_refused(cfg, cal):
     assert res.ok is False
     assert (
         res.message
-        == "Bug stand-alone không có Bug con: chưa đạt thì QC Fail để trả về Dev; lỗi khác thì tạo Bug stand-alone mới và link 'relates to'."
+        == 'Bug stand-alone không có Bug con: chưa đạt thì QC Fail để trả về Dev; lỗi khác thì tạo Bug stand-alone mới bằng eggs_create_issue(issue_type="bug", related_to="HMKPOS-300").'
     )
     assert not any(
         c[0] in ("create_issue", "add_worklog", "transition") for c in gateway.calls
@@ -1116,7 +1116,7 @@ def test_qc_fail_on_dev_task_under_bug_with_bugs_refused(cfg, cal):
     assert res.ok is False
     assert (
         res.message
-        == "Bug stand-alone không có Bug con: chưa đạt thì QC Fail để trả về Dev; lỗi khác thì tạo Bug stand-alone mới và link 'relates to'."
+        == 'Bug stand-alone không có Bug con: chưa đạt thì QC Fail để trả về Dev; lỗi khác thì tạo Bug stand-alone mới bằng eggs_create_issue(issue_type="bug", related_to="HMKPOS-300").'
     )
     assert not any(
         c[0] in ("create_issue", "add_worklog", "transition") for c in gateway.calls
@@ -4144,3 +4144,234 @@ def test_triage_close_relates_link_direction_and_name(cfg, cal):
     link_calls = [c for c in gw.calls if c[0] == "link"]
     assert len(link_calls) == 1
     assert link_calls[0][1] == ("Relates", "HMKPOS-REP1", "HMKPOS-100")
+
+
+def test_create_issue_qc_creates_bug_related_to_eggsbox_38(cfg, cal):
+    cfg.projects["EGGSBOX"] = ProjectConfig(
+        key="EGGSBOX",
+        default_lead_ba="cuong.huynh",
+        triage_owner="tuan.bui",
+    )
+    raw_bug = {
+        "key": "EGGSBOX-38",
+        "fields": {
+            "summary": "Existing bug",
+            "project": {"key": "EGGSBOX"},
+            "issuetype": {"name": "Bug stand-alone", "subtask": False},
+            "status": {"name": "QC TO DO"},
+            "assignee": {"name": "cuong.huynh"},
+        },
+    }
+    gw = FakeGateway(issues={"EGGSBOX-38": raw_bug})
+    actions = _make_actions(gw, cfg, cal)
+
+    # QC creates a Bug stand-alone related to EGGSBOX-38
+    res = actions.create_issue(
+        project="EGGSBOX",
+        issue_type="bug",
+        summary="New bug found in testing",
+        related_to="EGGSBOX-38",
+        creator="tuan.bui",
+        creator_roles={"qc"},
+    )
+    assert res.ok is True
+    created_calls = [c for c in gw.calls if c[0] == "create_issue"]
+    assert len(created_calls) == 1
+    created_fields = created_calls[0][1][0]
+    # Assignee defaults to related issue's assignee
+    assert created_fields["assignee"] == {"name": "cuong.huynh"}
+    # qc_owner defaults to creator when creator has qc role
+    assert created_fields[cfg.fields["qc_owner"]] == {"name": "tuan.bui"}
+
+    # Relates link inward/outward as gateway.link expects
+    link_calls = [c for c in gw.calls if c[0] == "link"]
+    assert len(link_calls) == 1
+    new_key = [k for k in gw.issues if k != "EGGSBOX-38"][0]
+    assert link_calls[0][1] == ("Relates", new_key, "EGGSBOX-38")
+
+
+def test_create_issue_dev_creates_bug_and_adhoc(cfg, cal):
+    cfg.projects["EGGSBOX"] = ProjectConfig(
+        key="EGGSBOX",
+        default_lead_ba="cuong.huynh",
+        triage_owner="tuan.bui",
+    )
+    gw = FakeGateway()
+    actions = _make_actions(gw, cfg, cal)
+
+    # Dev creates Bug stand-alone (must supply qc_owner since dev does not have qc role)
+    res_bug_no_qc = actions.create_issue(
+        project="EGGSBOX",
+        issue_type="bug",
+        summary="Dev found bug",
+        creator="cuong.huynh",
+        creator_roles={"dev"},
+    )
+    assert res_bug_no_qc.ok is False
+    assert res_bug_no_qc.missing == ["qc_owner"]
+
+    res_bug = actions.create_issue(
+        project="EGGSBOX",
+        issue_type="bug",
+        summary="Dev found bug",
+        qc_owner="tuan.bui",
+        creator="cuong.huynh",
+        creator_roles={"dev"},
+    )
+    assert res_bug.ok is True
+
+    # Dev creates Ad-hoc Task
+    res_adhoc = actions.create_issue(
+        project="EGGSBOX",
+        issue_type="adhoc",
+        summary="Ad-hoc task from dev",
+        creator="cuong.huynh",
+        creator_roles={"dev"},
+    )
+    assert res_adhoc.ok is True
+
+
+def test_create_issue_dev_cannot_create_story_and_unauthorized_refused(cfg, cal):
+    cfg.projects["EGGSBOX"] = ProjectConfig(
+        key="EGGSBOX",
+        default_lead_ba="cuong.huynh",
+        triage_owner="tuan.bui",
+    )
+    gw = FakeGateway()
+    actions = _make_actions(gw, cfg, cal)
+
+    # Dev asking for Story is refused
+    res_story = actions.create_issue(
+        project="EGGSBOX",
+        issue_type="story",
+        summary="Dev story",
+        creator="cuong.huynh",
+        creator_roles={"dev"},
+    )
+    assert res_story.ok is False
+    assert "Bạn không có quyền tạo story" in res_story.message
+
+    # User with no roles is refused
+    res_stranger = actions.create_issue(
+        project="EGGSBOX",
+        issue_type="bug",
+        summary="Stranger bug",
+        creator="stranger",
+        creator_roles=set(),
+    )
+    assert res_stranger.ok is False
+    assert "Bạn không có quyền tạo bug" in res_stranger.message
+
+
+def test_create_issue_validations(cfg, cal):
+    cfg.projects["EGGSBOX"] = ProjectConfig(
+        key="EGGSBOX",
+        default_lead_ba="cuong.huynh",
+        triage_owner="tuan.bui",
+    )
+    gw = FakeGateway()
+    gw._components = ["CH - CỬA HÀNG"]
+    actions = _make_actions(gw, cfg, cal)
+
+    # Story without epic -> missing=["epic"]
+    res_no_epic = actions.create_issue(
+        project="EGGSBOX",
+        issue_type="story",
+        summary="Story without epic",
+        creator="lead.ba",
+        creator_roles={"lead_ba"},
+    )
+    assert res_no_epic.ok is False
+    assert res_no_epic.missing == ["epic"]
+
+    # Component not in project -> refused before writing
+    res_bad_comp = actions.create_issue(
+        project="EGGSBOX",
+        issue_type="adhoc",
+        summary="Adhoc with bad component",
+        component="UNKNOWN - COMPONENT",
+        creator="lead.ba",
+        creator_roles={"lead_ba"},
+    )
+    assert res_bad_comp.ok is False
+    assert "Chưa có Component UNKNOWN - COMPONENT" in res_bad_comp.message
+    assert not any(c[0] == "create_issue" for c in gw.calls)
+
+    # Dry run writes nothing
+    res_dry = actions.create_issue(
+        project="EGGSBOX",
+        issue_type="adhoc",
+        summary="Adhoc dry run",
+        creator="lead.ba",
+        creator_roles={"lead_ba"},
+        dry_run=True,
+    )
+    assert res_dry.ok is True
+    assert "[Dry-run]" in res_dry.message
+    assert not any(c[0] == "create_issue" for c in gw.calls)
+
+
+def test_create_issue_link_failure_and_retry_idempotency(cfg, cal):
+    cfg.projects["EGGSBOX"] = ProjectConfig(
+        key="EGGSBOX",
+        default_lead_ba="cuong.huynh",
+        triage_owner="tuan.bui",
+    )
+    raw_bug = {
+        "key": "EGGSBOX-38",
+        "fields": {
+            "summary": "Existing bug",
+            "project": {"key": "EGGSBOX"},
+            "issuetype": {"name": "Bug stand-alone", "subtask": False},
+            "status": {"name": "QC TO DO"},
+            "assignee": {"name": "cuong.huynh"},
+        },
+    }
+    gw = FakeGateway(issues={"EGGSBOX-38": raw_bug})
+    actions = _make_actions(gw, cfg, cal)
+
+    # Force link to fail on first attempt
+    def fail_link(link_type, inward_key, outward_key):
+        raise RuntimeError("Connection error linking")
+
+    gw.link = fail_link
+
+    res1 = actions.create_issue(
+        project="EGGSBOX",
+        issue_type="bug",
+        summary="Bug to retry",
+        related_to="EGGSBOX-38",
+        creator="tuan.bui",
+        creator_roles={"qc"},
+    )
+    assert res1.ok is False
+    assert "chưa tạo được liên kết Relates tới EGGSBOX-38" in res1.message
+    created_key = [k for k in gw.issues if k != "EGGSBOX-38"][0]
+    assert created_key in res1.message
+
+    # Restore normal link
+    original_links = []
+
+    def good_link(link_type, inward_key, outward_key):
+        gw._record("link", link_type, inward_key, outward_key)
+        original_links.append((link_type, inward_key, outward_key))
+
+    gw.link = good_link
+
+    # Retry with same summary + related_to
+    res2 = actions.create_issue(
+        project="EGGSBOX",
+        issue_type="bug",
+        summary="Bug to retry",
+        related_to="EGGSBOX-38",
+        creator="tuan.bui",
+        creator_roles={"qc"},
+    )
+    assert res2.ok is True
+    assert f"Đã tạo thành công {created_key}." in res2.message
+    # Gateway create_issue was called only ONCE across both attempts
+    create_calls = [c for c in gw.calls if c[0] == "create_issue"]
+    assert len(create_calls) == 1
+    # Link was called
+    assert len(original_links) == 1
+    assert original_links[0] == ("Relates", created_key, "EGGSBOX-38")

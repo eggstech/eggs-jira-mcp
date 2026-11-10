@@ -83,6 +83,14 @@ class EggsConfig:
             "dev": ["Developers"],
         }
     )
+    create_roles: dict[str, list[str]] = field(
+        default_factory=lambda: {
+            "bug": ["qc", "lead_ba", "dev"],
+            "story": ["qc", "lead_ba"],
+            "adhoc": ["qc", "lead_ba", "dev"],
+            "bug_sub": ["qc", "lead_ba"],
+        }
+    )
 
     def __post_init__(self) -> None:
         if self.roles:
@@ -293,4 +301,13 @@ def load_config(path: str | None = None) -> EggsConfig:
         lead_chat_webhook=data.get("lead_chat_webhook"),
         kit_min_version=data.get("kit_min_version", "0.1.0"),
         roles=normalized_roles,
+        create_roles=data.get(
+            "create_roles",
+            {
+                "bug": ["qc", "lead_ba", "dev"],
+                "story": ["qc", "lead_ba"],
+                "adhoc": ["qc", "lead_ba", "dev"],
+                "bug_sub": ["qc", "lead_ba"],
+            },
+        ),
     )

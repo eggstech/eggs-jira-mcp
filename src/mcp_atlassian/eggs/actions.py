@@ -21,6 +21,7 @@ class ActionResult:
     next_actions: list[str]
     next: Any = None
     code: str | None = None
+    missing: list[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -1193,9 +1194,9 @@ class Actions:
                 return ActionResult(
                     ok=False,
                     message=(
-                        "Bug stand-alone không có Bug con: chưa đạt thì QC Fail "
-                        "để trả về Dev; lỗi khác thì tạo Bug stand-alone mới "
-                        "và link 'relates to'."
+                        f"Bug stand-alone không có Bug con: chưa đạt thì QC Fail "
+                        f"để trả về Dev; lỗi khác thì tạo Bug stand-alone mới "
+                        f'bằng eggs_create_issue(issue_type="bug", related_to="{key}").'
                     ),
                     changes=[],
                     next_actions=[],
@@ -1221,7 +1222,8 @@ class Actions:
                         message=(
                             "Bug stand-alone không có Bug con: chưa đạt thì QC Fail "
                             "để trả về Dev; lỗi khác thì tạo Bug stand-alone mới "
-                            "và link 'relates to'."
+                            f'bằng eggs_create_issue(issue_type="bug", '
+                            f'related_to="{parent.key}").'
                         ),
                         changes=[],
                         next_actions=[],
@@ -2040,7 +2042,8 @@ class Actions:
                         message=(
                             "Bug stand-alone không có Bug con: chưa đạt thì QC Fail "
                             "để trả về Dev; lỗi khác thì tạo Bug stand-alone mới "
-                            "và link 'relates to'."
+                            f'bằng eggs_create_issue(issue_type="bug", '
+                            f'related_to="{bug_story_key}").'
                         ),
                         changes=[],
                         next_actions=[],
@@ -2258,6 +2261,293 @@ class Actions:
         return ActionResult(
             ok=True,
             message=f"Đã đóng phản ánh {key}. {reply_suggestion}",
+            changes=changes,
+            next_actions=[],
+        )
+
+    def _find_recently_created_issue(
+        self,
+        project: str,
+        summary: str,
+        creator: str | None = None,
+        parent_key: str | None = None,
+    ) -> str | None:
+        try:
+            jql = f'project = "{project}" AND created >= "-10m"'
+            raw_issues = self.gateway.search(
+                jql, fields=["summary", "creator", "reporter", "created", "parent"]
+            )
+            for raw in raw_issues:
+                fields = raw.get("fields", {})
+                r_sum = fields.get("summary", "")
+                if r_sum.strip() != summary.strip():
+                    continue
+                if parent_key:
+                    p = fields.get("parent") or {}
+                    if p.get("key") != parent_key:
+                        continue
+                r_rep = fields.get("reporter")
+                rep_name = r_rep.get("name") if isinstance(r_rep, dict) else r_rep
+                r_cre = fields.get("creator")
+                cre_name = r_cre.get("name") if isinstance(r_cre, dict) else r_cre
+                author = cre_name or rep_name
+                if creator and author and author.lower() != creator.lower():
+                    continue
+                return raw.get("key")
+        except Exception:  # noqa: BLE001
+            return None
+        return None
+
+    def create_issue(
+        self,
+        project: str,
+        issue_type: str,
+        summary: str,
+        description: str | None = None,
+        related_to: str | None = None,
+        epic: str | None = None,
+        component: str | None = None,
+        assignee: str | None = None,
+        qc_owner: str | None = None,
+        priority: str | None = None,
+        *,
+        creator: str | None = None,
+        creator_roles: set[str] | None = None,
+        is_lead: bool = False,
+        parent: str | None = None,
+        dry_run: bool = False,
+    ) -> ActionResult:
+        """Tạo issue mới: Bug stand-alone, Story, hoặc Ad-hoc Task."""
+        if project not in self.cfg.projects:
+            return ActionResult(
+                ok=False,
+                message=f"Dự án {project} không có trong cấu hình.",
+                changes=[],
+                next_actions=[],
+            )
+
+        supported_types = ("bug", "story", "adhoc")
+        if issue_type not in supported_types and issue_type != "bug_sub":
+            return ActionResult(
+                ok=False,
+                message=(
+                    f"Loại issue '{issue_type}' không hợp lệ. Chọn: bug, story, adhoc."
+                ),
+                changes=[],
+                next_actions=[],
+            )
+
+        default_roles_map = {
+            "bug": ["qc", "lead_ba", "dev"],
+            "story": ["qc", "lead_ba"],
+            "adhoc": ["qc", "lead_ba", "dev"],
+            "bug_sub": ["qc", "lead_ba"],
+        }
+        allowed_roles = set(
+            self.cfg.create_roles.get(issue_type, default_roles_map.get(issue_type, []))
+        )
+        effective_roles = set(creator_roles or [])
+        if not is_lead and not (effective_roles & allowed_roles):
+            role_names = ", ".join(sorted(allowed_roles))
+            return ActionResult(
+                ok=False,
+                message=(
+                    f"Bạn không có quyền tạo {issue_type} trong dự án {project}. "
+                    f"Cần vai trò: {role_names}."
+                ),
+                changes=[],
+                next_actions=[],
+            )
+
+        if not summary or not summary.strip():
+            return ActionResult(
+                ok=False,
+                message="Summary không được để trống.",
+                changes=[],
+                next_actions=[],
+            )
+
+        related_issue = None
+        if related_to:
+            if not related_to.startswith(f"{project}-"):
+                return ActionResult(
+                    ok=False,
+                    message=(
+                        f"Issue liên quan {related_to} phải thuộc cùng dự án {project}."
+                    ),
+                    changes=[],
+                    next_actions=[],
+                )
+            try:
+                related_issue = self._get_issue(related_to)
+            except Exception:  # noqa: BLE001
+                return ActionResult(
+                    ok=False,
+                    message=f"Không tìm thấy issue liên quan {related_to}.",
+                    changes=[],
+                    next_actions=[],
+                )
+
+        effective_assignee = assignee
+        if not effective_assignee and related_issue:
+            effective_assignee = related_issue.assignee
+
+        if effective_assignee and hasattr(self.gateway, "user_exists"):
+            if not self.gateway.user_exists(effective_assignee):
+                return ActionResult(
+                    ok=False,
+                    message=f"User {effective_assignee} không tồn tại trên Jira.",
+                    changes=[],
+                    next_actions=[],
+                )
+
+        effective_qc_owner = qc_owner
+        if issue_type == "bug":
+            if not effective_qc_owner:
+                if is_lead or "qc" in effective_roles:
+                    effective_qc_owner = creator
+                else:
+                    return ActionResult(
+                        ok=False,
+                        message="Bug stand-alone bắt buộc có QC Owner.",
+                        missing=["qc_owner"],
+                        changes=[],
+                        next_actions=[],
+                    )
+        if effective_qc_owner and hasattr(self.gateway, "user_exists"):
+            if not self.gateway.user_exists(effective_qc_owner):
+                return ActionResult(
+                    ok=False,
+                    message=(
+                        f"User QC Owner {effective_qc_owner} không tồn tại trên Jira."
+                    ),
+                    changes=[],
+                    next_actions=[],
+                )
+
+        if issue_type == "story" and not epic:
+            return ActionResult(
+                ok=False,
+                message="Story bắt buộc gắn với một Epic.",
+                missing=["epic"],
+                changes=[],
+                next_actions=[],
+            )
+
+        if epic:
+            try:
+                epic_issue = self._get_issue(epic)
+            except Exception:  # noqa: BLE001
+                return ActionResult(
+                    ok=False,
+                    message=f"Không tìm thấy Epic {epic}.",
+                    changes=[],
+                    next_actions=[],
+                )
+            epic_types = set(self.cfg.issue_types.get("epic", ["Epic"]))
+            if epic_issue.project.upper() != project.upper() or (
+                epic_issue.type != "epic" and epic_issue.type not in epic_types
+            ):
+                return ActionResult(
+                    ok=False,
+                    message=f"{epic} không phải là Epic của dự án {project}.",
+                    changes=[],
+                    next_actions=[],
+                )
+
+        if component:
+            if hasattr(self.gateway, "components"):
+                comps = self.gateway.components(project)
+                if component not in comps:
+                    comps_str = ", ".join(comps) if comps else "không có"
+                    return ActionResult(
+                        ok=False,
+                        message=(
+                            f"Chưa có Component {component} trong {project}. "
+                            f"Chọn một Component có sẵn: {comps_str} hoặc "
+                            "tạo mới bằng eggs_create_component."
+                        ),
+                        changes=[],
+                        next_actions=[],
+                    )
+
+        type_names = {
+            "bug": "Bug stand-alone",
+            "story": "Story",
+            "adhoc": "Ad-hoc Task",
+        }
+        type_display = type_names.get(issue_type, issue_type)
+
+        if dry_run:
+            changes = [
+                f"Loại: {type_display}",
+                f"Summary: {summary.strip()}",
+                f"Assignee: {effective_assignee or 'Chưa gán'}",
+                f"QC Owner: {effective_qc_owner or 'Không có'}",
+                f"Epic: {epic or 'Không có'}",
+            ]
+            if related_to:
+                changes.append(f"Link: Relates tới {related_to}")
+            return ActionResult(
+                ok=True,
+                message=f"[Dry-run] Sẽ tạo {type_display} trong {project}",
+                changes=changes,
+                next_actions=[],
+            )
+
+        existing_key = self._find_recently_created_issue(
+            project, summary.strip(), creator
+        )
+        if existing_key:
+            created_key = existing_key
+        else:
+            raw_type_name = self.cfg.issue_types.get(issue_type, [type_display])[0]
+            fields: dict[str, Any] = {
+                "project": {"key": project},
+                "issuetype": {"name": raw_type_name},
+                "summary": summary.strip(),
+            }
+            if description:
+                fields["description"] = description
+            if effective_assignee:
+                fields["assignee"] = {"name": effective_assignee}
+            if priority:
+                fields["priority"] = {"name": priority}
+            if component:
+                fields["components"] = [{"name": component}]
+            if epic and self.cfg.fields.get("epic_link"):
+                fields[self.cfg.fields["epic_link"]] = epic
+            if effective_qc_owner and self.cfg.fields.get("qc_owner"):
+                fields[self.cfg.fields["qc_owner"]] = {"name": effective_qc_owner}
+
+            created_key = self.gateway.create_issue(fields)
+
+        if related_to:
+            relates_link_type = self.cfg.link_types.get("relates", "Relates")
+            try:
+                self.gateway.link(
+                    relates_link_type,
+                    inward_key=created_key,
+                    outward_key=related_to,
+                )
+            except Exception as exc:  # noqa: BLE001
+                return ActionResult(
+                    ok=False,
+                    message=(
+                        f"Đã tạo {created_key} nhưng chưa tạo được liên kết "
+                        f"Relates tới {related_to}: {exc}"
+                    ),
+                    changes=[f"Tạo {created_key}"],
+                    next_actions=[],
+                )
+
+        changes = [f"Đã tạo {type_display} {created_key}"]
+        if related_to:
+            changes.append(f"Liên kết Relates tới {related_to}")
+
+        return ActionResult(
+            ok=True,
+            message=f"Đã tạo thành công {created_key}.",
             changes=changes,
             next_actions=[],
         )

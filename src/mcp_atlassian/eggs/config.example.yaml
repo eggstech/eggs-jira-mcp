@@ -37,6 +37,19 @@ roles:
   dev:
     - "Developers"
 
+create_roles:
+  bug:
+    - qc
+    - lead_ba
+    - dev
+  story:
+    - qc
+    - lead_ba
+  adhoc:
+    - qc
+    - lead_ba
+    - dev
+
 link_types:
   interrupts: "Interrupts"
   causes: "Causes"

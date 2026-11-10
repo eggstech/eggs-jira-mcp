@@ -49,6 +49,18 @@ INTENTS: list[Intent] = [
         required=[],
     ),
     Intent(
+        name="create_issue",
+        roles=frozenset({"qc", "lead_ba", "dev"}),
+        examples=[
+            "tạo bug",
+            "tạo 3 bug liên quan EGGSBOX-38",
+            "tạo story",
+            "tạo task ad-hoc",
+        ],
+        tool="eggs_create_issue",
+        required=["project", "issue_type", "summary"],
+    ),
+    Intent(
         name="log_work",
         roles=frozenset({"any"}),
         examples=["hôm qua làm 4h RFID-128", "ghi 2h vào RFID-10", "log work 1d"],

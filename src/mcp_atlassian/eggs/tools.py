@@ -86,6 +86,7 @@ WRITE_EGGS_TOOL_NAMES = frozenset(
         "eggs_triage_open",
         "eggs_triage_close",
         "eggs_plan_apply",
+        "eggs_create_issue",
     }
 )
 
@@ -302,6 +303,8 @@ def action_result_to_dict(res: ActionResult) -> dict[str, Any]:
     }
     if res.code is not None:
         out["code"] = res.code
+    if res.missing is not None:
+        out["missing"] = res.missing
     return out
 
 
@@ -1816,3 +1819,111 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
             "plan_yaml": dump_plan(res.plan),
         }
         return json.dumps(out, indent=2, ensure_ascii=False)
+
+    @server.tool(tags=write_tags, annotations={"title": "EGGS Create Issue"})
+    @eggs_check_write_access
+    async def eggs_create_issue(
+        ctx: Context,
+        project: Annotated[str, Field(description="Mã dự án (ví dụ 'RFID')")],
+        issue_type: Annotated[
+            str,
+            Field(description="Loại issue: 'bug', 'story', hoặc 'adhoc'"),
+        ],
+        summary: Annotated[str, Field(description="Tiêu đề tóm tắt issue")],
+        description: Annotated[
+            str | None, Field(description="Mô tả chi tiết", default=None)
+        ] = None,
+        related_to: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "Mã issue liên quan cùng dự án để tạo liên kết Relates "
+                    "(assignee mặc định theo issue này nếu không chỉ định)"
+                ),
+                default=None,
+            ),
+        ] = None,
+        epic: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "Mã Epic gắn kèm (bắt buộc với Story, tùy chọn với Ad-hoc Task)"
+                ),
+                default=None,
+            ),
+        ] = None,
+        component: Annotated[
+            str | None,
+            Field(
+                description="Tên Component (Actor) có sẵn trong dự án",
+                default=None,
+            ),
+        ] = None,
+        assignee: Annotated[
+            str | None,
+            Field(
+                description="Username người nhận việc",
+                default=None,
+            ),
+        ] = None,
+        qc_owner: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "Username QC Owner (mặc định là người tạo nếu có vai trò qc, "
+                    "bắt buộc với Bug stand-alone)"
+                ),
+                default=None,
+            ),
+        ] = None,
+        priority: Annotated[
+            str | None,
+            Field(description="Độ ưu tiên của issue", default=None),
+        ] = None,
+        parent: Annotated[
+            str | None,
+            Field(
+                description="Mã Story hoặc Ad-hoc Task cha (dành riêng cho bug_sub)",
+                default=None,
+            ),
+        ] = None,
+        *,
+        dry_run: Annotated[
+            bool, Field(description="Chạy thử nghiệm không ghi", default=False)
+        ] = False,
+    ) -> str:
+        """Tạo mới Bug stand-alone, Story hoặc Ad-hoc Task trong dự án."""
+        cfg = await asyncio.to_thread(load_config)
+        user_gw = await get_user_gateway(ctx, write=True)
+        roles_gw = await asyncio.to_thread(get_roles_reader, cfg)
+        ident = await asyncio.to_thread(
+            resolve_identity, user_gw, roles_gw, cfg, _identity_cache
+        )
+
+        cal = WorkCalendar(cfg.holidays)
+        actions = Actions(user_gw, cfg, cal)
+        creator_roles = ident.roles.get(project.upper(), set())
+        res = await asyncio.to_thread(
+            actions.create_issue,
+            project=project.upper(),
+            issue_type=issue_type,
+            summary=summary,
+            description=description,
+            related_to=related_to,
+            epic=epic,
+            component=component,
+            assignee=assignee,
+            qc_owner=qc_owner,
+            priority=priority,
+            creator=ident.username,
+            creator_roles=creator_roles,
+            is_lead=ident.is_lead,
+            parent=parent,
+            dry_run=dry_run,
+        )
+        if res.ok and not dry_run:
+            now = datetime.now(ZoneInfo(cfg.timezone))
+            res = await asyncio.to_thread(
+                _attach_next_agenda_item, res, user_gw, ident, cfg, cal, now
+            )
+        return json.dumps(action_result_to_dict(res), indent=2, ensure_ascii=False)
