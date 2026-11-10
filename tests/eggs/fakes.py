@@ -56,6 +56,10 @@ class FakeGateway(JiraGateway):
         self.links: list[tuple[str, str, str]] = []
         self.calls: list[tuple[str, tuple, dict[str, Any]]] = []
         self._next_id = 1000
+        self.worklogs_map: dict[str, list[dict]] = {}
+        self.comments_map: dict[str, list[dict]] = {}
+        self.changelogs_map: dict[str, list[dict]] = {}
+        self.jql_queries: list[str] = []
 
     def _record(self, name: str, *args: Any, **kwargs: Any) -> None:
         self.calls.append((name, args, kwargs))
@@ -65,6 +69,11 @@ class FakeGateway(JiraGateway):
         jql: str,
         fields: list[str],
         expand_changelog: bool = False,  # noqa: FBT001, FBT002
+        start_at: int = 0,
+        max_results: int | None = None,
+        *,
+        startAt: int | None = None,  # noqa: N803
+        maxResults: int | None = None,  # noqa: N803
     ) -> list[dict]:
         """Search in-memory issues.
 
@@ -72,19 +81,34 @@ class FakeGateway(JiraGateway):
             Ignores JQL unless a `search_filter: Callable[[str, dict], bool]` is passed to __init__.
         """
         self._record("search", jql, fields, expand_changelog=expand_changelog)
+        self.jql_queries.append(jql)
+        if startAt is not None:
+            start_at = startAt
+        if maxResults is not None:
+            max_results = maxResults
+
         link_match = re.search(
             r'issue in linkedIssues\("([^"]+)",\s*"is blocked by"\)', jql
         )
         if link_match:
             target_key = link_match.group(1)
-            return [
+            results = [
                 self.issues[inward]
                 for (_l_type, inward, outward) in self.links
                 if outward == target_key and inward in self.issues
             ]
-        if self.search_filter is not None:
-            return [iss for iss in self.issues.values() if self.search_filter(jql, iss)]
-        return list(self.issues.values())
+        elif self.search_filter is not None:
+            results = [
+                iss for iss in self.issues.values() if self.search_filter(jql, iss)
+            ]
+        else:
+            results = list(self.issues.values())
+
+        if max_results is not None:
+            return results[start_at : start_at + max_results]
+        if start_at > 0:
+            return results[start_at:]
+        return results
 
     def get_issue(self, key: str) -> dict:
         self._record("get_issue", key)
@@ -308,6 +332,8 @@ class FakeGateway(JiraGateway):
 
     def get_worklogs(self, key: str) -> list[dict]:
         self._record("get_worklogs", key)
+        if self.worklogs_map and key in self.worklogs_map:
+            return list(self.worklogs_map[key])
         wls: list[dict[str, Any]] = []
         if key in self.issues:
             wls = list(
@@ -327,6 +353,27 @@ class FakeGateway(JiraGateway):
                         }
                     )
         return wls
+
+    def get_comments(self, key: str) -> list[dict]:
+        self._record("get_comments", key)
+        if self.comments_map and key in self.comments_map:
+            return list(self.comments_map[key])
+        if key in self.issues:
+            return list(
+                self.issues[key]
+                .get("fields", {})
+                .get("comment", {})
+                .get("comments", [])
+            )
+        return []
+
+    def get_changelog(self, key: str) -> list[dict]:
+        self._record("get_changelog", key)
+        if self.changelogs_map and key in self.changelogs_map:
+            return list(self.changelogs_map[key])
+        if key in self.issues:
+            return list(self.issues[key].get("changelog", {}).get("histories", []))
+        return []
 
     def user_exists(self, username: str) -> bool:
         self._record("user_exists", username)

@@ -103,3 +103,30 @@ def test_fake_gateway_search_filter():
     res = fake.search("dummy jql", fields=["key"])
     assert len(res) == 1
     assert res[0]["key"] == "P-2"
+
+
+def test_fake_gateway_pagination_and_jql_recording():
+    issues = {
+        f"P-{i}": {"key": f"P-{i}", "fields": {"summary": f"Issue {i}"}}
+        for i in range(1, 6)
+    }
+    fake = FakeGateway(issues=issues)
+
+    # Test recording JQL
+    page1 = fake.search("project = P", fields=["key"], startAt=0, maxResults=2)
+    assert [x["key"] for x in page1] == ["P-1", "P-2"]
+
+    page2 = fake.search(
+        "project = P ORDER BY id", fields=["key"], startAt=2, maxResults=2
+    )
+    assert [x["key"] for x in page2] == ["P-3", "P-4"]
+
+    page3 = fake.search("project = P FINAL", fields=["key"], startAt=4, maxResults=2)
+    assert [x["key"] for x in page3] == ["P-5"]
+
+    assert hasattr(fake, "jql_queries")
+    assert fake.jql_queries == [
+        "project = P",
+        "project = P ORDER BY id",
+        "project = P FINAL",
+    ]

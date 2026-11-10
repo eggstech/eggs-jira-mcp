@@ -102,6 +102,7 @@ projects:
     assert date(2026, 1, 1) in cfg.holidays
     assert cfg.thresholds.qc_flow_buffer == 1
     assert cfg.thresholds.unscheduled_window == 5
+    assert cfg.thresholds.unfreeze_window_days == 4
 
 
 @pytest.mark.parametrize(
@@ -365,6 +366,41 @@ projects:
     cfg = load_config(None)
     assert cfg.lead_user == "cuong.huynh"
     assert "PROJ" in cfg.projects
+
+
+def test_load_config_logs_warning_for_non_standard_link_types(
+    tmp_path, caplog: pytest.LogCaptureFixture
+):
+    import logging
+
+    yaml_content = """
+lead_user: cuong.huynh
+jira_url: https://jira.eggstech.io.vn
+link_types:
+  interrupts: "Interrupts"
+  causes: "causes"  # Lowercase / non-standard!
+  relates: "Relates"
+  duplicates: "Duplicate"
+projects:
+  PROJ:
+    default_lead_ba: cuong.huynh
+    triage_owner: cuong.huynh
+"""
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(yaml_content)
+
+    with caplog.at_level(logging.WARNING):
+        cfg = load_config(str(cfg_file))
+
+    assert cfg.link_types["causes"] == "causes"
+    warning_records = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.WARNING
+        and "link_types" in r.message
+        and "causes" in r.message
+    ]
+    assert len(warning_records) >= 1
 
 
 def test_load_config_requires_lead_user(tmp_path):

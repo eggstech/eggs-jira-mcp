@@ -220,7 +220,7 @@ docker compose exec guardian eggs-guardian freeze-legacy --project <PROJECT_KEY>
 docker compose exec guardian eggs-guardian freeze-legacy --project <PROJECT_KEY> [--days 30]
 ```
 
-Guardian sẽ bỏ qua việc tính cờ sức khỏe cho các issue có nhãn `legacy-frozen`. Khi có người làm việc lại trên issue (có worklog, comment hoặc chuyển trạng thái phát sinh sau thời điểm gắn nhãn), hệ thống sẽ **tự động gỡ nhãn `legacy-frozen`** trong lần đánh giá kế tiếp mà không cần thao tác thủ công.
+Guardian sẽ bỏ qua việc tính cờ sức khỏe cho các issue có nhãn `legacy-frozen`. Khi có người làm việc lại trên issue (có worklog, comment hoặc chuyển trạng thái phát sinh sau thời điểm gắn nhãn), hệ thống sẽ **tự động gỡ nhãn `legacy-frozen`** trong lần đánh giá kế tiếp mà không cần thao tác thủ công. Cấu hình cửa sổ quét unfreeze qua `thresholds.unfreeze_window_days` (mặc định: 4 ngày).
 
 ---
 

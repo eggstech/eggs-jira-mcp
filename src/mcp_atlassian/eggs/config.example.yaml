@@ -26,6 +26,7 @@ thresholds:
   qc_flow_buffer: 1
   triage_working_days: 1
   end_day_hour: 17
+  unfreeze_window_days: 4
 
 roles:
   lead_ba:

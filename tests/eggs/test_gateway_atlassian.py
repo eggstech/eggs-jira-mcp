@@ -75,6 +75,32 @@ def test_get_worklogs(mock_client):
     mock_client.get.assert_called_once_with("rest/api/2/issue/PROJ-123/worklog")
 
 
+def test_get_comments(mock_client):
+    gateway = AtlassianGateway(mock_client)
+    mock_client.get.return_value = {
+        "total": 1,
+        "comments": [{"id": "c1", "body": "hello"}],
+    }
+    comments = gateway.get_comments("PROJ-123")
+    assert comments == [{"id": "c1", "body": "hello"}]
+    mock_client.get.assert_called_once_with("rest/api/2/issue/PROJ-123/comment")
+
+
+def test_get_changelog(mock_client):
+    gateway = AtlassianGateway(mock_client)
+    mock_client.get.return_value = {
+        "changelog": {
+            "total": 1,
+            "histories": [{"id": "h1", "items": [{"field": "status"}]}],
+        }
+    }
+    changelog = gateway.get_changelog("PROJ-123")
+    assert changelog == [{"id": "h1", "items": [{"field": "status"}]}]
+    mock_client.get.assert_called_once_with(
+        "rest/api/2/issue/PROJ-123?expand=changelog"
+    )
+
+
 def test_update_fields_default_notify_users(mock_client):
     gateway = AtlassianGateway(mock_client)
     gateway.update_fields("PROJ-123", {"summary": "Updated"})

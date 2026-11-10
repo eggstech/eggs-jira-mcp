@@ -480,6 +480,24 @@ class AtlassianGateway(JiraGateway):
             return list(res)
         return []
 
+    def get_comments(self, key: str) -> list[dict]:
+        """Fetch all comments for an issue via GET /rest/api/2/issue/{key}/comment."""
+        res = self.client.get(f"rest/api/2/issue/{key}/comment")
+        if isinstance(res, dict):
+            return list(res.get("comments", []))
+        if isinstance(res, list):
+            return list(res)
+        return []
+
+    def get_changelog(self, key: str) -> list[dict]:
+        """Fetch full changelog histories for an issue."""
+        res = self.client.get(f"rest/api/2/issue/{key}?expand=changelog")
+        if isinstance(res, dict):
+            changelog = res.get("changelog")
+            if isinstance(changelog, dict):
+                return list(changelog.get("histories", []))
+        return []
+
     def user_exists(self, username: str) -> bool:
         """Check if user exists via GET rest/api/2/user?username=."""
         try:

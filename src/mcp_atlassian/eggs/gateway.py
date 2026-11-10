@@ -143,6 +143,14 @@ class JiraGateway(Protocol):
         """Fetch all worklogs for an issue via GET /rest/api/2/issue/{key}/worklog."""
         ...
 
+    def get_comments(self, key: str) -> list[dict]:
+        """Fetch all comments for an issue via GET /rest/api/2/issue/{key}/comment."""
+        ...
+
+    def get_changelog(self, key: str) -> list[dict]:
+        """Fetch full changelog histories for an issue."""
+        ...
+
     def user_exists(self, username: str) -> bool:
         """Check whether a Jira user exists."""
         ...

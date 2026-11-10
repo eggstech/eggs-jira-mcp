@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import re
 from dataclasses import dataclass, field
@@ -8,6 +9,8 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_FIELDS: dict[str, str] = {
     "epic_name": "customfield_10102",
@@ -25,6 +28,7 @@ class Thresholds:
     qc_flow_buffer: int = 1
     triage_working_days: int = 1
     end_day_hour: int = 17
+    unfreeze_window_days: int = 4
 
 
 @dataclass(frozen=True)
@@ -181,6 +185,7 @@ def load_config(path: str | None = None) -> EggsConfig:
         qc_flow_buffer=thresholds_data.get("qc_flow_buffer", 1),
         triage_working_days=thresholds_data.get("triage_working_days", 1),
         end_day_hour=thresholds_data.get("end_day_hour", 17),
+        unfreeze_window_days=thresholds_data.get("unfreeze_window_days", 4),
     )
 
     # Parse holidays
@@ -207,6 +212,16 @@ def load_config(path: str | None = None) -> EggsConfig:
         msg = f"Missing required link types in 'link_types': {sorted(missing_links)}"
         raise ValueError(msg)
     link_types_data.setdefault("blocks", "Blocks")
+
+    valid_link_values = {"Blocks", "Causes", "Duplicate", "Interrupts", "Relates"}
+    for lt_key, lt_val in link_types_data.items():
+        if lt_val not in valid_link_values:
+            logger.warning(
+                "link_types['%s'] có giá trị '%s' không thuộc chuẩn: %s",
+                lt_key,
+                lt_val,
+                sorted(valid_link_values),
+            )
 
     # Parse projects
     projects_data = data.get("projects", {})
