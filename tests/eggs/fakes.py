@@ -110,9 +110,10 @@ class FakeGateway(JiraGateway):
         self,
         key: str,
         fields: dict,
-        override_screen_security: bool = False,  # noqa: FBT001, FBT002
+        *,
+        notify_users: bool = True,  # noqa: FBT001, FBT002
     ) -> None:
-        self._record("update_fields", key, fields, override_screen_security=override_screen_security)
+        self._record("update_fields", key, fields, notify_users=notify_users)
         if key in self.issues:
             issue_fields = self.issues[key].setdefault("fields", {})
             issue_fields.update(fields)

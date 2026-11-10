@@ -117,14 +117,10 @@ class AtlassianGateway(JiraGateway):
         key: str,
         fields: dict,
         *,
-        override_screen_security: bool = False,
+        notify_users: bool = True,
     ) -> None:
         """Update fields on an issue."""
-        params = (
-            {"overrideScreenSecurity": "true", "notifyUsers": "false"}
-            if override_screen_security
-            else None
-        )
+        params = {"notifyUsers": "false"} if not notify_users else None
         self.client.put(
             f"rest/api/2/issue/{key}",
             data={"fields": fields},

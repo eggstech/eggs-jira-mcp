@@ -18,14 +18,14 @@ def test_atlassian_gateway_implements_protocol(mock_client):
     assert isinstance(gateway, JiraGateway)
 
 
-def test_update_fields_with_override_screen_security(mock_client):
+def test_update_fields_with_notify_users_false(mock_client):
     gateway = AtlassianGateway(mock_client)
-    gateway.update_fields("PROJ-123", {"customfield_10108": "2026-11-20"}, override_screen_security=True)
+    gateway.update_fields("PROJ-123", {"customfield_10108": "2026-11-20"}, notify_users=False)
 
     mock_client.put.assert_called_once_with(
         "rest/api/2/issue/PROJ-123",
         data={"fields": {"customfield_10108": "2026-11-20"}},
-        params={"overrideScreenSecurity": "true", "notifyUsers": "false"},
+        params={"notifyUsers": "false"},
     )
 
 
@@ -52,7 +52,7 @@ def test_get_worklogs(mock_client):
     mock_client.get.assert_called_once_with("rest/api/2/issue/PROJ-123/worklog")
 
 
-def test_update_fields_without_override(mock_client):
+def test_update_fields_default_notify_users(mock_client):
     gateway = AtlassianGateway(mock_client)
     gateway.update_fields("PROJ-123", {"summary": "Updated"})
 

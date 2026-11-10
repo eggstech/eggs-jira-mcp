@@ -58,10 +58,10 @@ class JiraGateway(Protocol):
         key: str,
         fields: dict,
         *,
-        override_screen_security: bool = False,
+        notify_users: bool = True,
     ) -> None:
         """Update fields on an issue.
-        When override_screen_security=True, includes query params.
+        When notify_users=False, includes query param notifyUsers=false.
         """
         ...
 

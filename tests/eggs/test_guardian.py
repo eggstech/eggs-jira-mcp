@@ -103,7 +103,7 @@ def cal(cfg: EggsConfig) -> WorkCalendar:
     return WorkCalendar(cfg.holidays)
 
 
-def test_evaluate_writes_only_guardian_fields_with_override(cfg: EggsConfig, cal: WorkCalendar):
+def test_evaluate_writes_only_guardian_fields(cfg: EggsConfig, cal: WorkCalendar):
     # Overdue task -> health flag OVERDUE, level 0
     issues = {
         "RFID-1": {
@@ -128,7 +128,7 @@ def test_evaluate_writes_only_guardian_fields_with_override(cfg: EggsConfig, cal
     call_name, args, kwargs = update_calls[0]
     key, fields_payload = args[0], args[1]
     assert key == "RFID-1"
-    assert kwargs.get("override_screen_security") is True
+    assert kwargs.get("notify_users") is False
 
     # Exact guardian field IDs allowed
     guardian_field_ids = {
@@ -221,8 +221,107 @@ def test_cleared_flag_adds_comment(cfg: EggsConfig, cal: WorkCalendar):
     assert payload[cfg.fields["health_flags"]] is None
 
 
-def test_evaluate_update_fields_error_adds_no_comment(cfg: EggsConfig, cal: WorkCalendar):
-    # If update_fields raises, NO comment must be added
+def test_evaluate_skips_resolved_issues_zero_gateway_writes(cfg: EggsConfig, cal: WorkCalendar):
+    # Done and Cancelled issues that still carry flags -> zero gateway writes (no update_fields, no add_comment)
+    issues = {
+        "RFID-DONE": {
+            "key": "RFID-DONE",
+            "fields": {
+                "project": {"key": "RFID"},
+                "issuetype": {"name": "Dev Task", "subtask": True},
+                "status": {"name": "Done"},
+                "status_category_change_date": "2026-11-10T08:00:00.000+0700",
+                "assignee": {"name": "alice"},
+                "customfield_10108": "2026-11-18",
+                "customfield_10109": "2026-11-19",
+                "customfield_10700": "2026-11-19",
+                "customfield_10712": [{"value": "STALE"}],  # carries flags
+                "customfield_10713": "2026-11-16",
+                "customfield_10714": 0,
+                "customfield_10715": {"name": "alice"},
+            },
+        },
+        "RFID-CANCELLED": {
+            "key": "RFID-CANCELLED",
+            "fields": {
+                "project": {"key": "RFID"},
+                "issuetype": {"name": "Dev Task", "subtask": True},
+                "status": {"name": "Cancelled"},
+                "status_category_change_date": "2026-11-10T08:00:00.000+0700",
+                "assignee": {"name": "alice"},
+                "customfield_10108": "2026-11-18",
+                "customfield_10109": "2026-11-19",
+                "customfield_10700": "2026-11-19",
+                "customfield_10712": [{"value": "OVERDUE"}],  # carries flags
+                "customfield_10713": "2026-11-16",
+                "customfield_10714": 0,
+                "customfield_10715": {"name": "alice"},
+            },
+        },
+    }
+    gw = FakeGateway(issues=issues)
+    res = evaluate(gw, cfg, NOW_WED, cal)
+
+    write_calls = [c for c in gw.calls if c[0] in ("update_fields", "add_comment")]
+    assert len(write_calls) == 0
+    assert len(res) == 0
+
+
+def test_evaluate_rewrites_manually_tampered_health_flags_to_computed_value(
+    cfg: EggsConfig, cal: WorkCalendar
+):
+    # A user manually set Health Flags to OVERDUE on an issue whose snapshot
+    # does NOT justify it (active dev task with future planned_end and recent worklog).
+    # evaluate must rewrite the flags to the computed value (cleared/None).
+    issues = {
+        "RFID-1": {
+            "key": "RFID-1",
+            "fields": {
+                "project": {"key": "RFID"},
+                "issuetype": {"name": "Dev Task", "subtask": True},
+                "status": {"name": "Dev In Progress"},
+                "status_category_change_date": "2026-11-10T08:00:00.000+0700",
+                "assignee": {"name": "alice"},
+                "customfield_10108": "2026-11-18",
+                "customfield_10109": "2026-11-20",  # future date, not overdue
+                "customfield_10700": "2026-11-20",
+                "customfield_10712": [{"value": "OVERDUE"}],  # manually set by user
+                "customfield_10713": "2026-11-16",
+                "customfield_10714": 1,
+                "customfield_10715": {"name": "alice"},
+            },
+        }
+    }
+    worklogs = [
+        Worklog(issue_key="RFID-1", author="alice", started=NOW_WED, seconds=3600),
+    ]
+    gw = FakeGateway(issues=issues, worklogs=worklogs)
+    res = evaluate(gw, cfg, NOW_WED, cal)
+
+    assert res.has_errors is False
+    assert len(res) > 0
+
+    # Health Flags must be rewritten to computed value (None / cleared)
+    update_calls = [c for c in gw.calls if c[0] == "update_fields" and c[1][0] == "RFID-1"]
+    assert len(update_calls) == 1
+    _, args, kwargs = update_calls[0]
+    payload = args[1]
+    assert payload[cfg.fields["health_flags"]] is None
+    assert payload[cfg.fields["escalation_level"]] is None
+    assert kwargs.get("notify_users") is False
+
+    # Issue state in gateway mutated to computed value
+    assert gw.issues["RFID-1"]["fields"][cfg.fields["health_flags"]] is None
+    assert gw.issues["RFID-1"]["fields"][cfg.fields["escalation_level"]] is None
+
+    # Comment recorded for cleared flag
+    comment_calls = [c for c in gw.calls if c[0] == "add_comment" and c[1][0] == "RFID-1"]
+    assert len(comment_calls) == 1
+    assert "Đã xử lý: OVERDUE" in comment_calls[0][1][1]
+
+
+def test_evaluate_update_fields_error_adds_no_comment(cfg: EggsConfig, cal: WorkCalendar, caplog):
+    # If update_fields raises, it must not stop the run: log key and error, skip comment
     issues = {
         "RFID-1": {
             "key": "RFID-1",
@@ -248,17 +347,137 @@ def test_evaluate_update_fields_error_adds_no_comment(cfg: EggsConfig, cal: Work
     gw = FakeGateway(issues=issues, worklogs=worklogs)
 
     def failing_update_fields(
-        key: str, fields: dict, *, override_screen_security: bool = False
+        key: str, fields: dict, *, notify_users: bool = True
     ) -> None:
         raise JiraError("Jira write permission denied")
 
     gw.update_fields = failing_update_fields
 
-    with pytest.raises(JiraError):
-        evaluate(gw, cfg, NOW_WED, cal)
+    with caplog.at_level(logging.ERROR):
+        res = evaluate(gw, cfg, NOW_WED, cal)
 
+    # Must NOT raise, but record error
+    assert res.has_errors is True
+    assert res.exit_code == 1
+
+    # Log only issue key and error text
+    error_logs = [rec.message for rec in caplog.records if rec.levelno >= logging.ERROR]
+    assert len(error_logs) == 1
+    assert "RFID-1" in error_logs[0]
+    assert "Jira write permission denied" in error_logs[0]
+    assert "customfield_" not in error_logs[0]
+
+    # Cleared flag comment skipped
     comment_calls = [c for c in gw.calls if c[0] == "add_comment"]
     assert len(comment_calls) == 0
+
+
+def test_evaluate_update_fields_error_continues_with_other_issues(
+    cfg: EggsConfig, cal: WorkCalendar, caplog
+):
+    issues = {
+        "RFID-FAIL": {
+            "key": "RFID-FAIL",
+            "fields": {
+                "project": {"key": "RFID"},
+                "issuetype": {"name": "Dev Task", "subtask": True},
+                "status": {"name": "Dev In Progress"},
+                "status_category_change_date": "2026-11-10T08:00:00.000+0700",
+                "assignee": {"name": "alice"},
+                "customfield_10108": "2026-11-18",
+                "customfield_10109": "2026-11-19",
+                "customfield_10700": "2026-11-19",
+                "customfield_10712": [{"value": "STALE"}],
+                "customfield_10713": "2026-11-16",
+                "customfield_10714": 0,
+                "customfield_10715": {"name": "alice"},
+            },
+        },
+        "RFID-OK": {
+            "key": "RFID-OK",
+            "fields": {
+                "project": {"key": "RFID"},
+                "issuetype": {"name": "Dev Task", "subtask": True},
+                "status": {"name": "Dev In Progress"},
+                "assignee": {"name": "bob"},
+                "customfield_10109": "2026-11-16",  # overdue
+                "customfield_10700": "2026-11-16",
+                "customfield_10712": None,
+            },
+        },
+    }
+    worklogs = [
+        Worklog(issue_key="RFID-FAIL", author="alice", started=NOW_WED, seconds=3600),
+    ]
+    gw = FakeGateway(issues=issues, worklogs=worklogs)
+    orig_update_fields = gw.update_fields
+
+    def selective_update_fields(key: str, fields: dict, *, notify_users: bool = True) -> None:
+        if key == "RFID-FAIL":
+            raise JiraError("Field customfield_10712 cannot be set")
+        orig_update_fields(key, fields, notify_users=notify_users)
+
+    gw.update_fields = selective_update_fields
+
+    with caplog.at_level(logging.ERROR):
+        res = evaluate(gw, cfg, NOW_WED, cal)
+
+    assert res.has_errors is True
+    assert res.exit_code == 1
+
+    # RFID-FAIL logged
+    error_logs = [rec.message for rec in caplog.records if rec.levelno >= logging.ERROR]
+    assert len(error_logs) == 1
+    assert "RFID-FAIL" in error_logs[0]
+    assert "Field customfield_10712 cannot be set" in error_logs[0]
+
+    # RFID-FAIL comments skipped
+    fail_comments = [c for c in gw.calls if c[0] == "add_comment" and c[1][0] == "RFID-FAIL"]
+    assert len(fail_comments) == 0
+
+    # RFID-OK update succeeded
+    ok_updates = [c for c in gw.calls if c[0] == "update_fields" and c[1][0] == "RFID-OK"]
+    assert len(ok_updates) == 1
+
+
+def test_main_evaluate_exits_1_on_write_failure(
+    cfg: EggsConfig, monkeypatch: pytest.MonkeyPatch, tmp_path, caplog
+):
+    config_file = tmp_path / "eggs.yaml"
+    config_file.write_text(yaml.safe_dump(dataclasses.asdict(cfg), allow_unicode=True))
+
+    monkeypatch.setenv("JIRA_URL", cfg.jira_url)
+    monkeypatch.setenv("EGGS_BOT_TOKEN", "dummy_token")
+    monkeypatch.setenv("EGGS_CONFIG", str(config_file))
+
+    issues = {
+        "RFID-FAIL": {
+            "key": "RFID-FAIL",
+            "fields": {
+                "project": {"key": "RFID"},
+                "issuetype": {"name": "Dev Task", "subtask": True},
+                "status": {"name": "Dev In Progress"},
+                "assignee": {"name": "bob"},
+                "customfield_10109": "2026-11-16",  # overdue
+                "customfield_10700": "2026-11-16",
+                "customfield_10712": None,
+            },
+        },
+    }
+    gw = FakeGateway(issues=issues)
+
+    def failing_update_fields(key: str, fields: dict, *, notify_users: bool = True) -> None:
+        raise JiraError("Internal Jira error")
+
+    gw.update_fields = failing_update_fields
+
+    monkeypatch.setattr("mcp_atlassian.eggs.guardian.datetime", type("MockDT", (), {
+        "now": lambda tz=None: NOW_WED,
+        "combine": datetime.combine,
+    }))
+
+    code = main(["evaluate"], gateway=gw)
+    assert code == 1
 
 
 def test_guardian_main_evaluate_logs_only_counts_no_issue_content(

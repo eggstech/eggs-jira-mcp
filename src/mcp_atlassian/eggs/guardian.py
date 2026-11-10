@@ -70,10 +70,21 @@ class EvaluationResult(list):
         changes: list[str],
         issue_count: int = 0,
         field_count: int = 0,
+        has_errors: bool = False,  # noqa: FBT001, FBT002
     ) -> None:
         super().__init__(changes)
         self.issue_count = issue_count
         self.field_count = field_count
+        self.has_errors = has_errors
+
+    @property
+    def exit_code(self) -> int:
+        return 1 if self.has_errors else 0
+
+    def __eq__(self, other: Any) -> bool:
+        if isinstance(other, int):
+            return self.exit_code == other
+        return super().__eq__(other)
 
 
 def evaluate(
@@ -85,7 +96,7 @@ def evaluate(
 ) -> EvaluationResult:
     """Evaluate health flags, escalations and forecasts, writing updates to Jira.
 
-    - Guardian writes ONLY the 7 guardian fields with override_screen_security=True.
+    - Guardian writes ONLY the 7 guardian fields with notify_users=False.
     - Adds comment [bot_user] Đã xử lý: <flag> when a flag is cleared.
     - Idempotent: writes only on change.
     - Never transitions issues.
@@ -101,9 +112,11 @@ def evaluate(
     changes: list[str] = []
     changed_issues_set: set[str] = set()
     total_fields_count = 0
+    has_errors = False
 
     for key, iss in snapshot.issues.items():
-        if iss.type is None or iss.frozen:
+        is_res = iss.is_resolved() if callable(iss.is_resolved) else iss.is_resolved
+        if iss.type is None or iss.frozen or is_res:
             continue
 
         # Desired new values
@@ -170,6 +183,7 @@ def evaluate(
                 )
 
         # Write fields FIRST
+        write_succeeded = True
         if field_changes:
             payload = issue_fields_for_write(cfg, **field_changes)
             # Strict safety check: ONLY guardian field ids written
@@ -182,24 +196,38 @@ def evaluate(
                     raise ValueError(msg)
 
             if not dry_run:
-                gateway.update_fields(key, payload, override_screen_security=True)
-            changes.append(f"{key}: updated {list(field_changes.keys())}")
-            changed_issues_set.add(key)
-            total_fields_count += len(field_changes)
+                try:
+                    gateway.update_fields(key, payload, notify_users=False)
+                except Exception as e:  # noqa: BLE001
+                    logger.error("%s: %s", key, e)
+                    has_errors = True
+                    write_succeeded = False
+
+            if write_succeeded:
+                changes.append(f"{key}: updated {list(field_changes.keys())}")
+                changed_issues_set.add(key)
+                total_fields_count += len(field_changes)
 
         # Comment on cleared flags ONLY after successful field write
-        cleared_flags = sorted(iss.health_flags - new_flags)
-        for flag in cleared_flags:
-            comment_body = f"[{cfg.bot_user}] Đã xử lý: {flag}"
-            if not dry_run:
-                gateway.add_comment(key, comment_body)
-            changes.append(f"{key}: cleared flag {flag}")
-            changed_issues_set.add(key)
+        if write_succeeded:
+            cleared_flags = sorted(iss.health_flags - new_flags)
+            for flag in cleared_flags:
+                comment_body = f"[{cfg.bot_user}] Đã xử lý: {flag}"
+                if not dry_run:
+                    try:
+                        gateway.add_comment(key, comment_body)
+                    except Exception as e:  # noqa: BLE001
+                        logger.error("%s: %s", key, e)
+                        has_errors = True
+                        continue
+                changes.append(f"{key}: cleared flag {flag}")
+                changed_issues_set.add(key)
 
     return EvaluationResult(
         changes,
         issue_count=len(changed_issues_set),
         field_count=total_fields_count,
+        has_errors=has_errors,
     )
 
 
@@ -610,6 +638,7 @@ def main(
             issue_count,
             field_count,
         )
+        return getattr(res, "exit_code", 0)
     elif args.subcommand == "report":
         return run_report(
             gw,

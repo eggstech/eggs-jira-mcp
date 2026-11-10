@@ -29,12 +29,12 @@ def test_update_fields_recorded_and_mutates():
     fake = FakeGateway(
         issues={"PROJ-1": {"key": "PROJ-1", "fields": {"summary": "Original", "customfield_10108": "2026-11-01"}}}
     )
-    fake.update_fields("PROJ-1", {"customfield_10108": "2026-11-10"}, override_screen_security=True)
+    fake.update_fields("PROJ-1", {"customfield_10108": "2026-11-10"}, notify_users=False)
 
-    # Assert record contains override_screen_security flag
+    # Assert record contains notify_users flag
     matching_calls = [
         c for c in fake.calls
-        if c[0] == "update_fields" and c[2].get("override_screen_security") is True
+        if c[0] == "update_fields" and c[2].get("notify_users") is False
     ]
     assert len(matching_calls) == 1
     assert fake.issues["PROJ-1"]["fields"]["customfield_10108"] == "2026-11-10"

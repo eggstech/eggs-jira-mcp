@@ -64,5 +64,7 @@
   `get_subtasks` and `get_worklogs` methods added to `JiraGateway` protocol, `AtlassianGateway`, and test fakes to avoid `hasattr` duck-typing checks in production code (`_has_open_bug_subtask` and `qc_pass`).
 - **Jira DC Epic Name requirement:**
   `customfield_10102` (`epic_name`) added to default fields configuration and create payload for `ensure_ops_epics` on Jira Data Center.
+- **Guardian writes through edit screen:**
+  Guardian fields live on the EGGS Edit/Story Edit screens (Jira DC rejects overrideScreenSecurity, verified 10/11/2026); writes use notifyUsers=false (eggsbot is jira-administrators); resolved issues are skipped.
 
 
