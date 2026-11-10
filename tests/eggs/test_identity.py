@@ -259,10 +259,64 @@ def test_identity_warns_when_configured_role_missing_in_project(caplog):
             "RFID": {"Developers": ["alice"], "QC": ["bob"], "Lead-BA": ["carol"]},
         },
     )
+    cache = IdentityCache()
     with caplog.at_level(logging.WARNING):
-        identity = resolve_identity(user_gw, bot_gw, cfg)
+        identity1 = resolve_identity(user_gw, bot_gw, cfg, cache)
 
-    assert identity.username == "alice"
-    assert any("Engineers" in record.message and "RFID" in record.message for record in caplog.records)
+    assert identity1.username == "alice"
+    warnings_1 = [r.message for r in caplog.records if "Engineers" in r.message and "RFID" in r.message]
+    assert len(warnings_1) == 1
+
+    # Second resolve (cache hit): no warning should be logged
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        identity2 = resolve_identity(user_gw, bot_gw, cfg, cache)
+    assert identity2.username == "alice"
+    warnings_2 = [r.message for r in caplog.records if "Engineers" in r.message and "RFID" in r.message]
+    assert len(warnings_2) == 0
+
+
+def test_identity_ignores_bot_user_case_insensitive():
+    cfg = EggsConfig(
+        lead_user="cuong.huynh",
+        jira_url="https://jira.eggstech.io.vn",
+        bot_user="eggsbot",
+        projects={
+            "RFID": ProjectConfig(key="RFID", default_lead_ba="cuong.huynh", triage_owner="cuong.huynh"),
+        },
+        roles={"lead_ba": ["Lead-BA"], "qc": ["QC"], "dev": ["Developers"]},
+    )
+    user_gw = FakeGateway(me={"name": "EggsBot", "displayName": "U Guardian"})
+    bot_gw = FakeGateway(
+        me={"name": "eggsbot", "displayName": "U Guardian"},
+        role_members={"RFID": {"Developers": ["eggsbot"]}},
+    )
+    identity = resolve_identity(user_gw, bot_gw, cfg)
+    assert identity.roles == {}
+
+
+def test_myself_failure_raises_clear_vietnamese_error():
+    import pytest
+
+    class FailingGateway(FakeGateway):
+        def myself(self) -> dict:
+            raise RuntimeError("401 Unauthorized: Invalid PAT")
+
+    cfg = EggsConfig(
+        lead_user="cuong.huynh",
+        jira_url="https://jira.eggstech.io.vn",
+        projects={
+            "RFID": ProjectConfig(key="RFID", default_lead_ba="cuong.huynh", triage_owner="cuong.huynh"),
+        },
+        roles={"lead_ba": ["Lead-BA"], "qc": ["QC"], "dev": ["Developers"]},
+    )
+    user_gw = FailingGateway()
+    bot_gw = FakeGateway(me={"name": "eggsbot", "displayName": "U Guardian"})
+
+    with pytest.raises(RuntimeError) as exc_info:
+        resolve_identity(user_gw, bot_gw, cfg)
+
+    assert str(exc_info.value) == "PAT không hợp lệ hoặc đã hết hạn — tạo PAT mới trong Jira → Profile → Personal Access Tokens"
+
 
 

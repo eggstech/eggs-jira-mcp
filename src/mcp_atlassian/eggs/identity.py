@@ -40,7 +40,7 @@ class IdentityCache:
         members, ts = self._project_roles[project]
         if self.clock() - ts < self.ttl_seconds:
             return members
-        del self._project_roles[project]
+        self._project_roles.pop(project, None)
         return None
 
     def set_project_role_members(
@@ -59,13 +59,20 @@ def resolve_identity(
     cache: IdentityCache | None = None,
 ) -> Identity:
     """Resolve the current user's Identity and roles across active projects."""
-    me = user_gateway.myself()
+    try:
+        me = user_gateway.myself()
+    except Exception as e:
+        raise RuntimeError(
+            "PAT không hợp lệ hoặc đã hết hạn — tạo PAT mới trong Jira → Profile"
+            " → Personal Access Tokens"
+        ) from e
+
     username = me.get("name") or me.get("key") or ""
     display_name = me.get("displayName") or username
     is_lead = username.strip().lower() == cfg.lead_user.strip().lower()
 
     # Bot user is ignored by identity
-    if username == cfg.bot_user:
+    if username.strip().lower() == cfg.bot_user.strip().lower():
         return Identity(
             username=username,
             display_name=display_name,
@@ -109,15 +116,15 @@ def resolve_identity(
             if cache is not None:
                 cache.set_project_role_members(proj_key, members)
 
-        # Log warning when a configured role name does not exist in project
-        norm_members_keys = {k.strip().lower() for k in members.keys()}
-        for target_name in configured_role_names:
-            if target_name.strip().lower() not in norm_members_keys:
-                logger.warning(
-                    "Configured role %r does not exist in project %s",
-                    target_name,
-                    proj_key,
-                )
+            # Log warning when a configured role name does not exist in project
+            norm_members_keys = {k.strip().lower() for k in members.keys()}
+            for target_name in configured_role_names:
+                if target_name.strip().lower() not in norm_members_keys:
+                    logger.warning(
+                        "Configured role %r does not exist in project %s",
+                        target_name,
+                        proj_key,
+                    )
 
         user_proj_roles: set[str] = set()
         for logical_role, jira_role_names in cfg.roles.items():

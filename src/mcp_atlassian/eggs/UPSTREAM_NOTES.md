@@ -55,4 +55,6 @@
   When checking if an unresolved work item has its planned end date within `interrupt_window` working days, overdue items (`planned_end < today`) return 0 working days from `cal.working_days_between(today, y.planned_end)` and thus count as within the window.
 - **Resolved owned dev_tasks count for exemption:**
   In `detect_interruptions`, the assignee's owned dev_tasks under a parent Story are indexed without filtering out resolved tasks, so an assignee whose dev_task is already Done is still exempt from having their `bug_sub` under that same Story flagged as an interruption.
+- **Reschedule action parameter aliases:**
+  `Actions.request_reschedule` gained `proposed_end` as an alias alongside `new_end`. `Actions.flow_reschedule` gained `key` and `proposed_due` as aliases alongside `story_key` and `new_due`. Old parameter names are preserved for backwards compatibility.
 
