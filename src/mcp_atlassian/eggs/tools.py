@@ -226,13 +226,16 @@ def intent_to_dict(intent: Intent) -> dict[str, Any]:
 
 
 def action_result_to_dict(res: ActionResult) -> dict[str, Any]:
-    return {
+    out: dict[str, Any] = {
         "ok": res.ok,
         "message": res.message,
         "changes": res.changes,
         "next_actions": res.next_actions,
         "next": agenda_item_to_dict(res.next) if res.next else None,
     }
+    if res.code is not None:
+        out["code"] = res.code
+    return out
 
 
 def _check_project_role(

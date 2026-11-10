@@ -1250,3 +1250,19 @@ class TestEggsToolBehavior:
             mock_submit.assert_called_once_with(
                 key="RFID-10", note="", qc_owner="tuan.bui", dry_run=False
             )
+
+
+def test_action_result_to_dict_code_field():
+    from mcp_atlassian.eggs.tools import action_result_to_dict
+
+    res_without_code = ActionResult(
+        ok=False, message="err", changes=[], next_actions=[]
+    )
+    d1 = action_result_to_dict(res_without_code)
+    assert "code" not in d1
+
+    res_with_code = ActionResult(
+        ok=False, message="err", changes=[], next_actions=[], code="missing_qc_owner"
+    )
+    d2 = action_result_to_dict(res_with_code)
+    assert d2.get("code") == "missing_qc_owner"

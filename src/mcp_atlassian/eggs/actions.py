@@ -20,6 +20,7 @@ class ActionResult:
     changes: list[str]
     next_actions: list[str]
     next: Any = None
+    code: str | None = None
 
 
 @dataclass(frozen=True)
@@ -469,6 +470,7 @@ class Actions:
                     message=message,
                     changes=[],
                     next_actions=next_acts,
+                    code="missing_qc_owner",
                 )
             if qc_owner:
                 qc_field_id = self.cfg.fields.get("qc_owner")
@@ -912,19 +914,10 @@ class Actions:
         missing_qc_types: dict[str, str] = {}
         fatal_failures: list[str] = []
 
-        for e, (k, r) in zip(entries, sub_results, strict=True):
+        for k, r in sub_results:
             if not r.ok:
-                is_missing_qc = False
-                issue_type = ""
-                if e.move_to == "ready_for_qc":
-                    try:
-                        iss = self._get_issue(e.key)
-                    except (JiraError, KeyError, ValueError):
-                        iss = None
-                    if iss and iss.type in ("adhoc", "bug") and not iss.qc_owner:
-                        is_missing_qc = True
-                        issue_type = iss.type
-                if is_missing_qc:
+                if r.code == "missing_qc_owner":
+                    issue_type = "bug" if "Bug stand-alone" in r.message else "adhoc"
                     missing_qc_types[k] = issue_type
                 else:
                     fatal_failures.append(f"{k}: {r.message}")
@@ -1301,6 +1294,8 @@ class Actions:
         try:
             err = self._do_transition(key, matched, comment=reason)
         except JiraError as exc:
+            # Intentionally catch all JiraErrors (e.g. non-400) so transition errors
+            # return ok=False on every path instead of raising.
             err = ActionResult(
                 ok=False,
                 message=str(exc) or "Lỗi từ Jira",
@@ -1309,15 +1304,20 @@ class Actions:
             )
 
         if err:
+            notes: list[str] = []
+            if time_spent:
+                notes.append(f"Đã log {time_spent} trên {key}.")
             if created_bugs:
                 bug_list = ", ".join(created_bugs)
+                notes.append(
+                    f"Các Bug sub-task sau đã được tạo: {bug_list}. "
+                    "Bạn có thể huỷ hoặc tái sử dụng chúng."
+                )
+            if notes:
+                note_str = " ".join(notes)
                 return ActionResult(
                     ok=False,
-                    message=(
-                        f"{err.message}\n"
-                        f"Lưu ý: Các Bug sub-task sau đã được tạo: {bug_list}. "
-                        "Bạn có thể huỷ hoặc tái sử dụng chúng."
-                    ),
+                    message=f"{err.message}\nLưu ý: {note_str}",
                     changes=err.changes,
                     next_actions=err.next_actions,
                 )
@@ -2174,6 +2174,10 @@ class Actions:
                 if self.cfg.fields.get("qc_owner"):
                     if qc_owner_user:
                         changes.append(f"QC Owner: {qc_owner_user}")
+                    else:
+                        changes.append(
+                            "Không xác định được QC Owner: Dev sẽ chọn khi Submit QC"
+                        )
                 else:
                     changes.append("Không có cấu hình fields.qc_owner")
         elif link_key:

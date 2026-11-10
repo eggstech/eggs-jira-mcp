@@ -3778,3 +3778,187 @@ def test_transition_jira_400_error_messages(cfg, cal):
     assert res.ok is False
     assert "Lý do không hợp lệ." in res.message
     assert "Trường này là bắt buộc." in res.message
+
+
+def test_end_day_adhoc_with_open_subtasks_and_no_qc_owner_reports_open_subtasks(
+    cfg, cal
+):
+    raw_adhoc = {
+        "key": "HMKPOS-50",
+        "fields": {
+            "summary": "Tech adhoc",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Ad-hoc Task", "subtask": False},
+            "status": {"name": "Dev In Progress"},
+            "assignee": {"name": "dev.user"},
+        },
+    }
+    raw_sub = {
+        "key": "HMKPOS-51",
+        "fields": {
+            "summary": "Dev task for adhoc",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Dev Task", "subtask": True},
+            "status": {"name": "Dev In Progress"},
+            "parent": {
+                "key": "HMKPOS-50",
+                "fields": {"issuetype": {"name": "Ad-hoc Task", "subtask": False}},
+            },
+        },
+    }
+    gw = FakeGateway(
+        issues={"HMKPOS-50": raw_adhoc, "HMKPOS-51": raw_sub},
+        transitions={"HMKPOS-50": ["Submit QC", "Done"]},
+    )
+    actions = _make_actions(gw, cfg, cal)
+    entries = [
+        EndDayEntry(
+            key="HMKPOS-50",
+            time_spent="1h",
+            note="Done adhoc",
+            move_to="ready_for_qc",
+        ),
+    ]
+    res = actions.end_day(entries)
+    assert res.ok is False
+    assert "sub-task chưa hoàn thành" in res.message
+    assert "HMKPOS-51" in res.message
+    assert "cần có QC Owner" not in res.message
+
+
+def test_submit_qc_sets_code_missing_qc_owner(cfg, cal):
+    raw_adhoc = {
+        "key": "HMKPOS-50",
+        "fields": {
+            "summary": "Tech adhoc",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Ad-hoc Task", "subtask": False},
+            "status": {"name": "Dev In Progress"},
+            "assignee": {"name": "dev.user"},
+        },
+    }
+    raw_bug = {
+        "key": "HMKPOS-80",
+        "fields": {
+            "summary": "Prod bug",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Bug", "subtask": False},
+            "status": {"name": "Dev In Progress"},
+            "assignee": {"name": "dev.user"},
+        },
+    }
+    gw = FakeGateway(
+        issues={"HMKPOS-50": raw_adhoc, "HMKPOS-80": raw_bug},
+        transitions={"HMKPOS-50": ["Submit QC"], "HMKPOS-80": ["Submit QC"]},
+    )
+    actions = _make_actions(gw, cfg, cal)
+    res_adhoc = actions.submit_qc("HMKPOS-50")
+    assert res_adhoc.ok is False
+    assert res_adhoc.code == "missing_qc_owner"
+
+    res_bug = actions.submit_qc("HMKPOS-80")
+    assert res_bug.ok is False
+    assert res_bug.code == "missing_qc_owner"
+
+
+def test_triage_close_bug_production_no_qc_owner_determined_adds_dev_will_pick_note(
+    cfg, cal
+):
+    ops_epic = {
+        "key": "HMKPOS-OPS",
+        "fields": {
+            "summary": cfg.ops_epic_summary.format(month=TODAY.month, year=TODAY.year),
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Epic", "subtask": False},
+            "status": {"name": "Dev In Progress"},
+        },
+    }
+    raw_report = {
+        "key": "HMKPOS-REP1",
+        "fields": {
+            "summary": "Prod login failure",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "User Report", "subtask": False},
+            "status": {"name": "Analyzing"},
+            "assignee": None,
+        },
+    }
+    cfg_no_triage_owner = replace(
+        cfg,
+        projects={k: replace(v, triage_owner=None) for k, v in cfg.projects.items()},
+    )
+    gateway = FakeGateway(
+        issues={"HMKPOS-OPS": ops_epic, "HMKPOS-REP1": raw_report},
+        transitions={"HMKPOS-REP1": ["Close Report"]},
+    )
+    actions = _make_actions(gateway, cfg_no_triage_owner, cal)
+    expected_line = "Không xác định được QC Owner: Dev sẽ chọn khi Submit QC"
+    res_dry = actions.triage_close(
+        key="HMKPOS-REP1",
+        verdict="bug",
+        note="Production hotfix needed",
+        time_spent="1h",
+        dry_run=True,
+    )
+    assert res_dry.ok is True
+    assert expected_line in res_dry.changes
+
+    res_live = actions.triage_close(
+        key="HMKPOS-REP1",
+        verdict="bug",
+        note="Production hotfix needed",
+        time_spent="1h",
+        dry_run=False,
+    )
+    assert res_live.ok is True
+    assert expected_line in res_live.changes
+
+
+def test_qc_fail_non_400_jira_error_without_bugs_returns_not_ok(cfg, cal):
+    data = _base_fixtures(cfg)
+    data["issues"]["HMKPOS-101"]["fields"]["status"]["name"] = "Testing"
+    gw = FakeGateway(
+        issues=data["issues"],
+        transitions=data["transitions"],
+        errors_on_transition={
+            ("HMKPOS-101", "QC Fail"): JiraError(
+                "Internal Server Error",
+                status_code=500,
+            )
+        },
+        user="qc_user",
+    )
+    actions = _make_actions(gw, cfg, cal)
+    res = actions.qc_fail("HMKPOS-101", reason="Failed QC")
+    assert res.ok is False
+    assert "Internal Server Error" in res.message
+
+
+def test_qc_fail_transition_fails_after_worklog_reports_time_logged(cfg, cal):
+    data = _base_fixtures(cfg)
+    data["issues"]["HMKPOS-100"]["fields"]["status"]["name"] = "Test In Progress"
+    gw = FakeGateway(
+        issues=data["issues"],
+        transitions=data["transitions"],
+        errors_on_transition={
+            ("HMKPOS-100", "QC Fail"): JiraError(
+                "Transition failed",
+                status_code=400,
+                error_messages=["Validation failed."],
+            )
+        },
+        user="qc_user",
+    )
+    actions = _make_actions(gw, cfg, cal)
+    res = actions.qc_fail(
+        "HMKPOS-100",
+        reason="Found broken UI",
+        bugs=["Fix checkout button"],
+        time_spent="1h",
+    )
+    assert res.ok is False
+    wl_calls = [c for c in gw.calls if c[0] == "add_worklog"]
+    assert len(wl_calls) == 1
+    assert wl_calls[0][1][:2] == ("HMKPOS-100", "1h")
+    assert "Đã log 1h trên HMKPOS-100" in res.message
+    assert "HMKPOS-1001" in res.message
