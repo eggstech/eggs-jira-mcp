@@ -499,9 +499,7 @@ def build_agenda(
             continue
         is_qc_target = False
         if issue.is_work_item and issue.status == "ready_for_qc":
-            parent = (
-                snapshot.issues.get(issue.parent_key) if issue.parent_key else None
-            )
+            parent = snapshot.issues.get(issue.parent_key) if issue.parent_key else None
             target_qc = None
             if parent and parent.type in ("story", "adhoc"):
                 target_qc = parent.qc_owner

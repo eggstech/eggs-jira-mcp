@@ -20,7 +20,9 @@ def test_atlassian_gateway_implements_protocol(mock_client):
 
 def test_update_fields_with_notify_users_false(mock_client):
     gateway = AtlassianGateway(mock_client)
-    gateway.update_fields("PROJ-123", {"customfield_10108": "2026-11-20"}, notify_users=False)
+    gateway.update_fields(
+        "PROJ-123", {"customfield_10108": "2026-11-20"}, notify_users=False
+    )
 
     mock_client.put.assert_called_once_with(
         "rest/api/2/issue/PROJ-123",
@@ -31,6 +33,7 @@ def test_update_fields_with_notify_users_false(mock_client):
 
 def test_update_fields_http_error_wrapped_into_jira_error(mock_client):
     from requests.exceptions import HTTPError
+
     gateway = AtlassianGateway(mock_client)
     resp = MagicMock()
     resp.status_code = 400
@@ -54,9 +57,7 @@ def test_update_fields_http_error_wrapped_into_jira_error(mock_client):
 def test_get_subtasks(mock_client):
     gateway = AtlassianGateway(mock_client)
     mock_client.get.return_value = {
-        "fields": {
-            "subtasks": [{"id": "1", "key": "PROJ-124"}]
-        }
+        "fields": {"subtasks": [{"id": "1", "key": "PROJ-124"}]}
     }
     subtasks = gateway.get_subtasks("PROJ-123")
     assert subtasks == [{"id": "1", "key": "PROJ-124"}]
@@ -67,7 +68,7 @@ def test_get_worklogs(mock_client):
     gateway = AtlassianGateway(mock_client)
     mock_client.get.return_value = {
         "total": 1,
-        "worklogs": [{"id": "w1", "author": {"name": "alice"}}]
+        "worklogs": [{"id": "w1", "author": {"name": "alice"}}],
     }
     worklogs = gateway.get_worklogs("PROJ-123")
     assert worklogs == [{"id": "w1", "author": {"name": "alice"}}]
@@ -94,7 +95,9 @@ def test_transition_looks_up_id_by_name(mock_client):
         ]
     }
 
-    gateway.transition("PROJ-123", "QC Pass", fields={"customfield_1": "val"}, comment="passed")
+    gateway.transition(
+        "PROJ-123", "QC Pass", fields={"customfield_1": "val"}, comment="passed"
+    )
 
     mock_client.get.assert_called_once_with("rest/api/2/issue/PROJ-123/transitions")
     mock_client.post.assert_called_once_with(
@@ -109,11 +112,11 @@ def test_transition_looks_up_id_by_name(mock_client):
 
 def test_transition_not_found_raises_jira_error(mock_client):
     gateway = AtlassianGateway(mock_client)
-    mock_client.get.return_value = {
-        "transitions": [{"id": "11", "name": "Start"}]
-    }
+    mock_client.get.return_value = {"transitions": [{"id": "11", "name": "Start"}]}
 
-    with pytest.raises(JiraError, match="Transition 'Invalid' not available for PROJ-123"):
+    with pytest.raises(
+        JiraError, match="Transition 'Invalid' not available for PROJ-123"
+    ):
         gateway.transition("PROJ-123", "Invalid")
 
 
@@ -150,15 +153,19 @@ def test_worklogs_since_chains_endpoints(mock_client):
         "issues": [
             {"id": "10001", "key": "PROJ-1"},
             {"id": "10002", "key": "PROJ-2"},
-        ]
+        ],
     }
 
     since = datetime(2026, 11, 9, 0, 0, tzinfo=timezone.utc)
     worklogs = gateway.worklogs_since(since)
 
     since_ms = int(since.timestamp() * 1000)
-    mock_client.get.assert_called_once_with(f"rest/api/2/worklog/updated?since={since_ms}")
-    mock_client.post.assert_called_once_with("rest/api/2/worklog/list", data={"ids": [101, 102]})
+    mock_client.get.assert_called_once_with(
+        f"rest/api/2/worklog/updated?since={since_ms}"
+    )
+    mock_client.post.assert_called_once_with(
+        "rest/api/2/worklog/list", data={"ids": [101, 102]}
+    )
     assert len(worklogs) == 2
     assert worklogs[0].issue_key == "PROJ-1"
     assert worklogs[0].author == "dev1"
@@ -175,14 +182,9 @@ def test_search_handles_pagination(mock_client):
             "startAt": 0,
             "maxResults": 2,
             "total": 3,
-            "issues": [{"key": "P-1"}, {"key": "P-2"}]
+            "issues": [{"key": "P-1"}, {"key": "P-2"}],
         },
-        {
-            "startAt": 2,
-            "maxResults": 2,
-            "total": 3,
-            "issues": [{"key": "P-3"}]
-        }
+        {"startAt": 2, "maxResults": 2, "total": 3, "issues": [{"key": "P-3"}]},
     ]
 
     results = gateway.search("project = PROJ", fields=["key"])
@@ -235,7 +237,11 @@ def test_worklogs_since_pagination_and_chunking(mock_client):
     page2_values = [{"worklogId": i} for i in range(1001, 1501)]
 
     mock_client.get.side_effect = [
-        {"values": page1_values, "lastPage": False, "nextPage": "rest/api/2/worklog/updated?since=1700000010000"},
+        {
+            "values": page1_values,
+            "lastPage": False,
+            "nextPage": "rest/api/2/worklog/updated?since=1700000010000",
+        },
         {"values": page2_values, "lastPage": True},
     ]
 
@@ -281,6 +287,7 @@ def test_worklogs_since_pagination_and_chunking(mock_client):
 
 def test_worklogs_since_skips_unresolvable_issue_id(mock_client, caplog):
     import logging
+
     gateway = AtlassianGateway(mock_client)
     mock_client.get.return_value = {
         "values": [{"worklogId": 999}],
@@ -311,12 +318,19 @@ def test_project_role_members_pagination_and_skips_inactive(mock_client):
     gateway = AtlassianGateway(mock_client)
     mock_client.get.side_effect = [
         # 1. Project roles list
-        {"Developers": "http://jira/rest/api/2/project/PROJ/role/10001", "QA": "http://jira/rest/api/2/project/PROJ/role/10002"},
+        {
+            "Developers": "http://jira/rest/api/2/project/PROJ/role/10001",
+            "QA": "http://jira/rest/api/2/project/PROJ/role/10002",
+        },
         # 2. Role 10001 details
         {
             "actors": [
                 {"type": "atlassian-user-role-actor", "name": "alice", "active": True},
-                {"type": "atlassian-user-role-actor", "name": "inactive_dev", "active": False},
+                {
+                    "type": "atlassian-user-role-actor",
+                    "name": "inactive_dev",
+                    "active": False,
+                },
                 {"type": "atlassian-group-role-actor", "name": "dev-group"},
             ]
         },
@@ -342,12 +356,21 @@ def test_project_role_members_pagination_and_skips_inactive(mock_client):
 
     # Verify group/member calls with params
     group_calls = [
-        call for call in mock_client.get.call_args_list
+        call
+        for call in mock_client.get.call_args_list
         if "rest/api/2/group/member" in call.args[0]
     ]
     assert len(group_calls) == 2
-    assert group_calls[0].kwargs.get("params") == {"groupname": "dev-group", "startAt": 0, "maxResults": 50}
-    assert group_calls[1].kwargs.get("params") == {"groupname": "dev-group", "startAt": 50, "maxResults": 50}
+    assert group_calls[0].kwargs.get("params") == {
+        "groupname": "dev-group",
+        "startAt": 0,
+        "maxResults": 50,
+    }
+    assert group_calls[1].kwargs.get("params") == {
+        "groupname": "dev-group",
+        "startAt": 50,
+        "maxResults": 50,
+    }
 
 
 def test_project_role_members_group_name_with_ampersand(mock_client):
@@ -362,11 +385,16 @@ def test_project_role_members_group_name_with_ampersand(mock_client):
     res = gateway.project_role_members("PROJ", role_names=["Developers"])
     assert res == {"Developers": ["alice"]}
     group_calls = [
-        call for call in mock_client.get.call_args_list
+        call
+        for call in mock_client.get.call_args_list
         if "rest/api/2/group/member" in call.args[0]
     ]
     assert len(group_calls) == 1
-    assert group_calls[0].kwargs.get("params") == {"groupname": group_name, "startAt": 0, "maxResults": 50}
+    assert group_calls[0].kwargs.get("params") == {
+        "groupname": group_name,
+        "startAt": 0,
+        "maxResults": 50,
+    }
 
 
 def test_project_role_members_group_expansion_failure_raises(mock_client):
@@ -379,7 +407,9 @@ def test_project_role_members_group_expansion_failure_raises(mock_client):
 
     with pytest.raises(Exception) as exc_info:
         gateway.project_role_members("PROJ", role_names=["Developers"])
-    assert "Failed to reach group API" in str(exc_info.value) or "failing-group" in str(exc_info.value)
+    assert "Failed to reach group API" in str(exc_info.value) or "failing-group" in str(
+        exc_info.value
+    )
 
 
 def test_project_role_members_project_list_failure_raises(mock_client):
@@ -388,6 +418,3 @@ def test_project_role_members_project_list_failure_raises(mock_client):
 
     with pytest.raises(Exception, match="403 Forbidden"):
         gateway.project_role_members("PROJ", role_names=["Developers"])
-
-
-

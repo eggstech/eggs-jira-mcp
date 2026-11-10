@@ -100,9 +100,7 @@ class Actions:
                     if msgs
                     else (str(e) or "Lỗi từ Jira (400 Bad Request)")
                 )
-                return ActionResult(
-                    ok=False, message=msg, changes=[], next_actions=[]
-                )
+                return ActionResult(ok=False, message=msg, changes=[], next_actions=[])
             raise
 
     def _has_open_bug_subtask(self, story_issue: Issue) -> bool:
@@ -441,8 +439,7 @@ class Actions:
             return ActionResult(
                 ok=False,
                 message=(
-                    "QC Owner của Dev Task/Bug con lấy từ Story "
-                    "hoặc Ad-hoc Task cha."
+                    "QC Owner của Dev Task/Bug con lấy từ Story hoặc Ad-hoc Task cha."
                 ),
                 changes=[],
                 next_actions=[],
@@ -659,9 +656,7 @@ class Actions:
                 next_actions=[],
             )
 
-        err = self._do_transition(
-            key, matched, comment=note if note else None
-        )
+        err = self._do_transition(key, matched, comment=note if note else None)
         if err:
             return err
 
@@ -1027,9 +1022,7 @@ class Actions:
             for k, ok, msg in write_results
         ]
         if any_failed:
-            err_msg = (
-                "Một số công việc ghi nhận thất bại:\n" + "\n".join(per_key_lines)
-            )
+            err_msg = "Một số công việc ghi nhận thất bại:\n" + "\n".join(per_key_lines)
             return ActionResult(
                 ok=False,
                 message=err_msg,
@@ -1037,8 +1030,8 @@ class Actions:
                 next_actions=[],
             )
 
-        ok_msg = (
-            "Đã ghi nhận công việc cuối ngày thành công:\n" + "\n".join(per_key_lines)
+        ok_msg = "Đã ghi nhận công việc cuối ngày thành công:\n" + "\n".join(
+            per_key_lines
         )
         return ActionResult(
             ok=True,
@@ -1697,9 +1690,7 @@ class Actions:
                             "parent": {"key": s.key},
                         }
                     )
-            err = self._do_transition(
-                s.key, trans_name, comment=note if note else None
-            )
+            err = self._do_transition(s.key, trans_name, comment=note if note else None)
             if err:
                 return err
 
@@ -1748,8 +1739,7 @@ class Actions:
             return ActionResult(
                 ok=False,
                 message=(
-                    "Người yêu cầu không được tự duyệt yêu cầu dời lịch của "
-                    "chính mình."
+                    "Người yêu cầu không được tự duyệt yêu cầu dời lịch của chính mình."
                 ),
                 changes=[],
                 next_actions=[],
@@ -1793,9 +1783,7 @@ class Actions:
             if err:
                 return err
         else:
-            err = self._do_transition(
-                key, matched, comment=f"Từ chối dời lịch: {note}"
-            )
+            err = self._do_transition(key, matched, comment=f"Từ chối dời lịch: {note}")
             if err:
                 return err
 
@@ -1990,8 +1978,7 @@ class Actions:
             return ActionResult(
                 ok=False,
                 message=(
-                    "Thời gian làm việc (time_spent) bắt buộc và "
-                    "không được để trống."
+                    "Thời gian làm việc (time_spent) bắt buộc và không được để trống."
                 ),
                 changes=[],
                 next_actions=[],
@@ -2121,8 +2108,7 @@ class Actions:
                 return ActionResult(
                     ok=False,
                     message=(
-                        f"Issue {link_key} không tồn tại hoặc "
-                        f"không thể truy cập: {e}"
+                        f"Issue {link_key} không tồn tại hoặc không thể truy cập: {e}"
                     ),
                     changes=[],
                     next_actions=[],

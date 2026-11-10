@@ -356,7 +356,9 @@ def test_snapshot_subtasks_under_adhoc_and_bug(cfg, cal):
 
     # 2. Story FlowMetrics only includes its own child (HMKPOS-101), not adhoc/bug children
     flow_100 = snapshot.flows["HMKPOS-100"]
-    assert flow_100.unscheduled == 0  # HMKPOS-101 is scheduled; HMKPOS-201 (unscheduled) must not count
+    assert (
+        flow_100.unscheduled == 0
+    )  # HMKPOS-101 is scheduled; HMKPOS-201 (unscheduled) must not count
 
     # 3. Epic actors only count Stories
     epic_metrics = snapshot.epics["HMKPOS-10"]
@@ -402,7 +404,9 @@ def test_report_section_counts_user_reports(cfg, cal):
             resolution="Is a Bug",
         )
         # changelog / status_changed_at on yesterday
-        object.__setattr__(issues[k], "status_changed_at", datetime(2026, 11, 17, 15, 0, tzinfo=TZ))
+        object.__setattr__(
+            issues[k], "status_changed_at", datetime(2026, 11, 17, 15, 0, tzinfo=TZ)
+        )
 
     # 4 resolved yesterday not a bug
     for i in range(11, 15):
@@ -414,7 +418,9 @@ def test_report_section_counts_user_reports(cfg, cal):
             created=datetime(2026, 11, 16, 10, 0, tzinfo=TZ),
             resolution="User Guidance",
         )
-        object.__setattr__(issues[k], "status_changed_at", datetime(2026, 11, 17, 16, 0, tzinfo=TZ))
+        object.__setattr__(
+            issues[k], "status_changed_at", datetime(2026, 11, 17, 16, 0, tzinfo=TZ)
+        )
 
     # 1 stale report (created earlier, open, STALE flag)
     stale_k = "HMKPOS-R99"
@@ -439,15 +445,22 @@ def test_report_section_counts_user_reports(cfg, cal):
     report_text = render_report(snapshot, cfg)
     assert "📨 Phản ánh hôm qua" in report_text
     # Line should match: 7 mới · 3 là lỗi · 4 không phải lỗi · 1 chờ xác minh > 1 ngày
-    assert "7 mới · 3 là lỗi · 4 không phải lỗi · 1 chờ xác minh > 1 ngày" in report_text
+    assert (
+        "7 mới · 3 là lỗi · 4 không phải lỗi · 1 chờ xác minh > 1 ngày" in report_text
+    )
 
 
 def test_sections_in_order_and_empty_omitted(cfg, cal):
     # Only have an escalation (L2) and an on-track epic
-    epic_on_track = _make_issue(key="HMKPOS-1", issue_type="epic", status="in_progress", summary="On track Epic")
-    task_l2 = _make_issue(key="HMKPOS-2", issue_type="dev_task", summary="L2 Task", escalation_level=2)
+    epic_on_track = _make_issue(
+        key="HMKPOS-1", issue_type="epic", status="in_progress", summary="On track Epic"
+    )
+    task_l2 = _make_issue(
+        key="HMKPOS-2", issue_type="dev_task", summary="L2 Task", escalation_level=2
+    )
 
     from mcp_atlassian.eggs.escalation import Escalation
+
     esc = {task_l2.key: Escalation(level=2, owner="cuong.huynh", since=TODAY)}
     epics_metrics = {
         epic_on_track.key: EpicMetrics(
@@ -495,8 +508,8 @@ def test_on_track_collapsed(cfg, cal):
     epics_metrics = {}
     issues = {}
     for i in range(3):
-        k = f"HMKPOS-{i+1}"
-        issues[k] = _make_issue(key=k, issue_type="epic", summary=f"Epic {i+1}")
+        k = f"HMKPOS-{i + 1}"
+        issues[k] = _make_issue(key=k, issue_type="epic", summary=f"Epic {i + 1}")
         epics_metrics[k] = EpicMetrics(
             key=k,
             due=date(2026, 11, 30),
@@ -527,8 +540,8 @@ def test_truncation_message(cfg, cal):
     issues = {}
     flags = {}
     for i in range(15):
-        k = f"HMKPOS-B{i+1}"
-        issues[k] = _make_issue(key=k, summary=f"Blocked item {i+1}", blocked=True)
+        k = f"HMKPOS-B{i + 1}"
+        issues[k] = _make_issue(key=k, summary=f"Blocked item {i + 1}", blocked=True)
         flags[k] = frozenset({"BLOCKED"})
 
     snapshot = Snapshot(
@@ -548,8 +561,12 @@ def test_truncation_message(cfg, cal):
 
 def test_ops_epic_not_in_slip_section(cfg, cal):
     # [OPS] epic that is slipping should NOT appear in section 2
-    ops_epic = _make_issue(key="HMKPOS-OPS", issue_type="epic", summary="[OPS] Operations November")
-    normal_epic = _make_issue(key="HMKPOS-SLIP", issue_type="epic", summary="Normal Slipped Epic")
+    ops_epic = _make_issue(
+        key="HMKPOS-OPS", issue_type="epic", summary="[OPS] Operations November"
+    )
+    normal_epic = _make_issue(
+        key="HMKPOS-SLIP", issue_type="epic", summary="Normal Slipped Epic"
+    )
 
     epics_metrics = {
         ops_epic.key: EpicMetrics(
@@ -709,7 +726,9 @@ def test_legacy_actor_model_epic_level_only(cfg, cal):
 def test_project_filter(cfg, cal):
     # Filters by project
     pos_epic = _make_issue(key="HMKPOS-1", issue_type="epic", summary="POS Epic")
-    loyal_epic = _make_issue(key="HMKLOYAL-1", issue_type="epic", summary="Loyalty Epic")
+    loyal_epic = _make_issue(
+        key="HMKLOYAL-1", issue_type="epic", summary="Loyalty Epic"
+    )
 
     epics_metrics = {
         pos_epic.key: EpicMetrics(
@@ -830,8 +849,14 @@ def test_done_item_with_impediment_flag_not_listed(cfg, cal):
         health_flags=frozenset({"BLOCKED"}),
     )
     snapshot = Snapshot(
-        issues={done_blocked.key: done_blocked, unresolved_blocked.key: unresolved_blocked},
-        flags={done_blocked.key: frozenset({"BLOCKED"}), unresolved_blocked.key: frozenset({"BLOCKED"})},
+        issues={
+            done_blocked.key: done_blocked,
+            unresolved_blocked.key: unresolved_blocked,
+        },
+        flags={
+            done_blocked.key: frozenset({"BLOCKED"}),
+            unresolved_blocked.key: frozenset({"BLOCKED"}),
+        },
         escalations={},
         flows={},
         epics={},
@@ -893,7 +918,9 @@ def test_render_my_day_and_pending_approvals_require_cfg(cfg, cal):
 
     # With cfg it works
     assert "Kế hoạch ngày" in render_my_day(snapshot, "cuong.huynh", cfg)
-    assert "Không có yêu cầu dời lịch" in render_pending_approvals(snapshot, "cuong.huynh", cfg)
+    assert "Không có yêu cầu dời lịch" in render_pending_approvals(
+        snapshot, "cuong.huynh", cfg
+    )
 
 
 def test_monday_report_yesterday_is_friday(cfg, cal):
@@ -995,4 +1022,3 @@ def test_bot_user_excluded_from_not_updated_section(cfg, cal):
     text = render_report(snapshot, cfg)
     assert "@alice" in text
     assert f"@{cfg.bot_user}" not in text
-

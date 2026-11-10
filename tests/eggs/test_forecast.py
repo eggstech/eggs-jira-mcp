@@ -87,8 +87,20 @@ def test_flow_forecast_adds_qc_buffer(cal, cfg):
         due_date=date(2026, 11, 25),
         components=("CH - CỬA HÀNG",),
     )
-    task1 = _make_issue(key="DEV-1", issue_type="dev_task", status="in_progress", planned_end=date(2026, 11, 18), parent_key="STORY-1")
-    task2 = _make_issue(key="DEV-2", issue_type="dev_task", status="in_progress", planned_end=date(2026, 11, 20), parent_key="STORY-1")
+    task1 = _make_issue(
+        key="DEV-1",
+        issue_type="dev_task",
+        status="in_progress",
+        planned_end=date(2026, 11, 18),
+        parent_key="STORY-1",
+    )
+    task2 = _make_issue(
+        key="DEV-2",
+        issue_type="dev_task",
+        status="in_progress",
+        planned_end=date(2026, 11, 20),
+        parent_key="STORY-1",
+    )
 
     fm = flow_metrics(story, [task1, task2], cal, cfg)
     assert fm.key == "STORY-1"
@@ -110,7 +122,13 @@ def test_flow_at_risk_when_forecast_after_due(cal, cfg):
         due_date=date(2026, 11, 20),
         components=("CH - CỬA HÀNG",),
     )
-    task = _make_issue(key="DEV-1", issue_type="dev_task", status="in_progress", planned_end=date(2026, 11, 20), parent_key="STORY-1")
+    task = _make_issue(
+        key="DEV-1",
+        issue_type="dev_task",
+        status="in_progress",
+        planned_end=date(2026, 11, 20),
+        parent_key="STORY-1",
+    )
 
     fm = flow_metrics(story, [task], cal, cfg)
     assert fm.at_risk is True
@@ -121,16 +139,33 @@ def test_flow_at_risk_when_forecast_after_due(cal, cfg):
 def test_cancelled_children_excluded(cal, cfg):
     # Cancelled child has planned_end Nov 30, but is cancelled -> should be excluded.
     # Active child has planned_end Nov 18 + 1 buffer day = Nov 19.
-    story = _make_issue(key="STORY-1", issue_type="story", status="in_progress", due_date=date(2026, 11, 25))
-    cancelled_task = _make_issue(key="DEV-CANCEL", issue_type="dev_task", status="cancelled", planned_end=date(2026, 11, 30))
-    active_task = _make_issue(key="DEV-ACT", issue_type="dev_task", status="in_progress", planned_end=date(2026, 11, 18))
+    story = _make_issue(
+        key="STORY-1",
+        issue_type="story",
+        status="in_progress",
+        due_date=date(2026, 11, 25),
+    )
+    cancelled_task = _make_issue(
+        key="DEV-CANCEL",
+        issue_type="dev_task",
+        status="cancelled",
+        planned_end=date(2026, 11, 30),
+    )
+    active_task = _make_issue(
+        key="DEV-ACT",
+        issue_type="dev_task",
+        status="in_progress",
+        planned_end=date(2026, 11, 18),
+    )
 
     fm = flow_metrics(story, [cancelled_task, active_task], cal, cfg)
     assert fm.forecast_end == date(2026, 11, 19)
 
 
 def test_epic_slip_positive_when_late_negative_when_early(cal, cfg):
-    epic_late = _make_issue(key="EPIC-LATE", issue_type="epic", due_date=date(2026, 11, 20))
+    epic_late = _make_issue(
+        key="EPIC-LATE", issue_type="epic", due_date=date(2026, 11, 20)
+    )
     # Story forecast is Tuesday Nov 24 -> late by 2 working days (Mon 23, Tue 24)
     story_late = _make_issue(key="STORY-1", issue_type="story")
     flow_late = {
@@ -144,12 +179,16 @@ def test_epic_slip_positive_when_late_negative_when_early(cal, cfg):
         )
     }
 
-    em_late = epic_metrics(epic_late, [story_late], flow_late, other_items=[], escalations={}, cal=cal)
+    em_late = epic_metrics(
+        epic_late, [story_late], flow_late, other_items=[], escalations={}, cal=cal
+    )
     assert em_late.forecast_end == date(2026, 11, 24)
     assert em_late.slip_days == 2
 
     # Early case: epic due Nov 25, forecast Nov 20 -> early by 3 working days (Nov 23, 24, 25)
-    epic_early = _make_issue(key="EPIC-EARLY", issue_type="epic", due_date=date(2026, 11, 25))
+    epic_early = _make_issue(
+        key="EPIC-EARLY", issue_type="epic", due_date=date(2026, 11, 25)
+    )
     story_early = _make_issue(key="STORY-2", issue_type="story")
     flow_early = {
         "STORY-2": FlowMetrics(
@@ -161,7 +200,9 @@ def test_epic_slip_positive_when_late_negative_when_early(cal, cfg):
             at_risk=False,
         )
     }
-    em_early = epic_metrics(epic_early, [story_early], flow_early, other_items=[], escalations={}, cal=cal)
+    em_early = epic_metrics(
+        epic_early, [story_early], flow_early, other_items=[], escalations={}, cal=cal
+    )
     assert em_early.forecast_end == date(2026, 11, 20)
     assert em_early.slip_days == -3
 
@@ -178,15 +219,29 @@ def test_actor_rows_bucket_by_status(cal, cfg):
     comp = ("CH - CỬA HÀNG",)
     stories = [
         _make_issue(key="S-1", issue_type="story", status="open", components=comp),
-        _make_issue(key="S-2", issue_type="story", status="ready_for_dev", components=comp),
-        _make_issue(key="S-3", issue_type="story", status="in_progress", components=comp),
-        _make_issue(key="S-4", issue_type="story", status="ready_for_qc", components=comp),
+        _make_issue(
+            key="S-2", issue_type="story", status="ready_for_dev", components=comp
+        ),
+        _make_issue(
+            key="S-3", issue_type="story", status="in_progress", components=comp
+        ),
+        _make_issue(
+            key="S-4", issue_type="story", status="ready_for_qc", components=comp
+        ),
         _make_issue(key="S-5", issue_type="story", status="testing", components=comp),
-        _make_issue(key="S-6", issue_type="story", status="ready_for_uat", components=comp),
-        _make_issue(key="S-7", issue_type="story", status="ready_for_uat", components=comp),
-        _make_issue(key="S-8", issue_type="story", status="client_uat", components=comp),
+        _make_issue(
+            key="S-6", issue_type="story", status="ready_for_uat", components=comp
+        ),
+        _make_issue(
+            key="S-7", issue_type="story", status="ready_for_uat", components=comp
+        ),
+        _make_issue(
+            key="S-8", issue_type="story", status="client_uat", components=comp
+        ),
         _make_issue(key="S-9", issue_type="story", status="done", components=comp),
-        _make_issue(key="S-10", issue_type="story", status="cancelled", components=comp),
+        _make_issue(
+            key="S-10", issue_type="story", status="cancelled", components=comp
+        ),
     ]
 
     flows = {
@@ -219,17 +274,57 @@ def test_actor_rows_bucket_by_status(cal, cfg):
 
 def test_story_without_component_grouped_separately(cal, cfg):
     # Story without component or with invalid component -> under "(chưa gán Actor)"
-    story_no_comp = _make_issue(key="S-NO-COMP", issue_type="story", status="in_progress", components=())
-    story_ch = _make_issue(key="S-CH", issue_type="story", status="in_progress", components=("CH - CỬA HÀNG",))
-    story_kt = _make_issue(key="S-KT", issue_type="story", status="in_progress", components=("KT - KỸ THUẬT",))
+    story_no_comp = _make_issue(
+        key="S-NO-COMP", issue_type="story", status="in_progress", components=()
+    )
+    story_ch = _make_issue(
+        key="S-CH",
+        issue_type="story",
+        status="in_progress",
+        components=("CH - CỬA HÀNG",),
+    )
+    story_kt = _make_issue(
+        key="S-KT",
+        issue_type="story",
+        status="in_progress",
+        components=("KT - KỸ THUẬT",),
+    )
 
     flows = {
-        "S-NO-COMP": FlowMetrics(key="S-NO-COMP", due=None, forecast_end=None, slip_days=None, unscheduled=0, at_risk=False),
-        "S-CH": FlowMetrics(key="S-CH", due=None, forecast_end=None, slip_days=None, unscheduled=0, at_risk=False),
-        "S-KT": FlowMetrics(key="S-KT", due=None, forecast_end=None, slip_days=None, unscheduled=0, at_risk=False),
+        "S-NO-COMP": FlowMetrics(
+            key="S-NO-COMP",
+            due=None,
+            forecast_end=None,
+            slip_days=None,
+            unscheduled=0,
+            at_risk=False,
+        ),
+        "S-CH": FlowMetrics(
+            key="S-CH",
+            due=None,
+            forecast_end=None,
+            slip_days=None,
+            unscheduled=0,
+            at_risk=False,
+        ),
+        "S-KT": FlowMetrics(
+            key="S-KT",
+            due=None,
+            forecast_end=None,
+            slip_days=None,
+            unscheduled=0,
+            at_risk=False,
+        ),
     }
     epic = _make_issue(key="EPIC-1", issue_type="epic")
-    em = epic_metrics(epic, [story_no_comp, story_kt, story_ch], flows, other_items=[], escalations={}, cal=cal)
+    em = epic_metrics(
+        epic,
+        [story_no_comp, story_kt, story_ch],
+        flows,
+        other_items=[],
+        escalations={},
+        cal=cal,
+    )
 
     assert len(em.actors) == 3
     assert em.actors[0].actor == "CH - CỬA HÀNG"
@@ -243,26 +338,60 @@ def test_story_without_component_grouped_separately(cal, cfg):
 def test_unknown_eta_when_l2(cal, cfg):
     epic = _make_issue(key="EPIC-1", issue_type="epic")
     story = _make_issue(key="S-1", issue_type="story", components=("CH - CỬA HÀNG",))
-    flows = {"S-1": FlowMetrics(key="S-1", due=None, forecast_end=None, slip_days=None, unscheduled=0, at_risk=False)}
+    flows = {
+        "S-1": FlowMetrics(
+            key="S-1",
+            due=None,
+            forecast_end=None,
+            slip_days=None,
+            unscheduled=0,
+            at_risk=False,
+        )
+    }
 
     # Without L2 escalation -> unknown_eta is False
-    em_clean = epic_metrics(epic, [story], flows, other_items=[], escalations={}, cal=cal)
+    em_clean = epic_metrics(
+        epic, [story], flows, other_items=[], escalations={}, cal=cal
+    )
     assert em_clean.unknown_eta is False
 
     # With L2 escalation on an issue in the epic -> unknown_eta is True
     l2_esc = {"S-1": Escalation(level=2, owner="cuong.huynh", since=date(2026, 11, 10))}
-    em_l2 = epic_metrics(epic, [story], flows, other_items=[], escalations=l2_esc, cal=cal)
+    em_l2 = epic_metrics(
+        epic, [story], flows, other_items=[], escalations=l2_esc, cal=cal
+    )
     assert em_l2.unknown_eta is True
 
     # With L2 escalation on a child passed in children parameter -> unknown_eta is True
     child = _make_issue(key="DEV-CHILD-1", issue_type="dev_task")
-    l2_esc_child = {"DEV-CHILD-1": Escalation(level=2, owner="cuong.huynh", since=date(2026, 11, 10))}
-    em_child_l2 = epic_metrics(epic, [story], flows, other_items=[], escalations=l2_esc_child, cal=cal, children=[child])
+    l2_esc_child = {
+        "DEV-CHILD-1": Escalation(
+            level=2, owner="cuong.huynh", since=date(2026, 11, 10)
+        )
+    }
+    em_child_l2 = epic_metrics(
+        epic,
+        [story],
+        flows,
+        other_items=[],
+        escalations=l2_esc_child,
+        cal=cal,
+        children=[child],
+    )
     assert em_child_l2.unknown_eta is True
 
     # NEGATIVE test: an L2 escalation on an issue of ANOTHER epic in the same project -> unknown_eta is False
     # (Project is "EPIC", another issue is "EPIC-999")
-    l2_esc_other = {"EPIC-999": Escalation(level=2, owner="cuong.huynh", since=date(2026, 11, 10))}
-    em_other = epic_metrics(epic, [story], flows, other_items=[], escalations=l2_esc_other, cal=cal, children=[child])
+    l2_esc_other = {
+        "EPIC-999": Escalation(level=2, owner="cuong.huynh", since=date(2026, 11, 10))
+    }
+    em_other = epic_metrics(
+        epic,
+        [story],
+        flows,
+        other_items=[],
+        escalations=l2_esc_other,
+        cal=cal,
+        children=[child],
+    )
     assert em_other.unknown_eta is False
-

@@ -13,8 +13,12 @@ def test_identity_roles_per_project():
         lead_user="cuong.huynh",
         jira_url="https://jira.eggstech.io.vn",
         projects={
-            "RFID": ProjectConfig(key="RFID", default_lead_ba="cuong.huynh", triage_owner="cuong.huynh"),
-            "CP": ProjectConfig(key="CP", default_lead_ba="cuong.huynh", triage_owner="cuong.huynh"),
+            "RFID": ProjectConfig(
+                key="RFID", default_lead_ba="cuong.huynh", triage_owner="cuong.huynh"
+            ),
+            "CP": ProjectConfig(
+                key="CP", default_lead_ba="cuong.huynh", triage_owner="cuong.huynh"
+            ),
         },
         roles={"lead_ba": ["Lead-BA"], "qc": ["QC"], "dev": ["Developers"]},
     )
@@ -46,7 +50,9 @@ def test_identity_never_shared_between_users():
         lead_user="cuong.huynh",
         jira_url="https://jira.eggstech.io.vn",
         projects={
-            "RFID": ProjectConfig(key="RFID", default_lead_ba="cuong.huynh", triage_owner="cuong.huynh"),
+            "RFID": ProjectConfig(
+                key="RFID", default_lead_ba="cuong.huynh", triage_owner="cuong.huynh"
+            ),
         },
         roles={"lead_ba": ["Lead-BA"], "qc": ["QC"], "dev": ["Developers"]},
     )
@@ -77,7 +83,9 @@ def test_role_members_cached_per_project_within_ttl():
         lead_user="cuong.huynh",
         jira_url="https://jira.eggstech.io.vn",
         projects={
-            "RFID": ProjectConfig(key="RFID", default_lead_ba="cuong.huynh", triage_owner="cuong.huynh"),
+            "RFID": ProjectConfig(
+                key="RFID", default_lead_ba="cuong.huynh", triage_owner="cuong.huynh"
+            ),
         },
         roles={"lead_ba": ["Lead-BA"], "qc": ["QC"], "dev": ["Developers"]},
     )
@@ -121,7 +129,9 @@ def test_role_read_failure_not_cached_and_reported():
         lead_user="cuong.huynh",
         jira_url="https://jira.eggstech.io.vn",
         projects={
-            "RFID": ProjectConfig(key="RFID", default_lead_ba="cuong.huynh", triage_owner="cuong.huynh"),
+            "RFID": ProjectConfig(
+                key="RFID", default_lead_ba="cuong.huynh", triage_owner="cuong.huynh"
+            ),
         },
         roles={"lead_ba": ["Lead-BA"], "qc": ["QC"], "dev": ["Developers"]},
     )
@@ -130,7 +140,9 @@ def test_role_read_failure_not_cached_and_reported():
     class FailingGateway(FakeGateway):
         fail_count = 0
 
-        def project_role_members(self, project: str, role_names: list[str] | None = None) -> dict[str, list[str]]:
+        def project_role_members(
+            self, project: str, role_names: list[str] | None = None
+        ) -> dict[str, list[str]]:
             self._record("project_role_members", project)
             self.fail_count += 1
             raise RuntimeError("403 Forbidden")
@@ -155,7 +167,9 @@ def test_identity_without_role_is_empty():
         lead_user="cuong.huynh",
         jira_url="https://jira.eggstech.io.vn",
         projects={
-            "RFID": ProjectConfig(key="RFID", default_lead_ba="cuong.huynh", triage_owner="cuong.huynh"),
+            "RFID": ProjectConfig(
+                key="RFID", default_lead_ba="cuong.huynh", triage_owner="cuong.huynh"
+            ),
         },
         roles={"lead_ba": ["Lead-BA"], "qc": ["QC"], "dev": ["Developers"]},
     )
@@ -180,7 +194,9 @@ def test_identity_administrators_count_as_lead_ba():
         lead_user="cuong.huynh",
         jira_url="https://jira.eggstech.io.vn",
         projects={
-            "RFID": ProjectConfig(key="RFID", default_lead_ba="cuong.huynh", triage_owner="cuong.huynh"),
+            "RFID": ProjectConfig(
+                key="RFID", default_lead_ba="cuong.huynh", triage_owner="cuong.huynh"
+            ),
         },
         roles={
             "lead_ba": ["Business Analysts", "Administrators"],
@@ -206,7 +222,9 @@ def test_identity_ignores_bot_user():
         jira_url="https://jira.eggstech.io.vn",
         bot_user="eggsbot",
         projects={
-            "RFID": ProjectConfig(key="RFID", default_lead_ba="cuong.huynh", triage_owner="cuong.huynh"),
+            "RFID": ProjectConfig(
+                key="RFID", default_lead_ba="cuong.huynh", triage_owner="cuong.huynh"
+            ),
         },
         roles={
             "lead_ba": ["Business Analysts", "Administrators"],
@@ -230,7 +248,9 @@ def test_identity_is_lead_compares_lowercased():
         lead_user="cuong.huynh",
         jira_url="https://jira.eggstech.io.vn",
         projects={
-            "RFID": ProjectConfig(key="RFID", default_lead_ba="cuong.huynh", triage_owner="cuong.huynh"),
+            "RFID": ProjectConfig(
+                key="RFID", default_lead_ba="cuong.huynh", triage_owner="cuong.huynh"
+            ),
         },
         roles={"lead_ba": ["Lead-BA"], "qc": ["QC"], "dev": ["Developers"]},
     )
@@ -248,9 +268,15 @@ def test_identity_warns_when_configured_role_missing_in_project(caplog):
         lead_user="cuong.huynh",
         jira_url="https://jira.eggstech.io.vn",
         projects={
-            "RFID": ProjectConfig(key="RFID", default_lead_ba="cuong.huynh", triage_owner="cuong.huynh"),
+            "RFID": ProjectConfig(
+                key="RFID", default_lead_ba="cuong.huynh", triage_owner="cuong.huynh"
+            ),
         },
-        roles={"lead_ba": ["Lead-BA"], "qc": ["QC"], "dev": ["Developers", "Engineers"]},
+        roles={
+            "lead_ba": ["Lead-BA"],
+            "qc": ["QC"],
+            "dev": ["Developers", "Engineers"],
+        },
     )
     user_gw = FakeGateway(me={"name": "alice", "displayName": "Alice Smith"})
     bot_gw = FakeGateway(
@@ -264,7 +290,11 @@ def test_identity_warns_when_configured_role_missing_in_project(caplog):
         identity1 = resolve_identity(user_gw, bot_gw, cfg, cache)
 
     assert identity1.username == "alice"
-    warnings_1 = [r.message for r in caplog.records if "Engineers" in r.message and "RFID" in r.message]
+    warnings_1 = [
+        r.message
+        for r in caplog.records
+        if "Engineers" in r.message and "RFID" in r.message
+    ]
     assert len(warnings_1) == 1
 
     # Second resolve (cache hit): no warning should be logged
@@ -272,7 +302,11 @@ def test_identity_warns_when_configured_role_missing_in_project(caplog):
     with caplog.at_level(logging.WARNING):
         identity2 = resolve_identity(user_gw, bot_gw, cfg, cache)
     assert identity2.username == "alice"
-    warnings_2 = [r.message for r in caplog.records if "Engineers" in r.message and "RFID" in r.message]
+    warnings_2 = [
+        r.message
+        for r in caplog.records
+        if "Engineers" in r.message and "RFID" in r.message
+    ]
     assert len(warnings_2) == 0
 
 
@@ -282,7 +316,9 @@ def test_identity_ignores_bot_user_case_insensitive():
         jira_url="https://jira.eggstech.io.vn",
         bot_user="eggsbot",
         projects={
-            "RFID": ProjectConfig(key="RFID", default_lead_ba="cuong.huynh", triage_owner="cuong.huynh"),
+            "RFID": ProjectConfig(
+                key="RFID", default_lead_ba="cuong.huynh", triage_owner="cuong.huynh"
+            ),
         },
         roles={"lead_ba": ["Lead-BA"], "qc": ["QC"], "dev": ["Developers"]},
     )
@@ -306,7 +342,9 @@ def test_myself_failure_raises_clear_vietnamese_error():
         lead_user="cuong.huynh",
         jira_url="https://jira.eggstech.io.vn",
         projects={
-            "RFID": ProjectConfig(key="RFID", default_lead_ba="cuong.huynh", triage_owner="cuong.huynh"),
+            "RFID": ProjectConfig(
+                key="RFID", default_lead_ba="cuong.huynh", triage_owner="cuong.huynh"
+            ),
         },
         roles={"lead_ba": ["Lead-BA"], "qc": ["QC"], "dev": ["Developers"]},
     )
@@ -316,7 +354,7 @@ def test_myself_failure_raises_clear_vietnamese_error():
     with pytest.raises(RuntimeError) as exc_info:
         resolve_identity(user_gw, bot_gw, cfg)
 
-    assert str(exc_info.value) == "PAT không hợp lệ hoặc đã hết hạn — tạo PAT mới trong Jira → Profile → Personal Access Tokens"
-
-
-
+    assert (
+        str(exc_info.value)
+        == "PAT không hợp lệ hoặc đã hết hạn — tạo PAT mới trong Jira → Profile → Personal Access Tokens"
+    )

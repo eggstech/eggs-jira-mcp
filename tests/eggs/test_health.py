@@ -182,7 +182,6 @@ def test_reschedule_pending_uses_configured_value(cal):
     assert "OVERDUE" in flags["DEV-OLD"]
 
 
-
 def test_stale_after_two_working_days(cal, cfg):
     # Status changed to in_progress on Monday Nov 16 at 09:00.
     # Today is Wednesday Nov 18.
@@ -372,7 +371,6 @@ def test_unscheduled_dev_task_when_story_due_in_past(cal, cfg):
     assert "UNSCHEDULED" in flags["DEV-PAST"]
 
 
-
 def test_unscheduled_migrated_in_progress(cal, cfg):
     # An issue that is past todo (e.g. in_progress) without baseline_end -> UNSCHEDULED
     migrated_task = _make_issue(
@@ -555,7 +553,9 @@ def test_own_flow_bug_resolved_owned_dev_task_exempts(cal, cfg):
         parent_key="STORY-1",
         status_changed_at=datetime(2026, 11, 17, 10, 0, tzinfo=TZ),
     )
-    interruptions = detect_interruptions([dev_task_done, other_active_task, flow_bug], since, TODAY, cal, cfg)
+    interruptions = detect_interruptions(
+        [dev_task_done, other_active_task, flow_bug], since, TODAY, cal, cfg
+    )
     assert interruptions == {}
 
 
@@ -564,7 +564,6 @@ def test_detect_interruptions_today_required(cal, cfg):
     with pytest.raises(TypeError):
         # Missing required argument today
         detect_interruptions(issues=[], since=since, cal=cal, cfg=cfg)  # type: ignore
-
 
 
 def test_need_reschedule_persists_until_cleared(cal, cfg):
@@ -623,8 +622,12 @@ def test_people_not_updated_uses_previous_working_day(cal):
 
 def test_resolved_frozen_retired_have_no_flags(cal, cfg):
     done_issue = _make_issue(key="DEV-1", status="done", planned_end=date(2026, 11, 1))
-    cancelled_issue = _make_issue(key="DEV-2", status="cancelled", planned_end=date(2026, 11, 1))
-    frozen_issue = _make_issue(key="DEV-3", status="in_progress", frozen=True, planned_end=date(2026, 11, 1))
+    cancelled_issue = _make_issue(
+        key="DEV-2", status="cancelled", planned_end=date(2026, 11, 1)
+    )
+    frozen_issue = _make_issue(
+        key="DEV-3", status="in_progress", frozen=True, planned_end=date(2026, 11, 1)
+    )
     retired_issue = _make_issue(key="DEV-4", issue_type=None, status="in_progress")
 
     flags = compute_flags(
@@ -753,14 +756,31 @@ def test_report_created_friday_not_stale_monday_morning_weekend(cfg):
 
     # Over weekend: Saturday Nov 14 and Sunday Nov 15 -> not stale
     for d in [date(2026, 11, 14), date(2026, 11, 15)]:
-        f = compute_flags([report], [], {}, today=d, cal=cal_holiday, cfg=cfg, interruptions={})
+        f = compute_flags(
+            [report], [], {}, today=d, cal=cal_holiday, cfg=cfg, interruptions={}
+        )
         assert "STALE" not in f["REP-1"]
 
     # Monday Nov 16 (holiday morning): 0 working days elapsed -> not stale
-    f_mon = compute_flags([report], [], {}, today=date(2026, 11, 16), cal=cal_holiday, cfg=cfg, interruptions={})
+    f_mon = compute_flags(
+        [report],
+        [],
+        {},
+        today=date(2026, 11, 16),
+        cal=cal_holiday,
+        cfg=cfg,
+        interruptions={},
+    )
     assert "STALE" not in f_mon["REP-1"]
 
     # Tuesday Nov 17: 1 working day elapsed -> STALE
-    f_tue = compute_flags([report], [], {}, today=date(2026, 11, 17), cal=cal_holiday, cfg=cfg, interruptions={})
+    f_tue = compute_flags(
+        [report],
+        [],
+        {},
+        today=date(2026, 11, 17),
+        cal=cal_holiday,
+        cfg=cfg,
+        interruptions={},
+    )
     assert "STALE" in f_tue["REP-1"]
-

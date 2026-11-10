@@ -21,15 +21,17 @@ from .report import build_snapshot, render_report
 
 logger = logging.getLogger(__name__)
 
-GUARDIAN_LOGICAL_FIELDS: frozenset[str] = frozenset({
-    "health_flags",
-    "health_since",
-    "escalation_level",
-    "escalation_owner",
-    "forecast_end",
-    "slip_days",
-    "unscheduled_count",
-})
+GUARDIAN_LOGICAL_FIELDS: frozenset[str] = frozenset(
+    {
+        "health_flags",
+        "health_since",
+        "escalation_level",
+        "escalation_owner",
+        "forecast_end",
+        "slip_days",
+        "unscheduled_count",
+    }
+)
 
 LOGICAL_FIELD_NAMES: dict[str, str] = {
     "planned_start": "Planned Start",
@@ -254,9 +256,7 @@ def ensure_ops_epics(
     """Ensure the current month's OPS epic exists per active project."""
     created: list[str] = []
     failed = False
-    expected_summary = cfg.ops_epic_summary.format(
-        month=today.month, year=today.year
-    )
+    expected_summary = cfg.ops_epic_summary.format(month=today.month, year=today.year)
     epic_type_name = cfg.issue_types["epic"][0]
     epic_name_field = cfg.fields.get("epic_name", "customfield_10102")
 
@@ -324,9 +324,7 @@ def run_report(
     """Render daily report and post to Google Chat webhooks."""
     tz = ZoneInfo(cfg.timezone)
     today = now.astimezone(tz).date()
-    since = datetime.combine(
-        cal.previous_working_day(today), time.min, tzinfo=tz
-    )
+    since = datetime.combine(cal.previous_working_day(today), time.min, tzinfo=tz)
     snapshot = build_snapshot(gateway, cfg, today, cal, since=since)
     failures: list[Exception] = []
 
@@ -402,9 +400,7 @@ def run_remind(
     """Send end-of-day reminder to people without worklogs today."""
     tz = ZoneInfo(cfg.timezone)
     today = now.astimezone(tz).date()
-    since = datetime.combine(
-        cal.add_working_days(today, -5), time.min, tzinfo=tz
-    )
+    since = datetime.combine(cal.add_working_days(today, -5), time.min, tzinfo=tz)
     snapshot = build_snapshot(gateway, cfg, today, cal, since=since)
     failures: list[Exception] = []
 
@@ -524,9 +520,7 @@ def resolve_fields_cli(gateway: JiraGateway) -> None:
     """Print logical field -> id by matching Jira field names."""
     fields = gateway.get_fields()
     name_to_id = {
-        f["name"].strip().lower(): f["id"]
-        for f in fields
-        if "name" in f and "id" in f
+        f["name"].strip().lower(): f["id"] for f in fields if "name" in f and "id" in f
     }
 
     sys.stdout.write("# Resolved Jira custom fields:\nfields:\n")
@@ -539,9 +533,7 @@ def resolve_fields_cli(gateway: JiraGateway) -> None:
 def _build_gateway_from_env(cfg: EggsConfig | None = None) -> JiraGateway:
     url = os.environ.get("JIRA_URL") or (cfg.jira_url if cfg else None)
     token = os.environ.get("EGGS_BOT_TOKEN")
-    fetcher = JiraFetcher(
-        JiraConfig(url=url, auth_type="pat", personal_token=token)
-    )
+    fetcher = JiraFetcher(JiraConfig(url=url, auth_type="pat", personal_token=token))
     return AtlassianGateway(fetcher.jira, cfg=cfg)
 
 
@@ -567,9 +559,7 @@ def main(
     p_eval.add_argument("--dry-run", action="store_true", help="Không ghi vào Jira")
 
     # report
-    p_rep = subparsers.add_parser(
-        "report", help="Xuất báo cáo ngày và gửi Google Chat"
-    )
+    p_rep = subparsers.add_parser("report", help="Xuất báo cáo ngày và gửi Google Chat")
     p_rep.add_argument("--project", help="Chỉ xuất báo cáo cho dự án cụ thể")
     p_rep.add_argument(
         "--dry-run", action="store_true", help="In ra màn hình thay vì gửi"

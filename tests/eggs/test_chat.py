@@ -11,16 +11,23 @@ from mcp_atlassian.eggs.chat import _sanitize_error, post_to_chat
 
 def test_chat_splits_long_messages():
     # Long message > 4000 chars should be split into chunks <= 4000 chars
-    lines = [f"Line {i:04d}: This is detailed content for the daily report item" for i in range(120)]
+    lines = [
+        f"Line {i:04d}: This is detailed content for the daily report item"
+        for i in range(120)
+    ]
     full_text = "\n".join(lines)
     assert len(full_text) > 4000
 
     calls: list[dict[str, Any]] = []
 
-    def mock_http_post(url: str, json: dict[str, Any] | None = None, **kwargs: Any) -> Any:
+    def mock_http_post(
+        url: str, json: dict[str, Any] | None = None, **kwargs: Any
+    ) -> Any:
         calls.append({"url": url, "json": json, "kwargs": kwargs})
+
         class FakeResponse:
             status_code = 200
+
         return FakeResponse()
 
     webhook = "https://chat.googleapis.com/v1/spaces/XYZ/messages?key=secret_key"
@@ -43,7 +50,9 @@ def test_post_to_chat_retries_on_5xx_and_does_not_log_webhook(caplog):
     calls = []
     sleeps = []
 
-    def failing_then_succeeding_post(url: str, json: dict[str, Any] | None = None, **kwargs: Any) -> Any:
+    def failing_then_succeeding_post(
+        url: str, json: dict[str, Any] | None = None, **kwargs: Any
+    ) -> Any:
         calls.append((url, json))
         if len(calls) == 1:
             resp = requests.Response()
@@ -81,7 +90,9 @@ def test_post_to_chat_5xx_twice_raises_runtime_error_and_does_not_leak(caplog):
     calls = []
     sleeps = []
 
-    def always_500_post(url: str, json: dict[str, Any] | None = None, **kwargs: Any) -> Any:
+    def always_500_post(
+        url: str, json: dict[str, Any] | None = None, **kwargs: Any
+    ) -> Any:
         calls.append((url, json))
         resp = requests.Response()
         resp.status_code = 500
@@ -127,7 +138,9 @@ def test_post_to_chat_4xx_raises_immediately_without_retry(caplog):
     calls = []
     sleeps = []
 
-    def client_error_post(url: str, json: dict[str, Any] | None = None, **kwargs: Any) -> Any:
+    def client_error_post(
+        url: str, json: dict[str, Any] | None = None, **kwargs: Any
+    ) -> Any:
         calls.append((url, json))
         resp = requests.Response()
         resp.status_code = 404
@@ -170,7 +183,9 @@ def test_post_to_chat_connection_error_redacts_path_and_query(caplog):
     calls = []
     sleeps = []
 
-    def conn_error_post(url: str, json: dict[str, Any] | None = None, **kwargs: Any) -> Any:
+    def conn_error_post(
+        url: str, json: dict[str, Any] | None = None, **kwargs: Any
+    ) -> Any:
         calls.append((url, json))
         err_msg = "Connection error: failed to connect to chat.googleapis.com: /v1/spaces/X/messages?key=K&token=T"
         raise requests.exceptions.ConnectionError(err_msg)
@@ -212,11 +227,15 @@ def test_sanitize_error_redacts_path_and_query():
 
 
 def test_post_to_chat_429_retries_honours_retry_after(caplog):
-    webhook = "https://chat.googleapis.com/v1/spaces/SPACE429/messages?key=secret&token=token"
+    webhook = (
+        "https://chat.googleapis.com/v1/spaces/SPACE429/messages?key=secret&token=token"
+    )
     calls = []
     sleeps = []
 
-    def rate_limited_then_ok_post(url: str, json: dict[str, Any] | None = None, **kwargs: Any) -> Any:
+    def rate_limited_then_ok_post(
+        url: str, json: dict[str, Any] | None = None, **kwargs: Any
+    ) -> Any:
         calls.append((url, json))
         if len(calls) == 1:
             resp = requests.Response()
@@ -246,11 +265,15 @@ def test_post_to_chat_429_retries_honours_retry_after(caplog):
 
 
 def test_post_to_chat_429_retries_caps_retry_after_at_30s():
-    webhook = "https://chat.googleapis.com/v1/spaces/SPACE429/messages?key=secret&token=token"
+    webhook = (
+        "https://chat.googleapis.com/v1/spaces/SPACE429/messages?key=secret&token=token"
+    )
     calls = []
     sleeps = []
 
-    def rate_limited_then_ok_post(url: str, json: dict[str, Any] | None = None, **kwargs: Any) -> Any:
+    def rate_limited_then_ok_post(
+        url: str, json: dict[str, Any] | None = None, **kwargs: Any
+    ) -> Any:
         calls.append((url, json))
         if len(calls) == 1:
             resp = requests.Response()
@@ -275,7 +298,9 @@ def test_post_to_chat_429_retries_caps_retry_after_at_30s():
 
 
 def test_post_to_chat_429_default_5s_when_missing_or_non_numeric_header():
-    webhook = "https://chat.googleapis.com/v1/spaces/SPACE429/messages?key=secret&token=token"
+    webhook = (
+        "https://chat.googleapis.com/v1/spaces/SPACE429/messages?key=secret&token=token"
+    )
     # Case 1: missing Retry-After header
     calls1: list[Any] = []
     sleeps1: list[float] = []
@@ -290,7 +315,13 @@ def test_post_to_chat_429_default_5s_when_missing_or_non_numeric_header():
         resp.status_code = 200
         return resp
 
-    post_to_chat(webhook, "Msg1", http_post=post1, project_key="RFID", sleep=lambda s: sleeps1.append(s))
+    post_to_chat(
+        webhook,
+        "Msg1",
+        http_post=post1,
+        project_key="RFID",
+        sleep=lambda s: sleeps1.append(s),
+    )
     assert len(calls1) == 2
     assert sleeps1 == [5.0]
 
@@ -309,17 +340,27 @@ def test_post_to_chat_429_default_5s_when_missing_or_non_numeric_header():
         resp.status_code = 200
         return resp
 
-    post_to_chat(webhook, "Msg2", http_post=post2, project_key="RFID", sleep=lambda s: sleeps2.append(s))
+    post_to_chat(
+        webhook,
+        "Msg2",
+        http_post=post2,
+        project_key="RFID",
+        sleep=lambda s: sleeps2.append(s),
+    )
     assert len(calls2) == 2
     assert sleeps2 == [5.0]
 
 
 def test_post_to_chat_429_twice_raises_runtime_error():
-    webhook = "https://chat.googleapis.com/v1/spaces/SPACE429/messages?key=secret&token=token"
+    webhook = (
+        "https://chat.googleapis.com/v1/spaces/SPACE429/messages?key=secret&token=token"
+    )
     calls = []
     sleeps = []
 
-    def always_429_post(url: str, json: dict[str, Any] | None = None, **kwargs: Any) -> Any:
+    def always_429_post(
+        url: str, json: dict[str, Any] | None = None, **kwargs: Any
+    ) -> Any:
         calls.append((url, json))
         resp = requests.Response()
         resp.status_code = 429

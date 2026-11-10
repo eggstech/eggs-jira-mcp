@@ -61,8 +61,18 @@ def base_config():
             "bug": ["Bug stand-alone"],
         },
         projects={
-            "HMKLOYAL": ProjectConfig(key="HMKLOYAL", default_lead_ba="cuong.huynh", triage_owner="cuong.huynh", frozen=False),
-            "BUL": ProjectConfig(key="BUL", default_lead_ba="cuong.huynh", triage_owner="cuong.huynh", frozen=True),
+            "HMKLOYAL": ProjectConfig(
+                key="HMKLOYAL",
+                default_lead_ba="cuong.huynh",
+                triage_owner="cuong.huynh",
+                frozen=False,
+            ),
+            "BUL": ProjectConfig(
+                key="BUL",
+                default_lead_ba="cuong.huynh",
+                triage_owner="cuong.huynh",
+                frozen=True,
+            ),
         },
     )
 
@@ -70,59 +80,143 @@ def base_config():
 def test_issue_actor_code_and_work_item():
     # 1 component with prefix
     i1 = Issue(
-        key="T-1", project="T", type="dev_task", status="todo", summary="S",
-        assignee="dev", components=("CH - CỬA HÀNG",), part="BE", parent_type="story",
-        qc_owner=None, parent_key=None, epic_key=None, created=None,
-        status_changed_at=None, planned_start=None, planned_end=None,
-        baseline_end=None, due_date=None, estimate_seconds=None,
-        reschedule_status=None, reschedule_requester=None, proposed_end=None,
-        blocked=False, blocked_by=None, blocked_since=None,
-        health_flags=frozenset(), health_since=None, escalation_level=0,
-        escalation_owner=None, frozen=False,
+        key="T-1",
+        project="T",
+        type="dev_task",
+        status="todo",
+        summary="S",
+        assignee="dev",
+        components=("CH - CỬA HÀNG",),
+        part="BE",
+        parent_type="story",
+        qc_owner=None,
+        parent_key=None,
+        epic_key=None,
+        created=None,
+        status_changed_at=None,
+        planned_start=None,
+        planned_end=None,
+        baseline_end=None,
+        due_date=None,
+        estimate_seconds=None,
+        reschedule_status=None,
+        reschedule_requester=None,
+        proposed_end=None,
+        blocked=False,
+        blocked_by=None,
+        blocked_since=None,
+        health_flags=frozenset(),
+        health_since=None,
+        escalation_level=0,
+        escalation_owner=None,
+        frozen=False,
     )
     assert i1.actor_code == "CH"
     assert i1.is_work_item is True
 
     # Zero components
     i0 = Issue(
-        key="T-0", project="T", type="story", status="todo", summary="S",
-        assignee="ba", components=(), part=None, parent_type=None,
-        qc_owner="qc", parent_key=None, epic_key=None, created=None,
-        status_changed_at=None, planned_start=None, planned_end=None,
-        baseline_end=None, due_date=None, estimate_seconds=None,
-        reschedule_status=None, reschedule_requester=None, proposed_end=None,
-        blocked=False, blocked_by=None, blocked_since=None,
-        health_flags=frozenset(), health_since=None, escalation_level=0,
-        escalation_owner=None, frozen=False,
+        key="T-0",
+        project="T",
+        type="story",
+        status="todo",
+        summary="S",
+        assignee="ba",
+        components=(),
+        part=None,
+        parent_type=None,
+        qc_owner="qc",
+        parent_key=None,
+        epic_key=None,
+        created=None,
+        status_changed_at=None,
+        planned_start=None,
+        planned_end=None,
+        baseline_end=None,
+        due_date=None,
+        estimate_seconds=None,
+        reschedule_status=None,
+        reschedule_requester=None,
+        proposed_end=None,
+        blocked=False,
+        blocked_by=None,
+        blocked_since=None,
+        health_flags=frozenset(),
+        health_since=None,
+        escalation_level=0,
+        escalation_owner=None,
+        frozen=False,
     )
     assert i0.actor_code is None
     assert i0.is_work_item is False
 
     # Two components
     i2 = Issue(
-        key="T-2", project="T", type="dev_task", status="todo", summary="S",
-        assignee="dev", components=("CH - CỬA HÀNG", "KT - KẾ TOÁN"), part="BE",
-        parent_type="story", qc_owner=None, parent_key=None, epic_key=None,
-        created=None, status_changed_at=None, planned_start=None, planned_end=None,
-        baseline_end=None, due_date=None, estimate_seconds=None,
-        reschedule_status=None, reschedule_requester=None, proposed_end=None,
-        blocked=False, blocked_by=None, blocked_since=None,
-        health_flags=frozenset(), health_since=None, escalation_level=0,
-        escalation_owner=None, frozen=False,
+        key="T-2",
+        project="T",
+        type="dev_task",
+        status="todo",
+        summary="S",
+        assignee="dev",
+        components=("CH - CỬA HÀNG", "KT - KẾ TOÁN"),
+        part="BE",
+        parent_type="story",
+        qc_owner=None,
+        parent_key=None,
+        epic_key=None,
+        created=None,
+        status_changed_at=None,
+        planned_start=None,
+        planned_end=None,
+        baseline_end=None,
+        due_date=None,
+        estimate_seconds=None,
+        reschedule_status=None,
+        reschedule_requester=None,
+        proposed_end=None,
+        blocked=False,
+        blocked_by=None,
+        blocked_since=None,
+        health_flags=frozenset(),
+        health_since=None,
+        escalation_level=0,
+        escalation_owner=None,
+        frozen=False,
     )
     assert i2.actor_code is None
 
     # Component without prefix
     i_no_sep = Issue(
-        key="T-3", project="T", type="adhoc", status="todo", summary="S",
-        assignee="dev", components=("CH",), part=None, parent_type=None,
-        qc_owner=None, parent_key=None, epic_key=None, created=None,
-        status_changed_at=None, planned_start=None, planned_end=None,
-        baseline_end=None, due_date=None, estimate_seconds=None,
-        reschedule_status=None, reschedule_requester=None, proposed_end=None,
-        blocked=False, blocked_by=None, blocked_since=None,
-        health_flags=frozenset(), health_since=None, escalation_level=0,
-        escalation_owner=None, frozen=False,
+        key="T-3",
+        project="T",
+        type="adhoc",
+        status="todo",
+        summary="S",
+        assignee="dev",
+        components=("CH",),
+        part=None,
+        parent_type=None,
+        qc_owner=None,
+        parent_key=None,
+        epic_key=None,
+        created=None,
+        status_changed_at=None,
+        planned_start=None,
+        planned_end=None,
+        baseline_end=None,
+        due_date=None,
+        estimate_seconds=None,
+        reschedule_status=None,
+        reschedule_requester=None,
+        proposed_end=None,
+        blocked=False,
+        blocked_by=None,
+        blocked_since=None,
+        health_flags=frozenset(),
+        health_since=None,
+        escalation_level=0,
+        escalation_owner=None,
+        frozen=False,
     )
     assert i_no_sep.actor_code is None
     assert i_no_sep.is_work_item is True
@@ -244,22 +338,21 @@ def test_mapping_bug_sub_ignores_own_qc_owner(base_config):
     assert issue.qc_owner is None
 
 
-
 def test_status_changed_at_extracts_latest():
     changelog = {
         "histories": [
             {
                 "created": "2026-11-02T09:00:00.000+0700",
-                "items": [{"field": "status", "toString": "Dev In Progress"}]
+                "items": [{"field": "status", "toString": "Dev In Progress"}],
             },
             {
                 "created": "2026-11-04T10:00:00.000+0700",
-                "items": [{"field": "assignee", "toString": "dev"}]
+                "items": [{"field": "assignee", "toString": "dev"}],
             },
             {
                 "created": "2026-11-05T14:15:00.000+0700",
-                "items": [{"field": "status", "toString": "QC TO DO"}]
-            }
+                "items": [{"field": "status", "toString": "QC TO DO"}],
+            },
         ]
     }
     dt = status_changed_at(changelog)
@@ -282,7 +375,7 @@ def test_unknown_or_none_custom_fields_map_gracefully(base_config):
             "issuetype": {"name": "Epic", "subtask": False},
             "status": {"name": "Open"},
             "created": "2026-11-01T00:00:00.000+0700",
-        }
+        },
     }
     issue = issue_from_json(minimal_raw, base_config)
     assert issue.key == "MIN-1"
@@ -420,8 +513,8 @@ def test_legacy_frozen_label_or_frozen_project(base_config):
             "issuetype": {"name": "Dev Task", "subtask": True},
             "status": {"name": "Dev In Progress"},
             "created": "2026-01-01T00:00:00.000+0700",
-            "labels": ["some-tag", "legacy-frozen"]
-        }
+            "labels": ["some-tag", "legacy-frozen"],
+        },
     }
     issue1 = issue_from_json(raw_with_label, base_config)
     assert issue1.frozen is True
@@ -436,8 +529,8 @@ def test_legacy_frozen_label_or_frozen_project(base_config):
             "issuetype": {"name": "Tech Task", "subtask": False},
             "status": {"name": "DEV To Do"},
             "created": "2026-01-01T00:00:00.000+0700",
-            "labels": []
-        }
+            "labels": [],
+        },
     }
     issue2 = issue_from_json(raw_in_frozen_project, base_config)
     assert issue2.frozen is True
@@ -477,7 +570,7 @@ def test_blocked_derives_only_from_source_signals(base_config):
             "status": {"name": "Dev In Progress"},
             "created": "2026-11-01T08:00:00.000+0700",
             "customfield_health_flags": [{"value": "BLOCKED"}],
-        }
+        },
     }
     issue1 = issue_from_json(raw_health_blocked, base_config)
     assert issue1.health_flags == frozenset({"BLOCKED"})
@@ -494,7 +587,7 @@ def test_blocked_derives_only_from_source_signals(base_config):
             "status": {"name": "Dev In Progress"},
             "created": "2026-11-01T08:00:00.000+0700",
             "flagged": [{"value": "Impediment"}],
-        }
+        },
     }
     issue2 = issue_from_json(raw_flagged, base_config)
     assert issue2.blocked is True
@@ -510,7 +603,7 @@ def test_blocked_derives_only_from_source_signals(base_config):
             "status": {"name": "Dev In Progress"},
             "created": "2026-11-01T08:00:00.000+0700",
             "customfield_blocked_by": {"value": "Nội bộ"},
-        }
+        },
     }
     issue3 = issue_from_json(raw_blocked_by, base_config)
     assert issue3.blocked is True
@@ -549,7 +642,7 @@ def test_parse_jira_dt(base_config):
             "project": {"key": "HMKLOYAL"},
             "issuetype": {"name": "Dev Task", "subtask": True},
             "status": {"name": "Dev In Progress"},
-        }
+        },
     }
     issue = issue_from_json(raw_no_created, base_config)
     assert issue.created is None
@@ -593,7 +686,11 @@ def test_frozen_label_and_impediment_value_from_config():
         fields={"flagged": "customfield_flagged"},
         statuses={},
         issue_types={},
-        projects={"P": ProjectConfig(key="P", default_lead_ba="ba", triage_owner="ba", frozen=False)},
+        projects={
+            "P": ProjectConfig(
+                key="P", default_lead_ba="ba", triage_owner="ba", frozen=False
+            )
+        },
     )
     raw_issue = {
         "id": "1",
@@ -603,7 +700,7 @@ def test_frozen_label_and_impediment_value_from_config():
             "project": {"key": "P"},
             "labels": ["custom-frozen"],
             "customfield_flagged": [{"value": "Blocker"}],
-        }
+        },
     }
     issue = issue_from_json(raw_issue, custom_cfg)
     assert issue.frozen is True
@@ -645,7 +742,9 @@ def test_user_report_type_and_fields_mapped(base_config):
     assert issue.is_work_item is False
     assert issue.report_source == "https://chat.google.com/room/ABC/msg/123"
     assert issue.reported_by == "Support Team"
-    assert issue.reported_at == datetime(2026, 11, 17, 7, 45, tzinfo=ZoneInfo("Asia/Ho_Chi_Minh"))
+    assert issue.reported_at == datetime(
+        2026, 11, 17, 7, 45, tzinfo=ZoneInfo("Asia/Ho_Chi_Minh")
+    )
     assert issue.resolution == "Is a Bug"
 
 
@@ -659,9 +758,3 @@ def test_reported_at_written_as_jira_offset_format():
     dt = datetime(2026, 11, 17, 8, 30, 0, tzinfo=ZoneInfo("Asia/Ho_Chi_Minh"))
     payload = issue_fields_for_write(cfg, reported_at=dt)
     assert payload["customfield_reported_at"] == "2026-11-17T08:30:00.000+0700"
-
-
-
-
-
-

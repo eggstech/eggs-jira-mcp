@@ -5,8 +5,12 @@ from mcp_atlassian.eggs.calendar import WorkCalendar
 
 def test_working_days_skip_weekend():
     cal = WorkCalendar(frozenset())
-    assert cal.working_days_between(date(2026, 11, 13), date(2026, 11, 16)) == 1   # Fri -> Mon
-    assert cal.working_days_between(date(2026, 11, 13), date(2026, 11, 15)) == 0   # Fri -> Sun
+    assert (
+        cal.working_days_between(date(2026, 11, 13), date(2026, 11, 16)) == 1
+    )  # Fri -> Mon
+    assert (
+        cal.working_days_between(date(2026, 11, 13), date(2026, 11, 15)) == 0
+    )  # Fri -> Sun
 
 
 def test_holiday_counts_zero():
@@ -17,11 +21,11 @@ def test_holiday_counts_zero():
 
 def test_is_working_day():
     cal = WorkCalendar(frozenset({date(2026, 11, 16)}))
-    assert cal.is_working_day(date(2026, 11, 13)) is True   # Friday
+    assert cal.is_working_day(date(2026, 11, 13)) is True  # Friday
     assert cal.is_working_day(date(2026, 11, 14)) is False  # Saturday
     assert cal.is_working_day(date(2026, 11, 15)) is False  # Sunday
     assert cal.is_working_day(date(2026, 11, 16)) is False  # Monday holiday
-    assert cal.is_working_day(date(2026, 11, 17)) is True   # Tuesday
+    assert cal.is_working_day(date(2026, 11, 17)) is True  # Tuesday
 
 
 def test_add_working_days():

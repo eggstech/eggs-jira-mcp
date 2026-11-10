@@ -166,9 +166,8 @@ def post_to_chat(
                         backoff = 5.0
                         if hasattr(e, "response") and resp_obj is not None:
                             headers = getattr(resp_obj, "headers", None) or {}
-                            retry_after = (
-                                headers.get("Retry-After")
-                                or headers.get("retry-after")
+                            retry_after = headers.get("Retry-After") or headers.get(
+                                "retry-after"
                             )
                             if retry_after is not None:
                                 try:

@@ -130,9 +130,21 @@ def test_level_progression_over_working_days(cal, cfg):
 def test_dev_task_in_qc_owned_by_story_qc_owner(cal, cfg):
     # Dev task in ready_for_qc or testing -> L0 owner is story.qc_owner
     epic = _make_issue(key="PROJ-EPIC", issue_type="epic", assignee="epic.owner")
-    story = _make_issue(key="PROJ-STORY", issue_type="story", assignee="story.ba", qc_owner="qc.specialist")
-    task_ready_qc = _make_issue(key="PROJ-1", issue_type="dev_task", status="ready_for_qc", assignee="dev.worker")
-    task_testing = _make_issue(key="PROJ-2", issue_type="dev_task", status="testing", assignee="dev.worker")
+    story = _make_issue(
+        key="PROJ-STORY",
+        issue_type="story",
+        assignee="story.ba",
+        qc_owner="qc.specialist",
+    )
+    task_ready_qc = _make_issue(
+        key="PROJ-1",
+        issue_type="dev_task",
+        status="ready_for_qc",
+        assignee="dev.worker",
+    )
+    task_testing = _make_issue(
+        key="PROJ-2", issue_type="dev_task", status="testing", assignee="dev.worker"
+    )
 
     flags = frozenset({"STALE"})
     esc1 = escalate(task_ready_qc, flags, story, epic, TODAY, cal, cfg)
@@ -167,12 +179,16 @@ def test_adhoc_task_in_qc_owned_by_own_qc_owner(cal, cfg):
     )
 
     flags = frozenset({"STALE"})
-    esc1 = escalate(adhoc_ready, flags, story=None, epic=epic, today=TODAY, cal=cal, cfg=cfg)
+    esc1 = escalate(
+        adhoc_ready, flags, story=None, epic=epic, today=TODAY, cal=cal, cfg=cfg
+    )
     assert esc1 is not None
     assert esc1.level == 0
     assert esc1.owner == "qc.adhoc"
 
-    esc2 = escalate(adhoc_testing, flags, story=None, epic=epic, today=TODAY, cal=cal, cfg=cfg)
+    esc2 = escalate(
+        adhoc_testing, flags, story=None, epic=epic, today=TODAY, cal=cal, cfg=cfg
+    )
     assert esc2 is not None
     assert esc2.level == 0
     assert esc2.owner == "qc.adhoc"
@@ -198,12 +214,16 @@ def test_bug_standalone_in_qc_owned_by_own_qc_owner(cal, cfg):
     )
 
     flags = frozenset({"STALE"})
-    esc1 = escalate(bug_ready, flags, story=None, epic=epic, today=TODAY, cal=cal, cfg=cfg)
+    esc1 = escalate(
+        bug_ready, flags, story=None, epic=epic, today=TODAY, cal=cal, cfg=cfg
+    )
     assert esc1 is not None
     assert esc1.level == 0
     assert esc1.owner == "qc.bug_tester"
 
-    esc2 = escalate(bug_testing, flags, story=None, epic=epic, today=TODAY, cal=cal, cfg=cfg)
+    esc2 = escalate(
+        bug_testing, flags, story=None, epic=epic, today=TODAY, cal=cal, cfg=cfg
+    )
     assert esc2 is not None
     assert esc2.level == 0
     assert esc2.owner == "qc.bug_tester"
@@ -220,7 +240,9 @@ def test_bug_standalone_in_qc_without_qc_owner_falls_back(cal, cfg):
         parent_type=None,
     )
     flags = frozenset({"STALE"})
-    esc = escalate(bug_ready, flags, story=None, epic=epic, today=TODAY, cal=cal, cfg=cfg)
+    esc = escalate(
+        bug_ready, flags, story=None, epic=epic, today=TODAY, cal=cal, cfg=cfg
+    )
     assert esc is not None
     assert esc.level == 0
     assert esc.owner == "epic.owner"
@@ -237,7 +259,9 @@ def test_adhoc_task_in_qc_without_qc_owner_falls_back(cal, cfg):
         parent_type=None,
     )
     flags = frozenset({"STALE"})
-    esc = escalate(adhoc_ready, flags, story=None, epic=epic, today=TODAY, cal=cal, cfg=cfg)
+    esc = escalate(
+        adhoc_ready, flags, story=None, epic=epic, today=TODAY, cal=cal, cfg=cfg
+    )
     assert esc is not None
     assert esc.level == 0
     assert esc.owner == "epic.owner"
@@ -270,12 +294,16 @@ def test_subtask_in_qc_under_adhoc_owned_by_parent_qc_owner(cal, cfg):
     )
 
     flags = frozenset({"STALE"})
-    esc1 = escalate(bug_ready, flags, story=adhoc_parent, epic=epic, today=TODAY, cal=cal, cfg=cfg)
+    esc1 = escalate(
+        bug_ready, flags, story=adhoc_parent, epic=epic, today=TODAY, cal=cal, cfg=cfg
+    )
     assert esc1 is not None
     assert esc1.level == 0
     assert esc1.owner == "qc.adhoc_tester"
 
-    esc2 = escalate(bug_testing, flags, story=adhoc_parent, epic=epic, today=TODAY, cal=cal, cfg=cfg)
+    esc2 = escalate(
+        bug_testing, flags, story=adhoc_parent, epic=epic, today=TODAY, cal=cal, cfg=cfg
+    )
     assert esc2 is not None
     assert esc2.level == 0
     assert esc2.owner == "qc.adhoc_tester"
@@ -295,7 +323,9 @@ def test_subtask_in_qc_under_adhoc_owned_by_parent_qc_owner(cal, cfg):
         parent_type="bug",
         parent_key="PROJ-BUG",
     )
-    esc3 = escalate(sub_under_bug, flags, story=bug_parent, epic=epic, today=TODAY, cal=cal, cfg=cfg)
+    esc3 = escalate(
+        sub_under_bug, flags, story=bug_parent, epic=epic, today=TODAY, cal=cal, cfg=cfg
+    )
     assert esc3 is not None
     assert esc3.level == 0
     assert esc3.owner == "epic.owner"
@@ -304,7 +334,12 @@ def test_subtask_in_qc_under_adhoc_owned_by_parent_qc_owner(cal, cfg):
 def test_story_flag_owned_by_story_assignee(cal, cfg):
     # Story flag -> L0 owner is story assignee (BA)
     epic = _make_issue(key="PROJ-EPIC", issue_type="epic", assignee="epic.owner")
-    story = _make_issue(key="PROJ-STORY", issue_type="story", status="ready_for_dev", assignee="story.ba")
+    story = _make_issue(
+        key="PROJ-STORY",
+        issue_type="story",
+        status="ready_for_dev",
+        assignee="story.ba",
+    )
 
     flags = frozenset({"UNSCHEDULED"})
     esc = escalate(story, flags, story=None, epic=epic, today=TODAY, cal=cal, cfg=cfg)
@@ -337,7 +372,11 @@ def test_approval_pending_requester_is_epic_assignee_and_no_default_lead_ba(cal)
     cfg = EggsConfig(
         lead_user="cuong.huynh",
         jira_url="https://jira.eggstech.io.vn",
-        projects={"PROJ": ProjectConfig(key="PROJ", default_lead_ba="", triage_owner="default.triage.owner")},
+        projects={
+            "PROJ": ProjectConfig(
+                key="PROJ", default_lead_ba="", triage_owner="default.triage.owner"
+            )
+        },
     )
     epic = _make_issue(key="PROJ-EPIC", issue_type="epic", assignee="ba.lead")
     task = _make_issue(
@@ -368,13 +407,17 @@ def test_approval_pending_requester_is_epic_assignee_l1_is_lead_user(cal, cfg):
     )
     flags = frozenset({"APPROVAL_PENDING"})
     # At 0 days (2026-11-16): L0 = default_lead_ba
-    esc_l0 = escalate(task, flags, story=None, epic=epic, today=date(2026, 11, 16), cal=cal, cfg=cfg)
+    esc_l0 = escalate(
+        task, flags, story=None, epic=epic, today=date(2026, 11, 16), cal=cal, cfg=cfg
+    )
     assert esc_l0 is not None
     assert esc_l0.level == 0
     assert esc_l0.owner == "default.lead.ba"
 
     # At 1 working day (2026-11-17): L1 = lead_user (not ba.lead / the requester)
-    esc_l1 = escalate(task, flags, story=None, epic=epic, today=date(2026, 11, 17), cal=cal, cfg=cfg)
+    esc_l1 = escalate(
+        task, flags, story=None, epic=epic, today=date(2026, 11, 17), cal=cal, cfg=cfg
+    )
     assert esc_l1 is not None
     assert esc_l1.level == 1
     assert esc_l1.owner == cfg.lead_user
@@ -385,7 +428,13 @@ def test_default_lead_ba_equals_epic_assignee_l1_and_l2_are_lead_user(cal):
     cfg = EggsConfig(
         lead_user="cuong.huynh",
         jira_url="https://jira.eggstech.io.vn",
-        projects={"PROJ": ProjectConfig(key="PROJ", default_lead_ba="same.person", triage_owner="default.triage.owner")},
+        projects={
+            "PROJ": ProjectConfig(
+                key="PROJ",
+                default_lead_ba="same.person",
+                triage_owner="default.triage.owner",
+            )
+        },
     )
     epic = _make_issue(key="PROJ-EPIC", issue_type="epic", assignee="same.person")
     task = _make_issue(
@@ -398,27 +447,40 @@ def test_default_lead_ba_equals_epic_assignee_l1_and_l2_are_lead_user(cal):
     flags = frozenset({"OVERDUE"})
 
     # At 1 working day (Mon Nov 16): level 1 -> L1 = lead_user
-    esc_l1 = escalate(task, flags, story=None, epic=epic, today=date(2026, 11, 16), cal=cal, cfg=cfg)
+    esc_l1 = escalate(
+        task, flags, story=None, epic=epic, today=date(2026, 11, 16), cal=cal, cfg=cfg
+    )
     assert esc_l1 is not None
     assert esc_l1.level == 1
     assert esc_l1.owner == "cuong.huynh"
 
     # At 2 working days (Tue Nov 17): level 2 -> L2 = lead_user
-    esc_l2 = escalate(task, flags, story=None, epic=epic, today=date(2026, 11, 17), cal=cal, cfg=cfg)
+    esc_l2 = escalate(
+        task, flags, story=None, epic=epic, today=date(2026, 11, 17), cal=cal, cfg=cfg
+    )
     assert esc_l2 is not None
     assert esc_l2.level == 2
     assert esc_l2.owner == "cuong.huynh"
 
 
-
 def test_missing_owner_falls_back_chain(cal, cfg):
     # Missing assignee falls back to epic assignee -> default_lead_ba -> lead_user
-    task_no_assignee = _make_issue(key="PROJ-1", issue_type="dev_task", status="todo", assignee=None)
+    task_no_assignee = _make_issue(
+        key="PROJ-1", issue_type="dev_task", status="todo", assignee=None
+    )
     epic_no_assignee = _make_issue(key="PROJ-EPIC", issue_type="epic", assignee=None)
     flags = frozenset({"UNSCHEDULED"})
 
     # Case 1: falls back to default_lead_ba
-    esc = escalate(task_no_assignee, flags, story=None, epic=epic_no_assignee, today=TODAY, cal=cal, cfg=cfg)
+    esc = escalate(
+        task_no_assignee,
+        flags,
+        story=None,
+        epic=epic_no_assignee,
+        today=TODAY,
+        cal=cal,
+        cfg=cfg,
+    )
     assert esc is not None
     assert esc.owner == "default.lead.ba"
 
@@ -427,9 +489,21 @@ def test_missing_owner_falls_back_chain(cal, cfg):
         lead_user="cuong.huynh",
         jira_url="https://jira.eggstech.io.vn",
         thresholds=cfg.thresholds,
-        projects={"PROJ": ProjectConfig(key="PROJ", default_lead_ba="", triage_owner="default.triage.owner")},
+        projects={
+            "PROJ": ProjectConfig(
+                key="PROJ", default_lead_ba="", triage_owner="default.triage.owner"
+            )
+        },
     )
-    esc2 = escalate(task_no_assignee, flags, story=None, epic=epic_no_assignee, today=TODAY, cal=cal, cfg=cfg_no_default_ba)
+    esc2 = escalate(
+        task_no_assignee,
+        flags,
+        story=None,
+        epic=epic_no_assignee,
+        today=TODAY,
+        cal=cal,
+        cfg=cfg_no_default_ba,
+    )
     assert esc2 is not None
     assert esc2.owner == "cuong.huynh"
 
@@ -475,16 +549,22 @@ def test_internal_block_escalates_after_two_days(cal, cfg):
     )
     flags = frozenset({"BLOCKED"})
 
-    esc_mon = escalate(task, flags, story=None, epic=epic, today=date(2026, 11, 16), cal=cal, cfg=cfg)
+    esc_mon = escalate(
+        task, flags, story=None, epic=epic, today=date(2026, 11, 16), cal=cal, cfg=cfg
+    )
     assert esc_mon is not None
     assert esc_mon.level == 0
 
-    esc_tue = escalate(task, flags, story=None, epic=epic, today=date(2026, 11, 17), cal=cal, cfg=cfg)
+    esc_tue = escalate(
+        task, flags, story=None, epic=epic, today=date(2026, 11, 17), cal=cal, cfg=cfg
+    )
     assert esc_tue is not None
     assert esc_tue.level == 1
     assert esc_tue.owner == "epic.owner"
 
-    esc_wed = escalate(task, flags, story=None, epic=epic, today=date(2026, 11, 18), cal=cal, cfg=cfg)
+    esc_wed = escalate(
+        task, flags, story=None, epic=epic, today=date(2026, 11, 18), cal=cal, cfg=cfg
+    )
     assert esc_wed is not None
     assert esc_wed.level == 1
     assert esc_wed.owner == "epic.owner"
@@ -516,15 +596,18 @@ def test_internal_block_uses_configured_value(cal):
     today = date(2026, 11, 17)  # 2 working days
 
     # With configured value "Internal", task_custom escalates to level 1
-    esc_custom = escalate(task_custom, flags, story=None, epic=epic, today=today, cal=cal, cfg=custom_cfg)
+    esc_custom = escalate(
+        task_custom, flags, story=None, epic=epic, today=today, cal=cal, cfg=custom_cfg
+    )
     assert esc_custom is not None
     assert esc_custom.level == 1
 
     # Old hard-coded "Nội bộ" should NOT escalate to level 1 under custom_cfg
-    esc_old = escalate(task_old, flags, story=None, epic=epic, today=today, cal=cal, cfg=custom_cfg)
+    esc_old = escalate(
+        task_old, flags, story=None, epic=epic, today=today, cal=cal, cfg=custom_cfg
+    )
     assert esc_old is not None
     assert esc_old.level == 0
-
 
 
 def test_new_flag_uses_today_as_since(cal, cfg):
@@ -565,7 +648,15 @@ def test_report_l0_owner_falls_back_to_triage_owner(cal, cfg):
         assignee=None,
     )
     flags = frozenset({"STALE"})
-    esc = escalate(report_unassigned, flags, story=None, epic=None, today=TODAY, cal=cal, cfg=cfg_with_triage)
+    esc = escalate(
+        report_unassigned,
+        flags,
+        story=None,
+        epic=None,
+        today=TODAY,
+        cal=cal,
+        cfg=cfg_with_triage,
+    )
     assert esc is not None
     assert esc.level == 0
     assert esc.owner == "triage.specialist"
@@ -577,7 +668,15 @@ def test_report_l0_owner_falls_back_to_triage_owner(cal, cfg):
         status="analyzing",
         assignee="assigned.qc",
     )
-    esc2 = escalate(report_assigned, flags, story=None, epic=None, today=TODAY, cal=cal, cfg=cfg_with_triage)
+    esc2 = escalate(
+        report_assigned,
+        flags,
+        story=None,
+        epic=None,
+        today=TODAY,
+        cal=cal,
+        cfg=cfg_with_triage,
+    )
     assert esc2 is not None
     assert esc2.level == 0
     assert esc2.owner == "assigned.qc"
@@ -591,11 +690,17 @@ def test_report_l0_owner_falls_back_to_triage_owner(cal, cfg):
         ("equals_both", "charlie", "charlie", "charlie"),
     ],
 )
-def test_l1_never_equals_l0_or_requester(cal, case, task_assignee, default_lead, reschedule_req):
+def test_l1_never_equals_l0_or_requester(
+    cal, case, task_assignee, default_lead, reschedule_req
+):
     cfg = EggsConfig(
         lead_user="cuong.huynh",
         jira_url="https://jira.eggstech.io.vn",
-        projects={"PROJ": ProjectConfig(key="PROJ", default_lead_ba=default_lead, triage_owner="cuong.huynh")},
+        projects={
+            "PROJ": ProjectConfig(
+                key="PROJ", default_lead_ba=default_lead, triage_owner="cuong.huynh"
+            )
+        },
     )
     task = _make_issue(
         key="PROJ-1",
@@ -608,12 +713,12 @@ def test_l1_never_equals_l0_or_requester(cal, case, task_assignee, default_lead,
     )
     flags = frozenset({"STALE"})
     # At 1 working day (2026-11-17), escalation level is 1
-    esc = escalate(task, flags, story=None, epic=None, today=date(2026, 11, 17), cal=cal, cfg=cfg)
+    esc = escalate(
+        task, flags, story=None, epic=None, today=date(2026, 11, 17), cal=cal, cfg=cfg
+    )
     assert esc is not None
     assert esc.level == 1
     assert esc.owner != task_assignee
     if reschedule_req:
         assert esc.owner != reschedule_req
     assert esc.owner == "cuong.huynh"
-
-

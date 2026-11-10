@@ -15,9 +15,11 @@ def test_fake_gateway_implements_protocol():
 def test_transition_not_available_raises_jira_error():
     fake = FakeGateway(
         issues={"PROJ-1": {"key": "PROJ-1", "fields": {"status": {"name": "Open"}}}},
-        transitions={"PROJ-1": ["Start", "Cancel"]}
+        transitions={"PROJ-1": ["Start", "Cancel"]},
     )
-    with pytest.raises(JiraError, match="Transition 'QC Pass' not available for PROJ-1"):
+    with pytest.raises(
+        JiraError, match="Transition 'QC Pass' not available for PROJ-1"
+    ):
         fake.transition("PROJ-1", "QC Pass")
 
     # Happy path transition works
@@ -27,13 +29,21 @@ def test_transition_not_available_raises_jira_error():
 
 def test_update_fields_recorded_and_mutates():
     fake = FakeGateway(
-        issues={"PROJ-1": {"key": "PROJ-1", "fields": {"summary": "Original", "customfield_10108": "2026-11-01"}}}
+        issues={
+            "PROJ-1": {
+                "key": "PROJ-1",
+                "fields": {"summary": "Original", "customfield_10108": "2026-11-01"},
+            }
+        }
     )
-    fake.update_fields("PROJ-1", {"customfield_10108": "2026-11-10"}, notify_users=False)
+    fake.update_fields(
+        "PROJ-1", {"customfield_10108": "2026-11-10"}, notify_users=False
+    )
 
     # Assert record contains notify_users flag
     matching_calls = [
-        c for c in fake.calls
+        c
+        for c in fake.calls
         if c[0] == "update_fields" and c[2].get("notify_users") is False
     ]
     assert len(matching_calls) == 1
@@ -49,8 +59,18 @@ def test_create_issue_and_get():
 
 
 def test_worklogs_since():
-    w1 = Worklog(issue_key="P-1", author="alice", started=datetime(2026, 11, 10, 8, 0, tzinfo=timezone.utc), seconds=3600)
-    w2 = Worklog(issue_key="P-2", author="bob", started=datetime(2026, 11, 12, 10, 0, tzinfo=timezone.utc), seconds=7200)
+    w1 = Worklog(
+        issue_key="P-1",
+        author="alice",
+        started=datetime(2026, 11, 10, 8, 0, tzinfo=timezone.utc),
+        seconds=3600,
+    )
+    w2 = Worklog(
+        issue_key="P-2",
+        author="bob",
+        started=datetime(2026, 11, 12, 10, 0, tzinfo=timezone.utc),
+        seconds=7200,
+    )
     fake = FakeGateway(issues={}, worklogs=[w1, w2])
 
     logs = fake.worklogs_since(datetime(2026, 11, 11, 0, 0, tzinfo=timezone.utc))
@@ -60,7 +80,9 @@ def test_worklogs_since():
 
 def test_fake_gateway_transition_status_mutation():
     fake = FakeGateway(
-        issues={"PROJ-1": {"key": "PROJ-1", "fields": {"status": {"name": "DEV To Do"}}}},
+        issues={
+            "PROJ-1": {"key": "PROJ-1", "fields": {"status": {"name": "DEV To Do"}}}
+        },
         transitions={"PROJ-1": ["Start"]},
         status_after={"Start": "Dev In Progress"},
     )
@@ -81,4 +103,3 @@ def test_fake_gateway_search_filter():
     res = fake.search("dummy jql", fields=["key"])
     assert len(res) == 1
     assert res[0]["key"] == "P-2"
-

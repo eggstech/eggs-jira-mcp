@@ -83,11 +83,21 @@ class FakeGateway(JiraGateway):
         comment: str | None = None,
     ) -> None:
         self._record("transition", key, transition_name, fields=fields, comment=comment)
-        matched_trans_key = next((k for k in self.errors_on_transition if k[0] == key and k[1].lower() == transition_name.lower()), None)
+        matched_trans_key = next(
+            (
+                k
+                for k in self.errors_on_transition
+                if k[0] == key and k[1].lower() == transition_name.lower()
+            ),
+            None,
+        )
         if matched_trans_key:
             raise self.errors_on_transition[matched_trans_key]
         available = self.transitions.get(key, [])
-        matched = next((name for name in available if name.lower() == transition_name.lower()), None)
+        matched = next(
+            (name for name in available if name.lower() == transition_name.lower()),
+            None,
+        )
         if not matched:
             msg = f"Transition '{transition_name}' not available for {key}"
             raise JiraError(msg)
@@ -103,7 +113,9 @@ class FakeGateway(JiraGateway):
             if fields:
                 issue_fields.update(fields)
             if comment:
-                comments = issue_fields.setdefault("comment", {}).setdefault("comments", [])
+                comments = issue_fields.setdefault("comment", {}).setdefault(
+                    "comments", []
+                )
                 comments.append({"body": comment, "author": {"name": self.user}})
 
     def update_fields(
@@ -154,7 +166,13 @@ class FakeGateway(JiraGateway):
         if key in self.issues:
             issue_fields = self.issues[key].setdefault("fields", {})
             wls = issue_fields.setdefault("worklog", {}).setdefault("worklogs", [])
-            wls.append({"author": {"name": self.user}, "timeSpent": time_spent, "comment": comment})
+            wls.append(
+                {
+                    "author": {"name": self.user},
+                    "timeSpent": time_spent,
+                    "comment": comment,
+                }
+            )
 
     def create_issue(self, fields: dict) -> str:
         self._record("create_issue", fields)
@@ -168,16 +186,22 @@ class FakeGateway(JiraGateway):
         }
         if "parent" in fields and fields["parent"].get("key") in self.issues:
             parent_key = fields["parent"]["key"]
-            p_subtasks = self.issues[parent_key].setdefault("fields", {}).setdefault("subtasks", [])
-            p_subtasks.append({
-                "id": str(self._next_id),
-                "key": key,
-                "fields": {
-                    "issuetype": fields.get("issuetype", {}),
-                    "status": {"name": "DEV To Do"},
-                    "summary": fields.get("summary", ""),
-                },
-            })
+            p_subtasks = (
+                self.issues[parent_key]
+                .setdefault("fields", {})
+                .setdefault("subtasks", [])
+            )
+            p_subtasks.append(
+                {
+                    "id": str(self._next_id),
+                    "key": key,
+                    "fields": {
+                        "issuetype": fields.get("issuetype", {}),
+                        "status": {"name": "DEV To Do"},
+                        "summary": fields.get("summary", ""),
+                    },
+                }
+            )
         return key
 
     def link(self, link_type: str, inward_key: str, outward_key: str) -> None:
@@ -190,10 +214,7 @@ class FakeGateway(JiraGateway):
             Filters in-memory worklogs on `w.started >= since`.
         """
         self._record("worklogs_since", since)
-        return [
-            w for w in self.worklogs
-            if w.started >= since
-        ]
+        return [w for w in self.worklogs if w.started >= since]
 
     def components(self, project: str) -> list[str]:
         self._record("components", project)
@@ -214,7 +235,9 @@ class FakeGateway(JiraGateway):
         all_roles = dict(self.role_members.get(project, {}))
         if role_names is not None:
             norm_names = {r.strip().lower() for r in role_names}
-            return {k: v for k, v in all_roles.items() if k.strip().lower() in norm_names}
+            return {
+                k: v for k, v in all_roles.items() if k.strip().lower() in norm_names
+            }
         return all_roles
 
     def get_fields(self) -> list[dict]:
@@ -230,28 +253,37 @@ class FakeGateway(JiraGateway):
         for iss_key, iss_dict in self.issues.items():
             fields = iss_dict.get("fields", {})
             if fields.get("parent", {}).get("key") == key:
-                found.append({
-                    "id": iss_dict.get("id", ""),
-                    "key": iss_key,
-                    "fields": {
-                        "issuetype": fields.get("issuetype", {}),
-                        "status": fields.get("status", {}),
-                        "summary": fields.get("summary", ""),
-                    },
-                })
+                found.append(
+                    {
+                        "id": iss_dict.get("id", ""),
+                        "key": iss_key,
+                        "fields": {
+                            "issuetype": fields.get("issuetype", {}),
+                            "status": fields.get("status", {}),
+                            "summary": fields.get("summary", ""),
+                        },
+                    }
+                )
         return found
 
     def get_worklogs(self, key: str) -> list[dict]:
         self._record("get_worklogs", key)
         wls: list[dict[str, Any]] = []
         if key in self.issues:
-            wls = list(self.issues[key].get("fields", {}).get("worklog", {}).get("worklogs", []))
+            wls = list(
+                self.issues[key]
+                .get("fields", {})
+                .get("worklog", {})
+                .get("worklogs", [])
+            )
         for w in self.worklogs:
             if w.issue_key == key:
                 if not any(wl.get("author", {}).get("name") == w.author for wl in wls):
-                    wls.append({
-                        "author": {"name": w.author},
-                        "timeSpentSeconds": w.seconds,
-                        "started": w.started.isoformat(),
-                    })
+                    wls.append(
+                        {
+                            "author": {"name": w.author},
+                            "timeSpentSeconds": w.seconds,
+                            "started": w.started.isoformat(),
+                        }
+                    )
         return wls

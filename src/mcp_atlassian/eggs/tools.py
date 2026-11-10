@@ -145,8 +145,7 @@ async def get_user_gateway(ctx: Context, *, write: bool = False) -> JiraGateway:
         if request is not None:
             state = getattr(request, "state", None)
             has_token = bool(
-                state is not None
-                and getattr(state, "user_atlassian_token", None)
+                state is not None and getattr(state, "user_atlassian_token", None)
             )
             if not has_token:
                 raise ValueError(
@@ -450,9 +449,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
     )
     async def eggs_workstream_status(
         ctx: Context,
-        epic: Annotated[
-            str | None, Field(description="Mã Epic", default=None)
-        ] = None,
+        epic: Annotated[str | None, Field(description="Mã Epic", default=None)] = None,
         project: Annotated[
             str | None, Field(description="Mã dự án", default=None)
         ] = None,
@@ -592,9 +589,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
             res = await asyncio.to_thread(
                 _attach_next_agenda_item, res, user_gw, ident, cfg, cal, now
             )
-        return json.dumps(
-            action_result_to_dict(res), indent=2, ensure_ascii=False
-        )
+        return json.dumps(action_result_to_dict(res), indent=2, ensure_ascii=False)
 
     @server.tool(tags=write_tags, annotations={"title": "EGGS Start"})
     @eggs_check_write_access
@@ -645,9 +640,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
             res = await asyncio.to_thread(
                 _attach_next_agenda_item, res, user_gw, ident, cfg, cal, now
             )
-        return json.dumps(
-            action_result_to_dict(res), indent=2, ensure_ascii=False
-        )
+        return json.dumps(action_result_to_dict(res), indent=2, ensure_ascii=False)
 
     @server.tool(tags=write_tags, annotations={"title": "EGGS Log Work"})
     @eggs_check_write_access
@@ -698,9 +691,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
             res = await asyncio.to_thread(
                 _attach_next_agenda_item, res, user_gw, ident, cfg, cal, now
             )
-        return json.dumps(
-            action_result_to_dict(res), indent=2, ensure_ascii=False
-        )
+        return json.dumps(action_result_to_dict(res), indent=2, ensure_ascii=False)
 
     @server.tool(tags=write_tags, annotations={"title": "EGGS Submit QC"})
     @eggs_check_write_access
@@ -765,18 +756,14 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
             res = await asyncio.to_thread(
                 _attach_next_agenda_item, res, user_gw, ident, cfg, cal, now
             )
-        return json.dumps(
-            action_result_to_dict(res), indent=2, ensure_ascii=False
-        )
+        return json.dumps(action_result_to_dict(res), indent=2, ensure_ascii=False)
 
     @server.tool(tags=write_tags, annotations={"title": "EGGS Finish"})
     @eggs_check_write_access
     async def eggs_finish(
         ctx: Context,
         key: Annotated[str, Field(description="Mã issue hoàn thành")],
-        note: Annotated[
-            str, Field(description="Ghi chú hoàn thành", default="")
-        ] = "",
+        note: Annotated[str, Field(description="Ghi chú hoàn thành", default="")] = "",
         *,
         dry_run: Annotated[
             bool, Field(description="Chạy thử nghiệm", default=False)
@@ -815,17 +802,13 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
             res = await asyncio.to_thread(
                 _attach_next_agenda_item, res, user_gw, ident, cfg, cal, now
             )
-        return json.dumps(
-            action_result_to_dict(res), indent=2, ensure_ascii=False
-        )
+        return json.dumps(action_result_to_dict(res), indent=2, ensure_ascii=False)
 
     @server.tool(tags=write_tags, annotations={"title": "EGGS QC Start"})
     @eggs_check_write_access
     async def eggs_qc_start(
         ctx: Context,
-        key: Annotated[
-            str, Field(description="Mã issue hoặc Story bắt đầu kiểm thử")
-        ],
+        key: Annotated[str, Field(description="Mã issue hoặc Story bắt đầu kiểm thử")],
         *,
         dry_run: Annotated[
             bool, Field(description="Chạy thử nghiệm", default=False)
@@ -854,17 +837,13 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
             res = await asyncio.to_thread(
                 _attach_next_agenda_item, res, user_gw, ident, cfg, cal, now
             )
-        return json.dumps(
-            action_result_to_dict(res), indent=2, ensure_ascii=False
-        )
+        return json.dumps(action_result_to_dict(res), indent=2, ensure_ascii=False)
 
     @server.tool(tags=write_tags, annotations={"title": "EGGS QC Pass"})
     @eggs_check_write_access
     async def eggs_qc_pass(
         ctx: Context,
-        key: Annotated[
-            str, Field(description="Mã issue hoặc Story đã kiểm thử đạt")
-        ],
+        key: Annotated[str, Field(description="Mã issue hoặc Story đã kiểm thử đạt")],
         time_spent: Annotated[
             str | None,
             Field(description="Thời gian kiểm thử (nếu log work)", default=None),
@@ -906,9 +885,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
             res = await asyncio.to_thread(
                 _attach_next_agenda_item, res, user_gw, ident, cfg, cal, now
             )
-        return json.dumps(
-            action_result_to_dict(res), indent=2, ensure_ascii=False
-        )
+        return json.dumps(action_result_to_dict(res), indent=2, ensure_ascii=False)
 
     @server.tool(tags=write_tags, annotations={"title": "EGGS QC Fail"})
     @eggs_check_write_access
@@ -925,9 +902,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
             str | None,
             Field(description="Thời gian làm việc cần log", default=None),
         ] = None,
-        reason: Annotated[
-            str, Field(description="Lý do không đạt", default="")
-        ] = "",
+        reason: Annotated[str, Field(description="Lý do không đạt", default="")] = "",
         note: Annotated[
             str, Field(description="Lý do/ghi chú không đạt", default="")
         ] = "",
@@ -967,9 +942,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
             res = await asyncio.to_thread(
                 _attach_next_agenda_item, res, user_gw, ident, cfg, cal, now
             )
-        return json.dumps(
-            action_result_to_dict(res), indent=2, ensure_ascii=False
-        )
+        return json.dumps(action_result_to_dict(res), indent=2, ensure_ascii=False)
 
     @server.tool(tags=write_tags, annotations={"title": "EGGS Block"})
     @eggs_check_write_access
@@ -979,9 +952,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         reason: Annotated[str, Field(description="Lý do tắc nghẽn")],
         blocked_by: Annotated[
             str,
-            Field(
-                description="Bên gây tắc nghẽn (Nội bộ / Khách hàng / Bên thứ ba)"
-            ),
+            Field(description="Bên gây tắc nghẽn (Nội bộ / Khách hàng / Bên thứ ba)"),
         ],
         *,
         dry_run: Annotated[
@@ -1019,18 +990,14 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
             res = await asyncio.to_thread(
                 _attach_next_agenda_item, res, user_gw, ident, cfg, cal, now
             )
-        return json.dumps(
-            action_result_to_dict(res), indent=2, ensure_ascii=False
-        )
+        return json.dumps(action_result_to_dict(res), indent=2, ensure_ascii=False)
 
     @server.tool(tags=write_tags, annotations={"title": "EGGS Unblock"})
     @eggs_check_write_access
     async def eggs_unblock(
         ctx: Context,
         key: Annotated[str, Field(description="Mã issue được gỡ tắc nghẽn")],
-        note: Annotated[
-            str, Field(description="Ghi chú khi gỡ cờ", default="")
-        ] = "",
+        note: Annotated[str, Field(description="Ghi chú khi gỡ cờ", default="")] = "",
         *,
         dry_run: Annotated[
             bool, Field(description="Chạy thử nghiệm", default=False)
@@ -1063,13 +1030,9 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
             res = await asyncio.to_thread(
                 _attach_next_agenda_item, res, user_gw, ident, cfg, cal, now
             )
-        return json.dumps(
-            action_result_to_dict(res), indent=2, ensure_ascii=False
-        )
+        return json.dumps(action_result_to_dict(res), indent=2, ensure_ascii=False)
 
-    @server.tool(
-        tags=write_tags, annotations={"title": "EGGS Request Reschedule"}
-    )
+    @server.tool(tags=write_tags, annotations={"title": "EGGS Request Reschedule"})
     @eggs_check_write_access
     async def eggs_request_reschedule(
         ctx: Context,
@@ -1166,20 +1129,14 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
             res = await asyncio.to_thread(
                 _attach_next_agenda_item, res, user_gw, ident, cfg, cal, now
             )
-        return json.dumps(
-            action_result_to_dict(res), indent=2, ensure_ascii=False
-        )
+        return json.dumps(action_result_to_dict(res), indent=2, ensure_ascii=False)
 
     @server.tool(tags=write_tags, annotations={"title": "EGGS Flow Reschedule"})
     @eggs_check_write_access
     async def eggs_flow_reschedule(
         ctx: Context,
-        story_key: Annotated[
-            str, Field(description="Mã Story cần dời Due Date")
-        ],
-        new_due: Annotated[
-            str, Field(description="Hạn bàn giao mới (YYYY-MM-DD)")
-        ],
+        story_key: Annotated[str, Field(description="Mã Story cần dời Due Date")],
+        new_due: Annotated[str, Field(description="Hạn bàn giao mới (YYYY-MM-DD)")],
         reason: Annotated[str, Field(description="Lý do điều chỉnh hạn")],
         *,
         dry_run: Annotated[
@@ -1218,9 +1175,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
             res = await asyncio.to_thread(
                 _attach_next_agenda_item, res, user_gw, ident, cfg, cal, now
             )
-        return json.dumps(
-            action_result_to_dict(res), indent=2, ensure_ascii=False
-        )
+        return json.dumps(action_result_to_dict(res), indent=2, ensure_ascii=False)
 
     @server.tool(tags=write_tags, annotations={"title": "EGGS UAT"})
     @eggs_check_write_access
@@ -1239,9 +1194,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         ] = None,
         stories: Annotated[
             list[str] | None,
-            Field(
-                description="Danh sách Story chỉ định (nếu có)", default=None
-            ),
+            Field(description="Danh sách Story chỉ định (nếu có)", default=None),
         ] = None,
         *,
         dry_run: Annotated[
@@ -1280,13 +1233,9 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
             res = await asyncio.to_thread(
                 _attach_next_agenda_item, res, user_gw, ident, cfg, cal, now
             )
-        return json.dumps(
-            action_result_to_dict(res), indent=2, ensure_ascii=False
-        )
+        return json.dumps(action_result_to_dict(res), indent=2, ensure_ascii=False)
 
-    @server.tool(
-        tags=write_tags, annotations={"title": "EGGS Decide Reschedule"}
-    )
+    @server.tool(tags=write_tags, annotations={"title": "EGGS Decide Reschedule"})
     @eggs_check_write_access
     async def eggs_decide_reschedule(
         ctx: Context,
@@ -1296,9 +1245,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         ] = "",
         new_end: Annotated[
             str | None,
-            Field(
-                description="Ngày kết thúc duyệt mới (YYYY-MM-DD)", default=None
-            ),
+            Field(description="Ngày kết thúc duyệt mới (YYYY-MM-DD)", default=None),
         ] = None,
         *,
         approved: Annotated[
@@ -1343,9 +1290,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
             res = await asyncio.to_thread(
                 _attach_next_agenda_item, res, user_gw, ident, cfg, cal, now
             )
-        return json.dumps(
-            action_result_to_dict(res), indent=2, ensure_ascii=False
-        )
+        return json.dumps(action_result_to_dict(res), indent=2, ensure_ascii=False)
 
     @server.tool(tags=write_tags, annotations={"title": "EGGS Cancel"})
     @eggs_check_write_access
@@ -1383,9 +1328,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
             res = await asyncio.to_thread(
                 _attach_next_agenda_item, res, user_gw, ident, cfg, cal, now
             )
-        return json.dumps(
-            action_result_to_dict(res), indent=2, ensure_ascii=False
-        )
+        return json.dumps(action_result_to_dict(res), indent=2, ensure_ascii=False)
 
     @server.tool(tags=write_tags, annotations={"title": "EGGS End Day"})
     @eggs_check_write_access
@@ -1423,8 +1366,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
                 refusal = ActionResult(
                     ok=False,
                     message=(
-                        f"Mục {idx}: công việc cuối ngày phải là một "
-                        "đối tượng (dict)."
+                        f"Mục {idx}: công việc cuối ngày phải là một đối tượng (dict)."
                     ),
                     changes=[],
                     next_actions=[],
@@ -1519,9 +1461,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
             res = await asyncio.to_thread(
                 _attach_next_agenda_item, res, user_gw, ident, cfg, cal, now
             )
-        return json.dumps(
-            action_result_to_dict(res), indent=2, ensure_ascii=False
-        )
+        return json.dumps(action_result_to_dict(res), indent=2, ensure_ascii=False)
 
     @server.tool(tags=write_tags, annotations={"title": "EGGS Triage Open"})
     @eggs_check_write_access
@@ -1574,9 +1514,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
             res = await asyncio.to_thread(
                 _attach_next_agenda_item, res, user_gw, ident, cfg, cal, now
             )
-        return json.dumps(
-            action_result_to_dict(res), indent=2, ensure_ascii=False
-        )
+        return json.dumps(action_result_to_dict(res), indent=2, ensure_ascii=False)
 
     @server.tool(tags=write_tags, annotations={"title": "EGGS Triage Close"})
     @eggs_check_write_access
@@ -1592,12 +1530,8 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
                 )
             ),
         ],
-        note: Annotated[
-            str, Field(description="Ghi chú kết luận phản ánh")
-        ],
-        time_spent: Annotated[
-            str, Field(description="Thời gian phân tích phản ánh")
-        ],
+        note: Annotated[str, Field(description="Ghi chú kết luận phản ánh")],
+        time_spent: Annotated[str, Field(description="Thời gian phân tích phản ánh")],
         bug_target: Annotated[
             str | None,
             Field(
@@ -1626,9 +1560,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         )
 
         proj = key.split("-")[0]
-        refusal = _check_project_role(
-            ident, proj, {"qc", "lead_ba"}, "QC hoặc Lead-BA"
-        )
+        refusal = _check_project_role(ident, proj, {"qc", "lead_ba"}, "QC hoặc Lead-BA")
         if refusal:
             return json.dumps(
                 action_result_to_dict(refusal), indent=2, ensure_ascii=False
@@ -1651,6 +1583,4 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
             res = await asyncio.to_thread(
                 _attach_next_agenda_item, res, user_gw, ident, cfg, cal, now
             )
-        return json.dumps(
-            action_result_to_dict(res), indent=2, ensure_ascii=False
-        )
+        return json.dumps(action_result_to_dict(res), indent=2, ensure_ascii=False)

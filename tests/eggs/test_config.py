@@ -175,14 +175,51 @@ def test_resolution_logical():
 
 def test_load_example_config():
     # Verify that config.example.yaml loads cleanly and has all 27 projects
-    example_path = Path(__file__).parent.parent.parent / "src" / "mcp_atlassian" / "eggs" / "config.example.yaml"
+    example_path = (
+        Path(__file__).parent.parent.parent
+        / "src"
+        / "mcp_atlassian"
+        / "eggs"
+        / "config.example.yaml"
+    )
     cfg = load_config(str(example_path))
     assert cfg.lead_user == "cuong.huynh"
     assert len(cfg.projects) == 27
-    for frozen_key in ["BUL", "HUE", "HMKCHAT", "SUP", "KP", "MAP", "MEW", "RS", "SL", "UW", "VL", "ZBS"]:
+    for frozen_key in [
+        "BUL",
+        "HUE",
+        "HMKCHAT",
+        "SUP",
+        "KP",
+        "MAP",
+        "MEW",
+        "RS",
+        "SL",
+        "UW",
+        "VL",
+        "ZBS",
+    ]:
         assert cfg.projects[frozen_key].frozen is True, f"{frozen_key} should be frozen"
-    for active_key in ["ROCKY", "HMKPOS", "HMKLOYAL", "HH", "LPPOS", "RFID", "CP", "CRM", "EGG", "AILA", "FNB", "HMKAI", "AEON", "GSH", "RIV"]:
-        assert cfg.projects[active_key].frozen is False, f"{active_key} should not be frozen"
+    for active_key in [
+        "ROCKY",
+        "HMKPOS",
+        "HMKLOYAL",
+        "HH",
+        "LPPOS",
+        "RFID",
+        "CP",
+        "CRM",
+        "EGG",
+        "AILA",
+        "FNB",
+        "HMKAI",
+        "AEON",
+        "GSH",
+        "RIV",
+    ]:
+        assert cfg.projects[active_key].frozen is False, (
+            f"{active_key} should not be frozen"
+        )
     assert cfg.fields["planned_start"] == "customfield_10108"
     assert cfg.fields["planned_end"] == "customfield_10109"
     assert cfg.fields["epic_name"] == "customfield_10102"
@@ -220,7 +257,9 @@ projects:
 
 def test_load_config_roles_and_end_day_hour(tmp_path):
     # Default roles and end_day_hour
-    cfg_default = EggsConfig(lead_user="cuong.huynh", jira_url="https://jira.eggstech.io.vn")
+    cfg_default = EggsConfig(
+        lead_user="cuong.huynh", jira_url="https://jira.eggstech.io.vn"
+    )
     assert cfg_default.thresholds.end_day_hour == 17
     assert cfg_default.roles == {
         "lead_ba": ["Business Analysts", "Administrators"],
@@ -489,6 +528,3 @@ projects:
     cfg = load_config(str(cfg_file))
     assert cfg.fields["epic_name"] == "customfield_10102"
     assert cfg.fields["planned_start"] == "customfield_99999"
-
-
-

@@ -221,7 +221,9 @@ def test_cleared_flag_adds_comment(cfg: EggsConfig, cal: WorkCalendar):
     assert payload[cfg.fields["health_flags"]] is None
 
 
-def test_evaluate_skips_resolved_issues_zero_gateway_writes(cfg: EggsConfig, cal: WorkCalendar):
+def test_evaluate_skips_resolved_issues_zero_gateway_writes(
+    cfg: EggsConfig, cal: WorkCalendar
+):
     # Done and Cancelled issues that still carry flags -> zero gateway writes (no update_fields, no add_comment)
     issues = {
         "RFID-DONE": {
@@ -302,7 +304,9 @@ def test_evaluate_rewrites_manually_tampered_health_flags_to_computed_value(
     assert len(res) > 0
 
     # Health Flags must be rewritten to computed value (None / cleared)
-    update_calls = [c for c in gw.calls if c[0] == "update_fields" and c[1][0] == "RFID-1"]
+    update_calls = [
+        c for c in gw.calls if c[0] == "update_fields" and c[1][0] == "RFID-1"
+    ]
     assert len(update_calls) == 1
     _, args, kwargs = update_calls[0]
     payload = args[1]
@@ -315,12 +319,16 @@ def test_evaluate_rewrites_manually_tampered_health_flags_to_computed_value(
     assert gw.issues["RFID-1"]["fields"][cfg.fields["escalation_level"]] is None
 
     # Comment recorded for cleared flag
-    comment_calls = [c for c in gw.calls if c[0] == "add_comment" and c[1][0] == "RFID-1"]
+    comment_calls = [
+        c for c in gw.calls if c[0] == "add_comment" and c[1][0] == "RFID-1"
+    ]
     assert len(comment_calls) == 1
     assert "Đã xử lý: OVERDUE" in comment_calls[0][1][1]
 
 
-def test_evaluate_update_fields_error_adds_no_comment(cfg: EggsConfig, cal: WorkCalendar, caplog):
+def test_evaluate_update_fields_error_adds_no_comment(
+    cfg: EggsConfig, cal: WorkCalendar, caplog
+):
     # If update_fields raises, it must not stop the run: log key and error, skip comment
     issues = {
         "RFID-1": {
@@ -412,7 +420,9 @@ def test_evaluate_update_fields_error_continues_with_other_issues(
     gw = FakeGateway(issues=issues, worklogs=worklogs)
     orig_update_fields = gw.update_fields
 
-    def selective_update_fields(key: str, fields: dict, *, notify_users: bool = True) -> None:
+    def selective_update_fields(
+        key: str, fields: dict, *, notify_users: bool = True
+    ) -> None:
         if key == "RFID-FAIL":
             raise JiraError("Field customfield_10712 cannot be set")
         orig_update_fields(key, fields, notify_users=notify_users)
@@ -432,11 +442,15 @@ def test_evaluate_update_fields_error_continues_with_other_issues(
     assert "Field customfield_10712 cannot be set" in error_logs[0]
 
     # RFID-FAIL comments skipped
-    fail_comments = [c for c in gw.calls if c[0] == "add_comment" and c[1][0] == "RFID-FAIL"]
+    fail_comments = [
+        c for c in gw.calls if c[0] == "add_comment" and c[1][0] == "RFID-FAIL"
+    ]
     assert len(fail_comments) == 0
 
     # RFID-OK update succeeded
-    ok_updates = [c for c in gw.calls if c[0] == "update_fields" and c[1][0] == "RFID-OK"]
+    ok_updates = [
+        c for c in gw.calls if c[0] == "update_fields" and c[1][0] == "RFID-OK"
+    ]
     assert len(ok_updates) == 1
 
 
@@ -466,15 +480,24 @@ def test_main_evaluate_exits_1_on_write_failure(
     }
     gw = FakeGateway(issues=issues)
 
-    def failing_update_fields(key: str, fields: dict, *, notify_users: bool = True) -> None:
+    def failing_update_fields(
+        key: str, fields: dict, *, notify_users: bool = True
+    ) -> None:
         raise JiraError("Internal Jira error")
 
     gw.update_fields = failing_update_fields
 
-    monkeypatch.setattr("mcp_atlassian.eggs.guardian.datetime", type("MockDT", (), {
-        "now": lambda tz=None: NOW_WED,
-        "combine": datetime.combine,
-    }))
+    monkeypatch.setattr(
+        "mcp_atlassian.eggs.guardian.datetime",
+        type(
+            "MockDT",
+            (),
+            {
+                "now": lambda tz=None: NOW_WED,
+                "combine": datetime.combine,
+            },
+        ),
+    )
 
     code = main(["evaluate"], gateway=gw)
     assert code == 1
@@ -515,10 +538,17 @@ def test_guardian_main_evaluate_logs_only_counts_no_issue_content(
         Worklog(issue_key="RFID-1", author="alice", started=NOW_WED, seconds=3600),
     ]
     gw = FakeGateway(issues=issues, worklogs=worklogs)
-    monkeypatch.setattr("mcp_atlassian.eggs.guardian.datetime", type("MockDT", (), {
-        "now": lambda tz=None: NOW_WED,
-        "combine": datetime.combine,
-    }))
+    monkeypatch.setattr(
+        "mcp_atlassian.eggs.guardian.datetime",
+        type(
+            "MockDT",
+            (),
+            {
+                "now": lambda tz=None: NOW_WED,
+                "combine": datetime.combine,
+            },
+        ),
+    )
 
     with caplog.at_level(logging.INFO):
         code = main(["evaluate"], gateway=gw)
@@ -533,7 +563,6 @@ def test_guardian_main_evaluate_logs_only_counts_no_issue_content(
         assert "Secret issue summary" not in rec.message
         assert "customfield_" not in rec.message
         assert "health_flags" not in rec.message
-
 
 
 def test_story_gets_forecast_and_at_risk(cfg: EggsConfig, cal: WorkCalendar):
@@ -568,7 +597,9 @@ def test_story_gets_forecast_and_at_risk(cfg: EggsConfig, cal: WorkCalendar):
     gw = FakeGateway(issues=issues)
     evaluate(gw, cfg, NOW_WED, cal)
 
-    story_updates = [c for c in gw.calls if c[0] == "update_fields" and c[1][0] == "RFID-10"]
+    story_updates = [
+        c for c in gw.calls if c[0] == "update_fields" and c[1][0] == "RFID-10"
+    ]
     assert len(story_updates) == 1
     story_payload = story_updates[0][1][1]
 
@@ -580,7 +611,9 @@ def test_story_gets_forecast_and_at_risk(cfg: EggsConfig, cal: WorkCalendar):
     assert story_payload[cfg.fields["slip_days"]] == 2
 
 
-def test_report_posts_lead_and_project_webhooks(cfg: EggsConfig, monkeypatch: pytest.MonkeyPatch, tmp_path):
+def test_report_posts_lead_and_project_webhooks(
+    cfg: EggsConfig, monkeypatch: pytest.MonkeyPatch, tmp_path
+):
     config_file = tmp_path / "eggs.yaml"
     config_file.write_text(yaml.safe_dump(dataclasses.asdict(cfg), allow_unicode=True))
 
@@ -591,14 +624,23 @@ def test_report_posts_lead_and_project_webhooks(cfg: EggsConfig, monkeypatch: py
     gw = FakeGateway(issues={})
     posted: list[tuple[str, str, str | None]] = []
 
-    def mock_post_to_chat(webhook: str, text: str, http_post: Any = None, project_key: str | None = None) -> None:
+    def mock_post_to_chat(
+        webhook: str, text: str, http_post: Any = None, project_key: str | None = None
+    ) -> None:
         posted.append((webhook, text, project_key))
 
     monkeypatch.setattr("mcp_atlassian.eggs.guardian.post_to_chat", mock_post_to_chat)
-    monkeypatch.setattr("mcp_atlassian.eggs.guardian.datetime", type("MockDT", (), {
-        "now": lambda tz=None: NOW_WED,
-        "combine": datetime.combine,
-    }))
+    monkeypatch.setattr(
+        "mcp_atlassian.eggs.guardian.datetime",
+        type(
+            "MockDT",
+            (),
+            {
+                "now": lambda tz=None: NOW_WED,
+                "combine": datetime.combine,
+            },
+        ),
+    )
 
     code = main(["report"], gateway=gw)
     assert code == 0
@@ -610,7 +652,9 @@ def test_report_posts_lead_and_project_webhooks(cfg: EggsConfig, monkeypatch: py
     assert cfg.projects["CP"].chat_webhook in webhooks_called
 
 
-def test_report_continues_on_failure_and_returns_1(cfg: EggsConfig, monkeypatch: pytest.MonkeyPatch, tmp_path):
+def test_report_continues_on_failure_and_returns_1(
+    cfg: EggsConfig, monkeypatch: pytest.MonkeyPatch, tmp_path
+):
     config_file = tmp_path / "eggs.yaml"
     config_file.write_text(yaml.safe_dump(dataclasses.asdict(cfg), allow_unicode=True))
 
@@ -621,16 +665,25 @@ def test_report_continues_on_failure_and_returns_1(cfg: EggsConfig, monkeypatch:
     gw = FakeGateway(issues={})
     posted: list[str] = []
 
-    def mock_post_to_chat(webhook: str, text: str, http_post: Any = None, project_key: str | None = None) -> None:
+    def mock_post_to_chat(
+        webhook: str, text: str, http_post: Any = None, project_key: str | None = None
+    ) -> None:
         if project_key == "CP":
             raise RuntimeError("Gửi Google Chat thất bại cho CP (HTTP 500 | HTTPError)")
         posted.append(webhook)
 
     monkeypatch.setattr("mcp_atlassian.eggs.guardian.post_to_chat", mock_post_to_chat)
-    monkeypatch.setattr("mcp_atlassian.eggs.guardian.datetime", type("MockDT", (), {
-        "now": lambda tz=None: NOW_WED,
-        "combine": datetime.combine,
-    }))
+    monkeypatch.setattr(
+        "mcp_atlassian.eggs.guardian.datetime",
+        type(
+            "MockDT",
+            (),
+            {
+                "now": lambda tz=None: NOW_WED,
+                "combine": datetime.combine,
+            },
+        ),
+    )
 
     code = main(["report"], gateway=gw)
     assert code == 1
@@ -639,7 +692,9 @@ def test_report_continues_on_failure_and_returns_1(cfg: EggsConfig, monkeypatch:
     assert cfg.projects["RFID"].chat_webhook in posted
 
 
-def test_report_unknown_project_stderr_and_exit_1(cfg: EggsConfig, monkeypatch: pytest.MonkeyPatch, tmp_path, capsys):
+def test_report_unknown_project_stderr_and_exit_1(
+    cfg: EggsConfig, monkeypatch: pytest.MonkeyPatch, tmp_path, capsys
+):
     config_file = tmp_path / "eggs.yaml"
     config_file.write_text(yaml.safe_dump(dataclasses.asdict(cfg), allow_unicode=True))
 
@@ -648,10 +703,17 @@ def test_report_unknown_project_stderr_and_exit_1(cfg: EggsConfig, monkeypatch: 
     monkeypatch.setenv("EGGS_CONFIG", str(config_file))
 
     gw = FakeGateway(issues={})
-    monkeypatch.setattr("mcp_atlassian.eggs.guardian.datetime", type("MockDT", (), {
-        "now": lambda tz=None: NOW_WED,
-        "combine": datetime.combine,
-    }))
+    monkeypatch.setattr(
+        "mcp_atlassian.eggs.guardian.datetime",
+        type(
+            "MockDT",
+            (),
+            {
+                "now": lambda tz=None: NOW_WED,
+                "combine": datetime.combine,
+            },
+        ),
+    )
 
     code = main(["report", "--project", "UNKNOWN"], gateway=gw)
     assert code == 1
@@ -659,7 +721,9 @@ def test_report_unknown_project_stderr_and_exit_1(cfg: EggsConfig, monkeypatch: 
     assert "Dự án không tồn tại" in captured.err
 
 
-def test_report_frozen_project_stderr_and_exit_1(cfg: EggsConfig, monkeypatch: pytest.MonkeyPatch, tmp_path, capsys):
+def test_report_frozen_project_stderr_and_exit_1(
+    cfg: EggsConfig, monkeypatch: pytest.MonkeyPatch, tmp_path, capsys
+):
     # Create config with a frozen project
     cfg_data = dataclasses.asdict(cfg)
     cfg_data["projects"]["RFID"]["frozen"] = True
@@ -671,10 +735,17 @@ def test_report_frozen_project_stderr_and_exit_1(cfg: EggsConfig, monkeypatch: p
     monkeypatch.setenv("EGGS_CONFIG", str(config_file))
 
     gw = FakeGateway(issues={})
-    monkeypatch.setattr("mcp_atlassian.eggs.guardian.datetime", type("MockDT", (), {
-        "now": lambda tz=None: NOW_WED,
-        "combine": datetime.combine,
-    }))
+    monkeypatch.setattr(
+        "mcp_atlassian.eggs.guardian.datetime",
+        type(
+            "MockDT",
+            (),
+            {
+                "now": lambda tz=None: NOW_WED,
+                "combine": datetime.combine,
+            },
+        ),
+    )
 
     code = main(["report", "--project", "RFID"], gateway=gw)
     assert code == 1
@@ -682,7 +753,9 @@ def test_report_frozen_project_stderr_and_exit_1(cfg: EggsConfig, monkeypatch: p
     assert "đang bị đóng băng" in captured.err
 
 
-def test_remind_continues_on_failure_and_returns_1(cfg: EggsConfig, monkeypatch: pytest.MonkeyPatch, tmp_path):
+def test_remind_continues_on_failure_and_returns_1(
+    cfg: EggsConfig, monkeypatch: pytest.MonkeyPatch, tmp_path
+):
     config_file = tmp_path / "eggs.yaml"
     config_file.write_text(yaml.safe_dump(dataclasses.asdict(cfg), allow_unicode=True))
 
@@ -714,16 +787,27 @@ def test_remind_continues_on_failure_and_returns_1(cfg: EggsConfig, monkeypatch:
     gw = FakeGateway(issues=issues, worklogs=[])
     posted: list[str] = []
 
-    def mock_post_to_chat(webhook: str, text: str, http_post: Any = None, project_key: str | None = None) -> None:
+    def mock_post_to_chat(
+        webhook: str, text: str, http_post: Any = None, project_key: str | None = None
+    ) -> None:
         if project_key == "RFID":
-            raise RuntimeError("Gửi Google Chat thất bại cho RFID (HTTP 500 | HTTPError)")
+            raise RuntimeError(
+                "Gửi Google Chat thất bại cho RFID (HTTP 500 | HTTPError)"
+            )
         posted.append(webhook)
 
     monkeypatch.setattr("mcp_atlassian.eggs.guardian.post_to_chat", mock_post_to_chat)
-    monkeypatch.setattr("mcp_atlassian.eggs.guardian.datetime", type("MockDT", (), {
-        "now": lambda tz=None: NOW_WED,
-        "combine": datetime.combine,
-    }))
+    monkeypatch.setattr(
+        "mcp_atlassian.eggs.guardian.datetime",
+        type(
+            "MockDT",
+            (),
+            {
+                "now": lambda tz=None: NOW_WED,
+                "combine": datetime.combine,
+            },
+        ),
+    )
 
     code = main(["remind"], gateway=gw)
     assert code == 1
@@ -732,7 +816,9 @@ def test_remind_continues_on_failure_and_returns_1(cfg: EggsConfig, monkeypatch:
     assert cfg.lead_chat_webhook in posted
 
 
-def test_remind_does_not_send_lead_message_when_nothing_missing(cfg: EggsConfig, monkeypatch: pytest.MonkeyPatch, tmp_path):
+def test_remind_does_not_send_lead_message_when_nothing_missing(
+    cfg: EggsConfig, monkeypatch: pytest.MonkeyPatch, tmp_path
+):
     config_file = tmp_path / "eggs.yaml"
     config_file.write_text(yaml.safe_dump(dataclasses.asdict(cfg), allow_unicode=True))
 
@@ -743,14 +829,23 @@ def test_remind_does_not_send_lead_message_when_nothing_missing(cfg: EggsConfig,
     gw = FakeGateway(issues={}, worklogs=[])
     posted: list[str] = []
 
-    def mock_post_to_chat(webhook: str, text: str, http_post: Any = None, project_key: str | None = None) -> None:
+    def mock_post_to_chat(
+        webhook: str, text: str, http_post: Any = None, project_key: str | None = None
+    ) -> None:
         posted.append(webhook)
 
     monkeypatch.setattr("mcp_atlassian.eggs.guardian.post_to_chat", mock_post_to_chat)
-    monkeypatch.setattr("mcp_atlassian.eggs.guardian.datetime", type("MockDT", (), {
-        "now": lambda tz=None: NOW_WED,
-        "combine": datetime.combine,
-    }))
+    monkeypatch.setattr(
+        "mcp_atlassian.eggs.guardian.datetime",
+        type(
+            "MockDT",
+            (),
+            {
+                "now": lambda tz=None: NOW_WED,
+                "combine": datetime.combine,
+            },
+        ),
+    )
 
     code = main(["remind"], gateway=gw)
     assert code == 0
@@ -758,7 +853,9 @@ def test_remind_does_not_send_lead_message_when_nothing_missing(cfg: EggsConfig,
     assert len(posted) == 0
 
 
-def test_remind_lists_workers_without_role(cfg: EggsConfig, monkeypatch: pytest.MonkeyPatch, tmp_path):
+def test_remind_lists_workers_without_role(
+    cfg: EggsConfig, monkeypatch: pytest.MonkeyPatch, tmp_path
+):
     config_file = tmp_path / "eggs.yaml"
     config_file.write_text(yaml.safe_dump(dataclasses.asdict(cfg), allow_unicode=True))
 
@@ -768,7 +865,9 @@ def test_remind_lists_workers_without_role(cfg: EggsConfig, monkeypatch: pytest.
 
     # User 'stranger_bob' has worklog in RFID within last 5 working days, but no role in RFID
     worklogs = [
-        Worklog(issue_key="RFID-1", author="stranger_bob", started=NOW_WED, seconds=3600),
+        Worklog(
+            issue_key="RFID-1", author="stranger_bob", started=NOW_WED, seconds=3600
+        ),
     ]
     # Project roles: only alice in Developers
     gw = FakeGateway(
@@ -778,14 +877,23 @@ def test_remind_lists_workers_without_role(cfg: EggsConfig, monkeypatch: pytest.
     )
     posted: list[tuple[str, str, str | None]] = []
 
-    def mock_post_to_chat(webhook: str, text: str, http_post: Any = None, project_key: str | None = None) -> None:
+    def mock_post_to_chat(
+        webhook: str, text: str, http_post: Any = None, project_key: str | None = None
+    ) -> None:
         posted.append((webhook, text, project_key))
 
     monkeypatch.setattr("mcp_atlassian.eggs.guardian.post_to_chat", mock_post_to_chat)
-    monkeypatch.setattr("mcp_atlassian.eggs.guardian.datetime", type("MockDT", (), {
-        "now": lambda tz=None: NOW_WED,
-        "combine": datetime.combine,
-    }))
+    monkeypatch.setattr(
+        "mcp_atlassian.eggs.guardian.datetime",
+        type(
+            "MockDT",
+            (),
+            {
+                "now": lambda tz=None: NOW_WED,
+                "combine": datetime.combine,
+            },
+        ),
+    )
 
     code = main(["remind"], gateway=gw)
     assert code == 0
@@ -798,7 +906,9 @@ def test_remind_lists_workers_without_role(cfg: EggsConfig, monkeypatch: pytest.
     assert lead_messages[0].strip().endswith("Gõ `/eggs` để cập nhật.")
 
 
-def test_skip_on_non_working_day(cfg: EggsConfig, monkeypatch: pytest.MonkeyPatch, tmp_path):
+def test_skip_on_non_working_day(
+    cfg: EggsConfig, monkeypatch: pytest.MonkeyPatch, tmp_path
+):
     config_file = tmp_path / "eggs.yaml"
     config_file.write_text(yaml.safe_dump(dataclasses.asdict(cfg), allow_unicode=True))
 
@@ -808,10 +918,17 @@ def test_skip_on_non_working_day(cfg: EggsConfig, monkeypatch: pytest.MonkeyPatc
 
     # Saturday 2026-11-21
     saturday = datetime(2026, 11, 21, 10, 0, tzinfo=TZ)
-    monkeypatch.setattr("mcp_atlassian.eggs.guardian.datetime", type("MockDT", (), {
-        "now": lambda tz=None: saturday,
-        "combine": datetime.combine,
-    }))
+    monkeypatch.setattr(
+        "mcp_atlassian.eggs.guardian.datetime",
+        type(
+            "MockDT",
+            (),
+            {
+                "now": lambda tz=None: saturday,
+                "combine": datetime.combine,
+            },
+        ),
+    )
 
     gw = FakeGateway()
 
@@ -831,7 +948,9 @@ def test_skip_on_non_working_day(cfg: EggsConfig, monkeypatch: pytest.MonkeyPatc
 
 def test_ops_epics_creates_missing_only(cfg: EggsConfig, cal: WorkCalendar):
     # RFID already has current month OPS epic; CP does not
-    summary_rfid = cfg.ops_epic_summary.format(month=TODAY_WED.month, year=TODAY_WED.year)
+    summary_rfid = cfg.ops_epic_summary.format(
+        month=TODAY_WED.month, year=TODAY_WED.year
+    )
     issues = {
         "RFID-OPS": {
             "key": "RFID-OPS",
@@ -863,7 +982,12 @@ def test_ops_epics_creates_missing_only(cfg: EggsConfig, cal: WorkCalendar):
     # Exact payload must include epic_name customfield_10102 = summary
     assert create_payload["customfield_10102"] == summary_rfid
     assert set(create_payload.keys()) == {
-        "project", "issuetype", "summary", "assignee", "duedate", "customfield_10102"
+        "project",
+        "issuetype",
+        "summary",
+        "assignee",
+        "duedate",
+        "customfield_10102",
     }
 
     # Second run is idempotent: creates nothing
