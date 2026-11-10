@@ -110,3 +110,7 @@ class JiraGateway(Protocol):
     ) -> dict[str, list[str]]:
         """Fetch role members mapped by Jira role name: {role_name: [usernames]}."""
         ...
+
+    def get_fields(self) -> list[dict]:
+        """Fetch all Jira field definitions."""
+        ...

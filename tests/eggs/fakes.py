@@ -28,6 +28,7 @@ class FakeGateway(JiraGateway):
         me: dict | None = None,
         role_members: dict[str, dict[str, list[str]]] | None = None,
         errors_on_transition: dict[tuple[str, str], JiraError] | None = None,
+        field_definitions: list[dict] | None = None,
     ) -> None:
         self.issues = dict(issues or {})
         self.worklogs = list(worklogs or [])
@@ -39,6 +40,7 @@ class FakeGateway(JiraGateway):
         self.me = dict(me if me is not None else {"name": user, "displayName": user})
         self.role_members = dict(role_members or {})
         self.errors_on_transition = dict(errors_on_transition or {})
+        self.field_definitions = list(field_definitions or [])
         self.calls: list[tuple[str, tuple, dict[str, Any]]] = []
         self._next_id = 1000
 
@@ -213,3 +215,7 @@ class FakeGateway(JiraGateway):
             norm_names = {r.strip().lower() for r in role_names}
             return {k: v for k, v in all_roles.items() if k.strip().lower() in norm_names}
         return all_roles
+
+    def get_fields(self) -> list[dict]:
+        self._record("get_fields")
+        return list(self.field_definitions)

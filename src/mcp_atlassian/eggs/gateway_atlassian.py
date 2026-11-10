@@ -420,3 +420,8 @@ class AtlassianGateway(JiraGateway):
             role_members[role_name] = usernames
 
         return role_members
+
+    def get_fields(self) -> list[dict]:
+        """Fetch all Jira field definitions."""
+        res = self.client.get("rest/api/2/field")
+        return res if isinstance(res, list) else []

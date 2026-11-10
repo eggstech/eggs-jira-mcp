@@ -237,6 +237,11 @@ def issue_from_json(raw: dict, cfg: EggsConfig) -> Issue:
         else (str(reported_by_raw) if reported_by_raw is not None else None)
     )
     reported_at = parse_jira_dt(get_cf("reported_at"), cfg)
+    forecast_end = _parse_date(get_cf("forecast_end"))
+    raw_slip = get_cf("slip_days")
+    slip_days = int(raw_slip) if raw_slip is not None else None
+    raw_unsched = get_cf("unscheduled_count")
+    unscheduled_count = int(raw_unsched) if raw_unsched is not None else None
 
     return Issue(
         key=key,
@@ -274,6 +279,9 @@ def issue_from_json(raw: dict, cfg: EggsConfig) -> Issue:
         reported_by=reported_by,
         reported_at=reported_at,
         resolution=resolution,
+        forecast_end=forecast_end,
+        slip_days=slip_days,
+        unscheduled_count=unscheduled_count,
     )
 
 

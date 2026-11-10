@@ -41,6 +41,9 @@ class Issue:
     reported_by: str | None = None
     reported_at: datetime | None = None
     resolution: str | None = None
+    forecast_end: date | None = None
+    slip_days: int | None = None
+    unscheduled_count: int | None = None
 
     @property
     def is_resolved(self) -> bool:

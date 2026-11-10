@@ -47,6 +47,9 @@
 - **Ruff line length (E501) in test files:**
   - In `pyproject.toml` under `[tool.ruff.lint.per-file-ignores]`, reverted `E501` from `"tests/**/*.py"` and instead added a separate entry `"tests/eggs/**/*.py" = ["S", "ANN", "B017", "E501"]` to preserve upstream test linting settings.
 
+- **Guardian CLI entrypoint in pyproject.toml:**
+  - Added `eggs-guardian = "mcp_atlassian.eggs.guardian:main"` to `[project.scripts]` in `pyproject.toml` to provide the standalone cron/CLI binary.
+
 ## Behavior notes
 
 - **Past-due Story within unscheduled window:**

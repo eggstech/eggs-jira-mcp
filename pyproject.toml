@@ -48,6 +48,7 @@ build-backend = "hatchling.build"
 
 [project.scripts]
 mcp-atlassian = "mcp_atlassian:main"
+eggs-guardian = "mcp_atlassian.eggs.guardian:main"
 
 [dependency-groups]
 dev = [
