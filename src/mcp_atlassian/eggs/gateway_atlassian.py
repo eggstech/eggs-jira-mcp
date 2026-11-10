@@ -4,6 +4,8 @@ import logging
 from datetime import datetime
 from typing import Any
 
+from requests.exceptions import HTTPError
+
 from .gateway import JiraError, JiraGateway
 from .mapping import parse_jira_dt
 from .model import Worklog
@@ -87,7 +89,28 @@ class AtlassianGateway(JiraGateway):
         if comment:
             payload["update"] = {"comment": [{"add": {"body": comment}}]}
 
-        self.client.post(f"rest/api/2/issue/{key}/transitions", data=payload)
+        try:
+            self.client.post(f"rest/api/2/issue/{key}/transitions", data=payload)
+        except HTTPError as e:
+            status_code = e.response.status_code if e.response is not None else None
+            error_messages: list[str] = []
+            errors_dict: dict[str, str] = {}
+            if e.response is not None:
+                try:
+                    data = e.response.json()
+                    if isinstance(data, dict):
+                        error_messages = data.get("errorMessages") or []
+                        errors_dict = data.get("errors") or {}
+                except Exception:  # noqa: BLE001, S110
+                    pass
+            all_errs = list(error_messages) + list(errors_dict.values())
+            msg = "\n".join(all_errs) if all_errs else str(e)
+            raise JiraError(
+                msg,
+                status_code=status_code,
+                error_messages=error_messages,
+                errors=errors_dict,
+            ) from e
 
     def update_fields(
         self,

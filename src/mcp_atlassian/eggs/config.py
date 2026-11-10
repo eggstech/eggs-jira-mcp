@@ -48,7 +48,7 @@ class EggsConfig:
     ops_epic_prefix: str = "[OPS]"
     ops_epic_summary: str = "[OPS] Vận hành & Hotfix {month:02d}/{year}"
     hotfix_prefix: str = "[HOTFIX]"
-    bot_user: str = "eggs-bot"
+    bot_user: str = "eggsbot"
     fields: dict[str, str] = field(default_factory=dict)
     statuses: dict[str, str] = field(default_factory=dict)
     issue_types: dict[str, list[str]] = field(default_factory=dict)
@@ -256,7 +256,7 @@ def load_config(path: str | None = None) -> EggsConfig:
             "ops_epic_summary", "[OPS] Vận hành & Hotfix {month:02d}/{year}"
         ),
         hotfix_prefix=data.get("hotfix_prefix", "[HOTFIX]"),
-        bot_user=data.get("bot_user", "eggs-bot"),
+        bot_user=data.get("bot_user", "eggsbot"),
         fields=data.get("fields", {}),
         statuses=data.get("statuses", {}),
         issue_types=data.get("issue_types", {}),

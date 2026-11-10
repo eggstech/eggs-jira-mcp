@@ -26,7 +26,12 @@
      register_eggs_tools(jira_mcp)
      ```
    - Dynamically registers toolset `"eggs"` in `ALL_TOOLSETS` and `JIRA_TOOLSETS`.
-   - Guarded to skip registration when `generate_tool_docs` or `tests/unit` are running to preserve upstream documentation checks and existing unit test suite assertions.
+   - Guarded by the `EGGS_ENABLED` environment variable (truthy: `"1"`, `"true"`, `"yes"`; default off). When `EGGS_ENABLED` is unset or falsy, `register_eggs_tools()` returns immediately without registering the `eggs` toolset or its 25 tools.
+   - Upstream unit tests and `scripts/generate_tool_docs.py --check` run with `EGGS_ENABLED` unset, keeping EGGS tools out of upstream generated documentation and preserving exact upstream assertions.
+
+5. **Deployment & Credential Isolation:**
+   - Deployment sets `TOOLSETS=eggs` (or appropriate toolset list) and must **never** set `ALLOW_GLOBAL_CRED_FALLBACK`.
+   - `get_user_gateway(ctx, write=True)` strictly enforces that write operations carry a per-user Personal Access Token (PAT) via `Authorization` header populating `request.state.user_atlassian_token`. Requests lacking a per-user PAT are rejected early with a clear Vietnamese error message, ensuring zero write fallback to global/operator credentials.
 
 ## Deviations from plan
 

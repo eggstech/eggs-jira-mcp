@@ -13,7 +13,7 @@ reschedule_interrupt_value: "Chen ngang"
 blocked_internal_value: "Nội bộ"
 ops_epic_summary: "[OPS] Vận hành & Hotfix {month:02d}/{year}"
 hotfix_prefix: "[HOTFIX]"
-bot_user: eggs-bot
+bot_user: eggsbot
 
 # Working calendar & thresholds
 thresholds:
@@ -144,6 +144,7 @@ transitions:
   start_triage: Start Triage
   close_report: Close Report
   start_analysis: Start Analysis
+  set_due: Set Due Date
   ready_for_dev: Ready For Dev
   close_epic: Close Epic
 

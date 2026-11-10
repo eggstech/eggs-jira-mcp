@@ -830,7 +830,7 @@ def test_snapshot_unknown_eta_from_child_l2(cfg, cal):
 
 
 def test_bot_user_excluded_from_not_updated_section(cfg, cal):
-    # eggs-bot has an in-progress issue without yesterday worklog, but must be excluded from not_updated
+    # eggsbot has an in-progress issue without yesterday worklog, but must be excluded from not_updated
     snapshot = Snapshot(
         issues={},
         flags={},

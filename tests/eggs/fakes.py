@@ -27,6 +27,7 @@ class FakeGateway(JiraGateway):
         search_filter: Callable[[str, dict], bool] | None = None,
         me: dict | None = None,
         role_members: dict[str, dict[str, list[str]]] | None = None,
+        errors_on_transition: dict[tuple[str, str], JiraError] | None = None,
     ) -> None:
         self.issues = dict(issues or {})
         self.worklogs = list(worklogs or [])
@@ -37,6 +38,7 @@ class FakeGateway(JiraGateway):
         self.search_filter = search_filter
         self.me = dict(me if me is not None else {"name": user, "displayName": user})
         self.role_members = dict(role_members or {})
+        self.errors_on_transition = dict(errors_on_transition or {})
         self.calls: list[tuple[str, tuple, dict[str, Any]]] = []
         self._next_id = 1000
 
@@ -79,6 +81,9 @@ class FakeGateway(JiraGateway):
         comment: str | None = None,
     ) -> None:
         self._record("transition", key, transition_name, fields=fields, comment=comment)
+        matched_trans_key = next((k for k in self.errors_on_transition if k[0] == key and k[1].lower() == transition_name.lower()), None)
+        if matched_trans_key:
+            raise self.errors_on_transition[matched_trans_key]
         available = self.transitions.get(key, [])
         matched = next((name for name in available if name.lower() == transition_name.lower()), None)
         if not matched:
@@ -143,6 +148,10 @@ class FakeGateway(JiraGateway):
             seconds=seconds,
         )
         self.worklogs.append(log)
+        if key in self.issues:
+            issue_fields = self.issues[key].setdefault("fields", {})
+            wls = issue_fields.setdefault("worklog", {}).setdefault("worklogs", [])
+            wls.append({"author": {"name": self.user}, "timeSpent": time_spent, "comment": comment})
 
     def create_issue(self, fields: dict) -> str:
         self._record("create_issue", fields)
@@ -154,6 +163,18 @@ class FakeGateway(JiraGateway):
             "key": key,
             "fields": dict(fields),
         }
+        if "parent" in fields and fields["parent"].get("key") in self.issues:
+            parent_key = fields["parent"]["key"]
+            p_subtasks = self.issues[parent_key].setdefault("fields", {}).setdefault("subtasks", [])
+            p_subtasks.append({
+                "id": str(self._next_id),
+                "key": key,
+                "fields": {
+                    "issuetype": fields.get("issuetype", {}),
+                    "status": {"name": "DEV To Do"},
+                    "summary": fields.get("summary", ""),
+                },
+            })
         return key
 
     def link(self, link_type: str, inward_key: str, outward_key: str) -> None:

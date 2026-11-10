@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+import os
+from datetime import date, datetime, timezone
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
@@ -11,11 +12,16 @@ from fastmcp import FastMCP
 
 from mcp_atlassian.eggs.actions import ActionResult
 from mcp_atlassian.eggs.agenda import AgendaItem, SuggestedAction
+from mcp_atlassian.eggs.calendar import WorkCalendar
 from mcp_atlassian.eggs.config import EggsConfig, ProjectConfig
 from mcp_atlassian.eggs.tools import (
     ALL_EGGS_TOOL_NAMES,
     READ_EGGS_TOOL_NAMES,
+    _attach_next_agenda_item,
+    _make_snapshot,
     clear_identity_cache,
+    get_roles_reader,
+    get_user_gateway,
     register_eggs_tools,
     set_roles_reader,
 )
@@ -93,6 +99,9 @@ def cfg() -> EggsConfig:
             "adhoc": "Ad-hoc Task",
             "report": "User Report",
         },
+        transitions={
+            "set_due": "Set Due Date",
+        },
         projects={
             "RFID": ProjectConfig(
                 key="RFID",
@@ -167,7 +176,7 @@ class TestEggsToolBehavior:
         register_eggs_tools(server, force=True)
 
         bot_gateway = FakeGateway(
-            user="eggs-bot",
+            user="eggsbot",
             role_members={"RFID": {"Business Analysts": ["ba.rfid"]}},
         )
         user_gateway = FakeGateway(
@@ -211,7 +220,7 @@ class TestEggsToolBehavior:
         register_eggs_tools(server, force=True)
 
         bot_gateway = FakeGateway(
-            user="eggs-bot",
+            user="eggsbot",
             role_members={"RFID": {"Developers": ["dev1"]}},
         )
         user_gateway = FakeGateway(
@@ -252,7 +261,7 @@ class TestEggsToolBehavior:
         register_eggs_tools(server, force=True)
 
         bot_gateway = FakeGateway(
-            user="eggs-bot",
+            user="eggsbot",
             role_members={"RFID": {"Developers": ["dev1"]}},
         )
         user_gateway = FakeGateway(
@@ -284,7 +293,7 @@ class TestEggsToolBehavior:
 
         # dev1 has only dev role in RFID, not lead_ba
         bot_gateway = FakeGateway(
-            user="eggs-bot",
+            user="eggsbot",
             role_members={"RFID": {"Developers": ["dev1"]}},
         )
         user_gateway = FakeGateway(
@@ -315,7 +324,7 @@ class TestEggsToolBehavior:
         register_eggs_tools(server, force=True)
 
         bot_gateway = FakeGateway(
-            user="eggs-bot",
+            user="eggsbot",
             role_members={"RFID": {"Developers": ["dev1"]}},
         )
         user_gateway = FakeGateway(
@@ -364,7 +373,7 @@ class TestEggsToolBehavior:
         register_eggs_tools(server, force=True)
 
         bot_gateway = FakeGateway(
-            user="eggs-bot",
+            user="eggsbot",
             role_members={
                 "RFID": {"Developers": ["dev1", "dev2"]},
             },
@@ -400,7 +409,7 @@ class TestEggsToolBehavior:
 
         user_gw_calls: list[str] = []
 
-        async def dynamic_user_gateway(ctx: Any) -> FakeGateway:
+        async def dynamic_user_gateway(ctx: Any, *args: Any, **kwargs: Any) -> FakeGateway:
             if not user_gw_calls:
                 user_gw_calls.append("dev1")
                 return user_gateway_1
@@ -433,7 +442,7 @@ class TestEggsToolBehavior:
         register_eggs_tools(server, force=True)
 
         bot_gateway = FakeGateway(
-            user="eggs-bot",
+            user="eggsbot",
             role_members={"RFID": {"Developers": ["dev1"]}},
         )
         user_gateway = FakeGateway(user="dev1")
@@ -472,7 +481,7 @@ class TestEggsToolBehavior:
 
         # dev1 is NOT assignee of RFID-10 (dev2 is)
         bot_gateway = FakeGateway(
-            user="eggs-bot",
+            user="eggsbot",
             role_members={"RFID": {"Developers": ["dev1", "dev2"], "Business Analysts": ["ba.rfid"]}},
         )
         user_gateway = FakeGateway(
@@ -513,7 +522,7 @@ class TestEggsToolBehavior:
 
         # cuong.huynh is cfg.lead_user, has no explicit project role in CP
         bot_gateway = FakeGateway(
-            user="eggs-bot",
+            user="eggsbot",
             role_members={"CP": {"Developers": ["other_dev"]}},
         )
         user_gateway = FakeGateway(
@@ -538,3 +547,268 @@ class TestEggsToolBehavior:
             data = json.loads(res_str.content[0].text)
             assert data["ok"] is True
             assert mock_uat.called
+
+    def test_get_roles_reader_pat_auth_and_errors(self, cfg: EggsConfig):
+        # 1. Success with PAT auth_type
+        set_roles_reader(None)
+        with (
+            patch.dict(os.environ, {"JIRA_URL": "https://jira.test", "EGGS_BOT_TOKEN": "bot-tok-123"}),
+            patch("mcp_atlassian.eggs.tools.JiraFetcher") as mock_fetcher_cls,
+        ):
+            mock_fetcher = MagicMock()
+            mock_fetcher_cls.return_value = mock_fetcher
+            reader = get_roles_reader(cfg)
+            assert reader is not None
+            mock_fetcher_cls.assert_called_once()
+            jira_config = mock_fetcher_cls.call_args[0][0]
+            assert jira_config.auth_type == "pat"
+            assert jira_config.url == "https://jira.test"
+            assert jira_config.personal_token == "bot-tok-123"
+
+        # 2. Missing JIRA_URL raises Vietnamese error
+        set_roles_reader(None)
+        cfg_no_url = EggsConfig(
+            lead_user="cuong.huynh",
+            jira_url="",
+            link_types={"interrupts": "is interrupted by", "causes": "causes", "relates": "relates to", "duplicates": "duplicates"},
+            projects={"RFID": ProjectConfig(key="RFID", default_lead_ba="ba", triage_owner="qc")},
+        )
+        with (
+            patch.dict(os.environ, {"EGGS_BOT_TOKEN": "bot-tok-123"}, clear=True),
+            pytest.raises(ValueError, match="Thiếu cấu hình JIRA_URL để kết nối Jira."),
+        ):
+            get_roles_reader(cfg_no_url)
+
+        # 3. Missing EGGS_BOT_TOKEN raises Vietnamese error
+        set_roles_reader(None)
+        with (
+            patch.dict(os.environ, {"JIRA_URL": "https://jira.test"}, clear=True),
+            pytest.raises(ValueError, match="Thiếu biến môi trường EGGS_BOT_TOKEN để đọc vai trò dự án."),
+        ):
+            get_roles_reader(cfg)
+
+    @pytest.mark.asyncio
+    async def test_eggs_enabled_env_flag(self):
+        # Default / unset -> not registered
+        srv_off = FastMCP("test_off")
+        with patch.dict(os.environ, {"EGGS_ENABLED": ""}, clear=True):
+            register_eggs_tools(srv_off, force=False)
+            assert len(await srv_off.list_tools()) == 0
+
+        # Falsy values -> not registered
+        for val in ("0", "false", "no", "off"):
+            srv = FastMCP(f"test_{val}")
+            with patch.dict(os.environ, {"EGGS_ENABLED": val}):
+                register_eggs_tools(srv, force=False)
+                assert len(await srv.list_tools()) == 0
+
+        # Truthy values -> registered (all 25 tools)
+        for val in ("1", "true", "yes", "TRUE", "Yes"):
+            srv = FastMCP(f"test_{val}")
+            with patch.dict(os.environ, {"EGGS_ENABLED": val}):
+                register_eggs_tools(srv, force=False)
+                assert len(await srv.list_tools()) == 25
+
+        # force=True overrides EGGS_ENABLED=False
+        srv_forced = FastMCP("test_forced")
+        with patch.dict(os.environ, {"EGGS_ENABLED": "false"}):
+            register_eggs_tools(srv_forced, force=True)
+            assert len(await srv_forced.list_tools()) == 25
+
+    def test_dates_asia_ho_chi_minh_timezone(self, cfg: EggsConfig):
+        # 06:00 Asia/Ho_Chi_Minh = 23:00 UTC previous day
+        dt_utc = datetime(2026, 11, 18, 23, 0, 0, tzinfo=timezone.utc)
+        dt_local = dt_utc.astimezone(ZoneInfo("Asia/Ho_Chi_Minh"))
+
+        assert dt_utc.date() == date(2026, 11, 18)
+        assert dt_local.date() == date(2026, 11, 19)
+
+        gw = FakeGateway(
+            issues={
+                "RFID-10": {
+                    "key": "RFID-10",
+                    "fields": {
+                        "issuetype": {"name": "Dev Task"},
+                        "summary": "Task 1",
+                        "status": {"name": "Dev In Progress"},
+                        "project": {"key": "RFID"},
+                    },
+                }
+            }
+        )
+        cal = WorkCalendar(cfg.holidays)
+        snapshot = _make_snapshot(gw, cfg, cal, now=dt_utc)
+        assert snapshot.today == date(2026, 11, 19)
+
+    @pytest.mark.asyncio
+    async def test_request_reschedule_no_impact_lead_not_assignee_refused(self, cfg: EggsConfig):
+        server = FastMCP("test_jira")
+        register_eggs_tools(server, force=True)
+
+        # cuong.huynh is lead_user, but task assignee is dev2
+        user_gateway = FakeGateway(
+            user="cuong.huynh",
+            issues={
+                "RFID-10": {
+                    "key": "RFID-10",
+                    "fields": {
+                        "issuetype": {"name": "Dev Task"},
+                        "summary": "Task 10",
+                        "status": {"name": "Dev In Progress"},
+                        "project": {"key": "RFID"},
+                        "assignee": {"name": "dev2"},
+                    },
+                }
+            },
+        )
+        bot_gateway = FakeGateway(
+            user="eggsbot",
+            role_members={"RFID": {"Developers": ["dev2"]}},
+        )
+
+        with (
+            patch("mcp_atlassian.eggs.tools.load_config", return_value=cfg),
+            patch("mcp_atlassian.eggs.tools.get_user_gateway", AsyncMock(return_value=user_gateway)),
+            patch("mcp_atlassian.eggs.tools.get_roles_reader", return_value=bot_gateway),
+        ):
+            res_str = await server.call_tool(
+                "eggs_request_reschedule",
+                {"key": "RFID-10", "no_impact": True, "reason": "Lead says no impact"},
+            )
+            data = json.loads(res_str.content[0].text)
+            assert data["ok"] is False
+            assert "assignee: dev2" in data["message"]
+
+    @pytest.mark.asyncio
+    async def test_end_day_validations(self, cfg: EggsConfig):
+        server = FastMCP("test_jira")
+        register_eggs_tools(server, force=True)
+
+        cfg_with_other = EggsConfig(
+            lead_user=cfg.lead_user,
+            jira_url=cfg.jira_url,
+            roles={"dev": ["Developers"], "qc": ["Testers"], "lead_ba": ["Business Analysts", "Administrators"], "other": ["Viewers"]},
+            link_types=cfg.link_types,
+            projects=cfg.projects,
+        )
+
+        user_gateway = FakeGateway(user="dev1")
+        bot_gateway = FakeGateway(
+            user="eggsbot",
+            role_members={"RFID": {"Developers": ["dev1"]}, "CP": {"Viewers": ["dev1"]}},
+        )
+
+        with (
+            patch("mcp_atlassian.eggs.tools.load_config", return_value=cfg_with_other),
+            patch("mcp_atlassian.eggs.tools.get_user_gateway", AsyncMock(return_value=user_gateway)),
+            patch("mcp_atlassian.eggs.tools.get_roles_reader", return_value=bot_gateway),
+        ):
+            # 1. Empty entries
+            res_empty = await server.call_tool("eggs_end_day", {"entries": []})
+            data_empty = json.loads(res_empty.content[0].text)
+            assert data_empty["ok"] is False
+            assert "Danh sách công việc cuối ngày không được để trống." in data_empty["message"]
+
+            # 2. Non-dict entry
+            res_nondict = await server.call_tool("eggs_end_day", {"entries": ["invalid"]})
+            data_nondict = json.loads(res_nondict.content[0].text)
+            assert data_nondict["ok"] is False
+            assert "phải là một đối tượng (dict)" in data_nondict["message"]
+
+            # 3. Entry missing key
+            res_nokey = await server.call_tool("eggs_end_day", {"entries": [{"time_spent": "1h"}]})
+            data_nokey = json.loads(res_nokey.content[0].text)
+            assert data_nokey["ok"] is False
+            assert "phải có mã 'key'" in data_nokey["message"]
+
+            # 4. Entry for project with missing role (e.g. CP-10)
+            res_norole = await server.call_tool(
+                "eggs_end_day",
+                {"entries": [{"key": "CP-10", "time_spent": "1h", "note": "Worked"}]},
+            )
+            data_norole = json.loads(res_norole.content[0].text)
+            assert data_norole["ok"] is False
+            assert "Dev, QC hoặc Lead-BA" in data_norole["message"]
+
+    @pytest.mark.asyncio
+    async def test_role_refusal_label_dev_qc_lead_ba(self, cfg: EggsConfig):
+        server = FastMCP("test_jira")
+        register_eggs_tools(server, force=True)
+
+        cfg_with_other = EggsConfig(
+            lead_user=cfg.lead_user,
+            jira_url=cfg.jira_url,
+            roles={"dev": ["Developers"], "qc": ["Testers"], "lead_ba": ["Business Analysts", "Administrators"], "other": ["Viewers"]},
+            link_types=cfg.link_types,
+            projects=cfg.projects,
+        )
+
+        # User has role in RFID, but in CP has only "other" role (Viewers)
+        user_gateway = FakeGateway(user="dev1")
+        bot_gateway = FakeGateway(
+            user="eggsbot",
+            role_members={"RFID": {"Developers": ["dev1"]}, "CP": {"Viewers": ["dev1"]}},
+        )
+
+        with (
+            patch("mcp_atlassian.eggs.tools.load_config", return_value=cfg_with_other),
+            patch("mcp_atlassian.eggs.tools.get_user_gateway", AsyncMock(return_value=user_gateway)),
+            patch("mcp_atlassian.eggs.tools.get_roles_reader", return_value=bot_gateway),
+        ):
+            # log_work on CP-10
+            res_lw = await server.call_tool("eggs_log_work", {"key": "CP-10", "time_spent": "1h", "note": "Log"})
+            data_lw = json.loads(res_lw.content[0].text)
+            assert data_lw["ok"] is False
+            assert "Dev, QC hoặc Lead-BA" in data_lw["message"]
+
+            # block on CP-10
+            res_b = await server.call_tool("eggs_block", {"key": "CP-10", "reason": "Wait", "blocked_by": "Nội bộ"})
+            data_b = json.loads(res_b.content[0].text)
+            assert data_b["ok"] is False
+            assert "Dev, QC hoặc Lead-BA" in data_b["message"]
+
+            # unblock on CP-10
+            res_ub = await server.call_tool("eggs_unblock", {"key": "CP-10", "note": "Resolved"})
+            data_ub = json.loads(res_ub.content[0].text)
+            assert data_ub["ok"] is False
+            assert "Dev, QC hoặc Lead-BA" in data_ub["message"]
+
+    @pytest.mark.asyncio
+    async def test_get_user_gateway_write_requires_user_token(self, cfg: EggsConfig):
+        # 1. Request context with NO user token on write=True
+        mock_ctx_no_token = MagicMock()
+        mock_ctx_no_token.request_context.request.state.user_atlassian_token = None
+
+        with (
+            patch("mcp_atlassian.eggs.tools.load_config", return_value=cfg),
+            pytest.raises(ValueError, match="Thao tác ghi yêu cầu token cá nhân"),
+        ):
+            await get_user_gateway(mock_ctx_no_token, write=True)
+
+        # 2. Request context WITH user token on write=True succeeds
+        mock_ctx_with_token = MagicMock()
+        mock_ctx_with_token.request_context.request.state.user_atlassian_token = "user-pat-xyz"
+        mock_fetcher = MagicMock()
+
+        with (
+            patch("mcp_atlassian.eggs.tools.load_config", return_value=cfg),
+            patch("mcp_atlassian.servers.dependencies.get_jira_fetcher", AsyncMock(return_value=mock_fetcher)),
+        ):
+            gw = await get_user_gateway(mock_ctx_with_token, write=True)
+            assert gw is not None
+
+    def test_attach_next_agenda_item_failure_adds_warning_message(self, cfg: EggsConfig):
+        res = ActionResult(ok=True, message="Thực hiện thành công.", changes=[], next_actions=[])
+        ident = MagicMock()
+        cal = WorkCalendar(cfg.holidays)
+        now = datetime.now(ZoneInfo(cfg.timezone))
+
+        # Faulty gateway that raises when building snapshot
+        faulty_gw = MagicMock()
+        faulty_gw.search.side_effect = RuntimeError("Connection dropped")
+
+        attached = _attach_next_agenda_item(res, faulty_gw, ident, cfg, cal, now)
+        assert attached.ok is True
+        assert "Thực hiện thành công." in attached.message
+        assert "Không lấy được việc tiếp theo." in attached.message
+

@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from .calendar import WorkCalendar
 from .config import EggsConfig
 from .gateway import JiraError
-from .mapping import CLEAR, issue_fields_for_write, issue_from_json
+from .mapping import issue_fields_for_write, issue_from_json
 from .model import Issue
 
 
@@ -79,6 +79,67 @@ class Actions:
             changes=[],
             next_actions=[],
         )
+
+    def _do_transition(
+        self,
+        key: str,
+        transition_name: str,
+        fields: dict | None = None,
+        comment: str | None = None,
+    ) -> ActionResult | None:
+        try:
+            self.gateway.transition(
+                key, transition_name, fields=fields, comment=comment
+            )
+            return None
+        except JiraError as e:
+            if e.status_code == 400 or e.error_messages or e.errors:
+                msgs = list(e.error_messages) + list(e.errors.values())
+                msg = (
+                    "\n".join(msgs)
+                    if msgs
+                    else (str(e) or "Lỗi từ Jira (400 Bad Request)")
+                )
+                return ActionResult(
+                    ok=False, message=msg, changes=[], next_actions=[]
+                )
+            raise
+
+    def _has_open_bug_subtask(self, story_issue: Issue) -> bool:
+        raw = self.gateway.get_issue(story_issue.key)
+        subtasks = raw.get("fields", {}).get("subtasks", [])
+        for st in subtasks:
+            fields = st.get("fields", {})
+            type_name = fields.get("issuetype", {}).get("name")
+            status_name = fields.get("status", {}).get("name")
+            if (
+                type_name
+                and self.cfg.type_logical(type_name, is_subtask=True) == "bug_sub"
+            ):
+                if status_name and self.cfg.status_logical(status_name) not in (
+                    "done",
+                    "cancelled",
+                ):
+                    return True
+        if hasattr(self.gateway, "issues"):
+            for _k, iss_dict in self.gateway.issues.items():
+                fields = iss_dict.get("fields", {})
+                parent_key = fields.get("parent", {}).get("key")
+                if parent_key == story_issue.key:
+                    type_name = fields.get("issuetype", {}).get("name")
+                    status_name = fields.get("status", {}).get("name")
+                    if (
+                        type_name
+                        and self.cfg.type_logical(type_name, is_subtask=True)
+                        == "bug_sub"
+                    ):
+                        if (
+                            status_name
+                            and self.cfg.status_logical(status_name)
+                            not in ("done", "cancelled")
+                        ):
+                            return True
+        return False
 
     # -------------------------------------------------------------------------
     # Work items
@@ -158,7 +219,9 @@ class Actions:
 
         payload = issue_fields_for_write(self.cfg, planned_start=start, planned_end=end)
         payload["timetracking"] = {"originalEstimate": estimate.strip()}
-        self.gateway.transition(key, matched, fields=payload)
+        err = self._do_transition(key, matched, fields=payload)
+        if err:
+            return err
 
         return ActionResult(
             ok=True,
@@ -237,7 +300,9 @@ class Actions:
             if not sched_write_res.ok:
                 return sched_write_res
 
-            self.gateway.transition(key, matched)
+            err = self._do_transition(key, matched)
+            if err:
+                return err
             return ActionResult(
                 ok=True,
                 message=f"Đã lên lịch và bắt đầu thực hiện {key}.",
@@ -269,7 +334,9 @@ class Actions:
                 next_actions=["log_work", "submit_qc", "block"],
             )
 
-        self.gateway.transition(key, matched)
+        err = self._do_transition(key, matched)
+        if err:
+            return err
 
         return ActionResult(
             ok=True,
@@ -369,7 +436,9 @@ class Actions:
         if time_spent:
             self.gateway.add_worklog(key, time_spent=time_spent, comment=note)
 
-        self.gateway.transition(key, matched)
+        err = self._do_transition(key, matched)
+        if err:
+            return err
 
         return ActionResult(
             ok=True,
@@ -406,9 +475,11 @@ class Actions:
         if time_spent:
             self.gateway.add_worklog(key, time_spent=time_spent, comment=note)
 
-        self.gateway.transition(
+        err = self._do_transition(
             key, matched, comment=note if (note and not time_spent) else None
         )
+        if err:
+            return err
 
         return ActionResult(
             ok=True,
@@ -463,12 +534,12 @@ class Actions:
 
         payload = issue_fields_for_write(
             self.cfg,
-            flagged=self.cfg.flagged_impediment_value,
             blocked_by=blocked_by,
             block_reason=reason,
-            blocked_since=self._today(),
         )
-        self.gateway.transition(key, matched, fields=payload)
+        err = self._do_transition(key, matched, fields=payload)
+        if err:
+            return err
 
         return ActionResult(
             ok=True,
@@ -498,16 +569,11 @@ class Actions:
                 next_actions=[],
             )
 
-        payload = issue_fields_for_write(
-            self.cfg,
-            flagged=CLEAR,
-            blocked_by=CLEAR,
-            block_reason=CLEAR,
-            blocked_since=CLEAR,
+        err = self._do_transition(
+            key, matched, comment=note if note else None
         )
-        self.gateway.transition(
-            key, matched, fields=payload, comment=note if note else None
-        )
+        if err:
+            return err
 
         return ActionResult(
             ok=True,
@@ -628,12 +694,12 @@ class Actions:
             self.cfg,
             proposed_end=actual_end,
             reschedule_reason=reason,
-            reschedule_status=self.cfg.reschedule_pending_value,
-            reschedule_requester=self.gateway.current_user(),
         )
-        self.gateway.transition(
+        err = self._do_transition(
             key, matched, fields=payload, comment=note if note else None
         )
+        if err:
+            return err
 
         return ActionResult(
             ok=True,
@@ -660,7 +726,25 @@ class Actions:
                 next_actions=[],
             )
 
-        self._get_issue(key)
+        issue = self._get_issue(key)
+        current_user = self.gateway.current_user()
+        if not issue.assignee or issue.assignee.lower() != current_user.lower():
+            return ActionResult(
+                ok=False,
+                message=(
+                    f"Chỉ người được giao việc ({issue.assignee}) "
+                    "mới có thể xác nhận không ảnh hưởng."
+                ),
+                changes=[],
+                next_actions=[],
+            )
+        if "NEED_RESCHEDULE" not in issue.health_flags:
+            return ActionResult(
+                ok=False,
+                message=f"Issue {key} không có cờ cảnh báo NEED_RESCHEDULE.",
+                changes=[],
+                next_actions=[],
+            )
         matched, avail = self._find_transition(key, "confirm_no_impact")
         if not matched:
             return self._unavailable_result(key, "confirm_no_impact", avail)
@@ -674,7 +758,9 @@ class Actions:
                 next_actions=[],
             )
 
-        self.gateway.transition(key, matched, comment=note)
+        err = self._do_transition(key, matched, comment=note)
+        if err:
+            return err
         return ActionResult(
             ok=True,
             message=f"Đã xác nhận không ảnh hưởng tiến độ cho {key}.",
@@ -818,7 +904,9 @@ class Actions:
                 next_actions=["qc_pass", "qc_fail"],
             )
 
-        self.gateway.transition(key, matched)
+        err = self._do_transition(key, matched)
+        if err:
+            return err
 
         return ActionResult(
             ok=True,
@@ -845,15 +933,28 @@ class Actions:
 
         issue = self._get_issue(key)
         if issue.type == "story" and not time_spent:
-            return ActionResult(
-                ok=False,
-                message=(
-                    f"QC Pass cho Story ({key}) bắt buộc phải nhập thời gian "
-                    "(time_spent)."
-                ),
-                changes=[],
-                next_actions=[],
+            caller = self.gateway.current_user()
+            raw = self.gateway.get_issue(key)
+            raw_worklogs = raw.get("fields", {}).get("worklog", {}).get("worklogs", [])
+            has_worklog = any(
+                wl.get("author", {}).get("name", "").lower() == caller.lower()
+                for wl in raw_worklogs
             )
+            if not has_worklog and hasattr(self.gateway, "worklogs"):
+                has_worklog = any(
+                    w.issue_key == key and w.author.lower() == caller.lower()
+                    for w in self.gateway.worklogs
+                )
+            if not has_worklog:
+                return ActionResult(
+                    ok=False,
+                    message=(
+                        f"QC Pass cho Story ({key}) yêu cầu người thực hiện ({caller}) "
+                        "phải có worklog trên Story. Vui lòng cung cấp time_spent."
+                    ),
+                    changes=[],
+                    next_actions=[],
+                )
 
         matched, avail = self._find_transition(key, "qc_pass")
         if not matched:
@@ -874,7 +975,9 @@ class Actions:
         if time_spent:
             self.gateway.add_worklog(key, time_spent, comment=note)
 
-        self.gateway.transition(key, matched, comment=note)
+        err = self._do_transition(key, matched, comment=note)
+        if err:
+            return err
 
         return ActionResult(
             ok=True,
@@ -903,11 +1006,13 @@ class Actions:
         issue = self._get_issue(key)
         actual_bugs = bugs or []
         if issue.type == "story":
-            if not actual_bugs:
+            if not actual_bugs and not self._has_open_bug_subtask(issue):
                 return ActionResult(
                     ok=False,
                     message=(
-                        f"QC Fail cho Story ({key}) bắt buộc phải có ít nhất 1 bug."
+                        f"QC Fail cho Story ({key}) bắt buộc phải có ít nhất 1 "
+                        "Bug sub-task đang mở (hãy truyền bugs hoặc tạo Bug "
+                        "sub-task trước)."
                     ),
                     changes=[],
                     next_actions=[],
@@ -967,7 +1072,9 @@ class Actions:
         if time_spent:
             self.gateway.add_worklog(key, time_spent, comment=reason)
 
-        self.gateway.transition(key, matched, comment=reason)
+        err = self._do_transition(key, matched, comment=reason)
+        if err:
+            return err
 
         return ActionResult(
             ok=True,
@@ -1032,6 +1139,40 @@ class Actions:
                 next_actions=[],
             )
 
+        if issue.status in ("open", "analyzing"):
+            matched, avail = self._find_transition(actual_key, "set_due")
+            if not matched:
+                return self._unavailable_result(actual_key, "set_due", avail)
+
+            changes = [
+                f"Đặt Due Date = {actual_due}",
+                f"Lý do: {reason}",
+            ]
+            if dry_run:
+                return ActionResult(
+                    ok=True,
+                    message=f"[Dry-run] Sẽ đặt Due Date cho {actual_key}",
+                    changes=changes,
+                    next_actions=[],
+                )
+
+            payload = issue_fields_for_write(self.cfg, due_date=actual_due)
+            comment_text = f"Đặt Due Date: {actual_due}. Lý do: {reason}"
+            if note:
+                comment_text += f". Ghi chú: {note}"
+            err = self._do_transition(
+                actual_key, matched, fields=payload, comment=comment_text
+            )
+            if err:
+                return err
+
+            return ActionResult(
+                ok=True,
+                message=f"Đã đặt Due Date thành công cho {actual_key}.",
+                changes=changes,
+                next_actions=[],
+            )
+
         matched, avail = self._find_transition(actual_key, "request_reschedule")
         if not matched:
             return self._unavailable_result(actual_key, "request_reschedule", avail)
@@ -1052,16 +1193,16 @@ class Actions:
             self.cfg,
             proposed_end=actual_due,
             reschedule_reason=reason,
-            reschedule_status=self.cfg.reschedule_pending_value,
-            reschedule_requester=self.gateway.current_user(),
         )
-        self.gateway.transition(
+        err = self._do_transition(
             actual_key, matched, fields=payload, comment=note if note else None
         )
+        if err:
+            return err
 
         return ActionResult(
             ok=True,
-            message=f"Đã gửi yêu cầu dời Due Date cho {story_key}.",
+            message=f"Đã gửi yêu cầu dời Due Date cho {actual_key}.",
             changes=changes,
             next_actions=["decide_reschedule"],
         )
@@ -1233,11 +1374,12 @@ class Actions:
                         next_actions=[],
                     )
                 s_bugs = (bugs or {}).get(k, [])
-                if not s_bugs:
+                if not s_bugs and not self._has_open_bug_subtask(matched_s):
                     return ActionResult(
                         ok=False,
                         message=(
-                            f"Story {k} chưa có bug nào được khai báo cho UAT Fail."
+                            f"Story {k} chưa có bug nào được khai báo và không "
+                            "có Bug sub-task mở cho UAT Fail."
                         ),
                         changes=[],
                         next_actions=[],
@@ -1301,7 +1443,11 @@ class Actions:
                             "parent": {"key": s.key},
                         }
                     )
-            self.gateway.transition(s.key, trans_name, comment=note if note else None)
+            err = self._do_transition(
+                s.key, trans_name, comment=note if note else None
+            )
+            if err:
+                return err
 
         story_keys_str = ", ".join(s.key for s in target_stories)
         return ActionResult(
@@ -1340,7 +1486,11 @@ class Actions:
             )
 
         current_user = self.gateway.current_user()
-        if issue.reschedule_requester and current_user == issue.reschedule_requester:
+        if (
+            approve
+            and issue.reschedule_requester
+            and current_user.lower() == issue.reschedule_requester.lower()
+        ):
             return ActionResult(
                 ok=False,
                 message=(
@@ -1381,32 +1531,19 @@ class Actions:
             )
 
         if approve:
-            write_args = {
-                "reschedule_status": CLEAR,
-                "reschedule_requester": CLEAR,
-                "proposed_end": CLEAR,
-            }
-            if issue.type == "story":
-                write_args["due_date"] = issue.proposed_end
-            else:
-                write_args["planned_end"] = issue.proposed_end
-            payload = issue_fields_for_write(self.cfg, **write_args)
-            self.gateway.transition(
+            err = self._do_transition(
                 key,
                 matched,
-                fields=payload,
                 comment=f"Phê duyệt dời lịch: {note}" if note else None,
             )
+            if err:
+                return err
         else:
-            payload = issue_fields_for_write(
-                self.cfg,
-                reschedule_status=CLEAR,
-                reschedule_requester=CLEAR,
-                proposed_end=CLEAR,
+            err = self._do_transition(
+                key, matched, comment=f"Từ chối dời lịch: {note}"
             )
-            self.gateway.transition(
-                key, matched, fields=payload, comment=f"Từ chối dời lịch: {note}"
-            )
+            if err:
+                return err
 
         return ActionResult(
             ok=True,
@@ -1444,7 +1581,9 @@ class Actions:
                 next_actions=[],
             )
 
-        self.gateway.transition(key, matched, comment=f"Hủy: {reason}")
+        err = self._do_transition(key, matched, comment=f"Hủy: {reason}")
+        if err:
+            return err
         return ActionResult(
             ok=True,
             message=f"Đã hủy {key}.",
@@ -1555,7 +1694,9 @@ class Actions:
                 next_actions=["triage_close"],
             )
 
-        self.gateway.transition(new_key, matched)
+        err = self._do_transition(new_key, matched)
+        if err:
+            return err
 
         return ActionResult(
             ok=True,
@@ -1821,12 +1962,14 @@ class Actions:
                     outward_key=link_key,
                 )
 
-        self.gateway.transition(
+        err = self._do_transition(
             key,
             matched,
             fields={"resolution": {"name": resolution_name}},
             comment=f"Kết luận triage: {resolution_name}. Ghi chú: {note}",
         )
+        if err:
+            return err
 
         return ActionResult(
             ok=True,

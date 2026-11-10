@@ -9,7 +9,18 @@ from .model import Worklog
 class JiraError(Exception):
     """Base exception for Jira gateway errors."""
 
-    pass
+    def __init__(
+        self,
+        message: str = "",
+        *,
+        status_code: int | None = None,
+        error_messages: list[str] | None = None,
+        errors: dict[str, str] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.error_messages = list(error_messages) if error_messages else []
+        self.errors = dict(errors) if errors else {}
 
 
 @runtime_checkable

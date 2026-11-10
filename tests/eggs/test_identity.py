@@ -22,7 +22,7 @@ def test_identity_roles_per_project():
         me={"name": "alice", "displayName": "Alice Smith"},
     )
     bot_gateway = FakeGateway(
-        me={"name": "eggs-bot", "displayName": "U Guardian"},
+        me={"name": "eggsbot", "displayName": "U Guardian"},
         role_members={
             "RFID": {"Developers": ["alice", "bob"], "QC": ["charlie"]},
             "CP": {"Developers": ["david"], "QC": ["alice"]},
@@ -53,7 +53,7 @@ def test_identity_never_shared_between_users():
     gw_a = FakeGateway(me={"name": "alice", "displayName": "Alice Smith"})
     gw_b = FakeGateway(me={"name": "bob", "displayName": "Bob Jones"})
     bot_gw = FakeGateway(
-        me={"name": "eggs-bot", "displayName": "U Guardian"},
+        me={"name": "eggsbot", "displayName": "U Guardian"},
         role_members={
             "RFID": {"Developers": ["alice"], "QC": ["bob"]},
         },
@@ -83,7 +83,7 @@ def test_role_members_cached_per_project_within_ttl():
     )
     user_gw = FakeGateway(me={"name": "alice", "displayName": "Alice Smith"})
     bot_gw = FakeGateway(
-        me={"name": "eggs-bot", "displayName": "U Guardian"},
+        me={"name": "eggsbot", "displayName": "U Guardian"},
         role_members={
             "RFID": {"Developers": ["alice"]},
         },
@@ -135,7 +135,7 @@ def test_role_read_failure_not_cached_and_reported():
             self.fail_count += 1
             raise RuntimeError("403 Forbidden")
 
-    failing_bot_gw = FailingGateway(me={"name": "eggs-bot", "displayName": "U Guardian"})
+    failing_bot_gw = FailingGateway(me={"name": "eggsbot", "displayName": "U Guardian"})
     cache = IdentityCache()
 
     id1 = resolve_identity(user_gw, failing_bot_gw, cfg, cache)
@@ -161,7 +161,7 @@ def test_identity_without_role_is_empty():
     )
     user_gw = FakeGateway(me={"name": "stranger", "displayName": "Stranger User"})
     bot_gw = FakeGateway(
-        me={"name": "eggs-bot", "displayName": "U Guardian"},
+        me={"name": "eggsbot", "displayName": "U Guardian"},
         role_members={
             "RFID": {"Developers": ["alice"]},
         },
@@ -190,7 +190,7 @@ def test_identity_administrators_count_as_lead_ba():
     )
     user_gw = FakeGateway(me={"name": "admin_user", "displayName": "Admin User"})
     bot_gw = FakeGateway(
-        me={"name": "eggs-bot", "displayName": "U Guardian"},
+        me={"name": "eggsbot", "displayName": "U Guardian"},
         role_members={
             "RFID": {"Administrators": ["admin_user"], "Developers": ["alice"]},
         },
@@ -204,7 +204,7 @@ def test_identity_ignores_bot_user():
     cfg = EggsConfig(
         lead_user="cuong.huynh",
         jira_url="https://jira.eggstech.io.vn",
-        bot_user="eggs-bot",
+        bot_user="eggsbot",
         projects={
             "RFID": ProjectConfig(key="RFID", default_lead_ba="cuong.huynh", triage_owner="cuong.huynh"),
         },
@@ -214,11 +214,11 @@ def test_identity_ignores_bot_user():
             "dev": ["Developers"],
         },
     )
-    user_gw = FakeGateway(me={"name": "eggs-bot", "displayName": "U Guardian"})
+    user_gw = FakeGateway(me={"name": "eggsbot", "displayName": "U Guardian"})
     bot_gw = FakeGateway(
-        me={"name": "eggs-bot", "displayName": "U Guardian"},
+        me={"name": "eggsbot", "displayName": "U Guardian"},
         role_members={
-            "RFID": {"Administrators": ["eggs-bot"]},
+            "RFID": {"Administrators": ["eggsbot"]},
         },
     )
     identity = resolve_identity(user_gw, bot_gw, cfg)
@@ -236,7 +236,7 @@ def test_identity_is_lead_compares_lowercased():
     )
     user_gw = FakeGateway(me={"name": "Cuong.Huynh", "displayName": "Cuong Huynh"})
     bot_gw = FakeGateway(
-        me={"name": "eggs-bot", "displayName": "U Guardian"},
+        me={"name": "eggsbot", "displayName": "U Guardian"},
         role_members={"RFID": {}},
     )
     identity = resolve_identity(user_gw, bot_gw, cfg)
@@ -254,7 +254,7 @@ def test_identity_warns_when_configured_role_missing_in_project(caplog):
     )
     user_gw = FakeGateway(me={"name": "alice", "displayName": "Alice Smith"})
     bot_gw = FakeGateway(
-        me={"name": "eggs-bot", "displayName": "U Guardian"},
+        me={"name": "eggsbot", "displayName": "U Guardian"},
         role_members={
             "RFID": {"Developers": ["alice"], "QC": ["bob"], "Lead-BA": ["carol"]},
         },

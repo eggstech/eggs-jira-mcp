@@ -437,7 +437,7 @@ projects:
     assert cfg.reschedule_interrupt_value == "Chen ngang"
     assert cfg.ops_epic_summary == "[OPS] Vận hành & Hotfix {month:02d}/{year}"
     assert cfg.hotfix_prefix == "[HOTFIX]"
-    assert cfg.bot_user == "eggs-bot"
+    assert cfg.bot_user == "eggsbot"
     assert cfg.roles["lead_ba"] == ["Business Analysts", "Administrators"]
     assert cfg.roles["qc"] == ["Testers"]
     assert cfg.roles["dev"] == ["Developers"]

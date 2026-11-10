@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import json
 import logging
 import os
-import sys
-from datetime import datetime, timezone
+from datetime import date, datetime
 from functools import wraps
 from typing import Annotated, Any
 from zoneinfo import ZoneInfo
@@ -105,14 +105,23 @@ def _ensure_toolset_registered() -> None:
         ALL_TOOLSETS[EGGS_TOOLSET_NAME] = EGGS_TOOLSET_DEFINITION
 
 
-def get_roles_reader(cfg: EggsConfig) -> JiraGateway:
+def get_roles_reader(cfg: EggsConfig | None = None) -> JiraGateway:
     """Return the singleton gateway for role reading via EGGS_BOT_TOKEN."""
     global _roles_reader
     if _roles_reader is None:
-        url = os.getenv("JIRA_URL", cfg.jira_url)
+        c = cfg or load_config()
+        url = os.getenv("JIRA_URL", c.jira_url if c else None)
         token = os.getenv("EGGS_BOT_TOKEN")
-        fetcher = JiraFetcher(JiraConfig(url=url, personal_token=token))
-        _roles_reader = AtlassianGateway(fetcher.jira, cfg=cfg)
+        if not url:
+            raise ValueError("Thiếu cấu hình JIRA_URL để kết nối Jira.")
+        if not token:
+            raise ValueError(
+                "Thiếu biến môi trường EGGS_BOT_TOKEN để đọc vai trò dự án."
+            )
+        fetcher = JiraFetcher(
+            JiraConfig(url=url, auth_type="pat", personal_token=token)
+        )
+        _roles_reader = AtlassianGateway(fetcher.jira, cfg=c)
     return _roles_reader
 
 
@@ -121,9 +130,25 @@ def set_roles_reader(gateway: JiraGateway | None) -> None:
     _roles_reader = gateway
 
 
-async def get_user_gateway(ctx: Context) -> JiraGateway:
+async def get_user_gateway(ctx: Context, *, write: bool = False) -> JiraGateway:
     """Build the JiraGateway from the per-request user's Jira client."""
     from mcp_atlassian.servers.dependencies import get_jira_fetcher
+
+    if write:
+        req_ctx = getattr(ctx, "request_context", None)
+        request = getattr(req_ctx, "request", None) if req_ctx else None
+        if request is not None:
+            state = getattr(request, "state", None)
+            has_token = bool(
+                state is not None
+                and getattr(state, "user_atlassian_token", None)
+            )
+            if not has_token:
+                raise ValueError(
+                    "Thao tác ghi yêu cầu token cá nhân (PAT) của người dùng "
+                    "trong Authorization header, không được dùng thông tin đăng "
+                    "nhập dùng chung."
+                )
 
     cfg = load_config()
     fetcher = await get_jira_fetcher(ctx)
@@ -240,9 +265,13 @@ def _make_snapshot(
     gateway: JiraGateway,
     cfg: EggsConfig,
     cal: WorkCalendar,
-    today: Any,
+    today: date | None = None,
+    now: datetime | None = None,
 ) -> Snapshot:
     tz = ZoneInfo(cfg.timezone)
+    if today is None:
+        current_dt = now or datetime.now(tz)
+        today = current_dt.astimezone(tz).date()
     since = datetime(today.year, today.month, today.day, 0, 0, tzinfo=tz)
     return build_snapshot(gateway, cfg, today, cal, since)
 
@@ -253,24 +282,46 @@ def _get_next_agenda_item(
     cfg: EggsConfig,
     cal: WorkCalendar,
     now: datetime,
-) -> AgendaItem | None:
+) -> tuple[AgendaItem | None, bool]:
     try:
-        snapshot = _make_snapshot(user_gateway, cfg, cal, today=now.date())
+        tz = ZoneInfo(cfg.timezone)
+        today = now.astimezone(tz).date()
+        snapshot = _make_snapshot(user_gateway, cfg, cal, today=today, now=now)
         agenda = build_agenda(snapshot, identity, cfg, now, cal)
-        return agenda[0] if agenda else None
+        return (agenda[0] if agenda else None), False
     except Exception as e:  # noqa: BLE001
         logger.warning("Could not compute next agenda item: %s", e)
-        return None
+        return None, True
+
+
+def _attach_next_agenda_item(
+    res: ActionResult,
+    user_gateway: JiraGateway,
+    identity: Identity,
+    cfg: EggsConfig,
+    cal: WorkCalendar,
+    now: datetime,
+) -> ActionResult:
+    next_it, failed = _get_next_agenda_item(user_gateway, identity, cfg, cal, now)
+    new_message = res.message
+    if failed:
+        suffix = "Không lấy được việc tiếp theo."
+        if new_message:
+            new_message = f"{new_message} {suffix}"
+        else:
+            new_message = suffix
+    return dataclasses.replace(res, message=new_message, next=next_it)
+
+
+def _is_eggs_enabled() -> bool:
+    val = os.getenv("EGGS_ENABLED", "").strip().lower()
+    return val in {"1", "true", "yes"}
 
 
 def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
     """Register all 25 egg tools on the given FastMCP server."""
-    if not force:
-        # Guard against registering during upstream docs generation or unit test suite
-        if any("generate_tool_docs" in arg for arg in sys.argv):
-            return
-        if any("tests/unit" in arg for arg in sys.argv):
-            return
+    if not force and not _is_eggs_enabled():
+        return
 
     _ensure_toolset_registered()
 
@@ -320,9 +371,11 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
     async def eggs_whoami(ctx: Context) -> str:
         """Xác định danh tính người dùng hiện tại và vai trò theo từng dự án."""
         cfg = load_config()
-        user_gw = await get_user_gateway(ctx)
+        user_gw = await get_user_gateway(ctx, write=False)
         roles_gw = get_roles_reader(cfg)
-        ident = resolve_identity(user_gw, roles_gw, cfg, _identity_cache)
+        ident = await asyncio.to_thread(
+            resolve_identity, user_gw, roles_gw, cfg, _identity_cache
+        )
         return json.dumps(identity_to_dict(ident), indent=2, ensure_ascii=False)
 
     @server.tool(
@@ -341,16 +394,20 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
     ) -> str:
         """Cửa vào duy nhất: Trả về agenda việc cần làm và danh mục ý định."""
         cfg = load_config()
-        user_gw = await get_user_gateway(ctx)
+        user_gw = await get_user_gateway(ctx, write=False)
         roles_gw = get_roles_reader(cfg)
-        ident = resolve_identity(user_gw, roles_gw, cfg, _identity_cache)
+        ident = await asyncio.to_thread(
+            resolve_identity, user_gw, roles_gw, cfg, _identity_cache
+        )
 
         cal = WorkCalendar(cfg.holidays)
-        now = datetime.now(timezone.utc)
-        today = now.date()
+        now = datetime.now(ZoneInfo(cfg.timezone))
+        today = now.astimezone(ZoneInfo(cfg.timezone)).date()
 
-        snapshot = _make_snapshot(user_gw, cfg, cal, today=today)
-        agenda = build_agenda(snapshot, ident, cfg, now, cal)
+        snapshot = await asyncio.to_thread(
+            _make_snapshot, user_gw, cfg, cal, today=today, now=now
+        )
+        agenda = await asyncio.to_thread(build_agenda, snapshot, ident, cfg, now, cal)
 
         mentioned: list[str] = []
         if text:
@@ -397,13 +454,16 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
     ) -> str:
         """Xem bảng theo dõi tiến độ Actor của Epic hoặc dự án."""
         cfg = load_config()
-        user_gw = await get_user_gateway(ctx)
+        user_gw = await get_user_gateway(ctx, write=False)
         cal = WorkCalendar(cfg.holidays)
-        today = datetime.now(timezone.utc).date()
-        snapshot = _make_snapshot(user_gw, cfg, cal, today=today)
+        now = datetime.now(ZoneInfo(cfg.timezone))
+        today = now.astimezone(ZoneInfo(cfg.timezone)).date()
+        snapshot = await asyncio.to_thread(
+            _make_snapshot, user_gw, cfg, cal, today=today, now=now
+        )
 
         if epic:
-            return render_workstream(snapshot, epic)
+            return await asyncio.to_thread(render_workstream, snapshot, epic)
 
         target_epics: list[str] = []
         for ek, iss in snapshot.issues.items():
@@ -419,9 +479,12 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
                 else "Không tìm thấy workstream nào."
             )
 
-        return "\n\n".join(
-            render_workstream(snapshot, ek) for ek in sorted(target_epics)
+        rendered = await asyncio.to_thread(
+            lambda: "\n\n".join(
+                render_workstream(snapshot, ek) for ek in sorted(target_epics)
+            )
         )
+        return rendered
 
     @server.tool(
         tags=read_tags,
@@ -435,11 +498,14 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
     ) -> str:
         """Báo cáo tổng hợp tình hình công việc trong ngày."""
         cfg = load_config()
-        user_gw = await get_user_gateway(ctx)
+        user_gw = await get_user_gateway(ctx, write=False)
         cal = WorkCalendar(cfg.holidays)
-        today = datetime.now(timezone.utc).date()
-        snapshot = _make_snapshot(user_gw, cfg, cal, today=today)
-        return render_report(snapshot, cfg, project=project)
+        now = datetime.now(ZoneInfo(cfg.timezone))
+        today = now.astimezone(ZoneInfo(cfg.timezone)).date()
+        snapshot = await asyncio.to_thread(
+            _make_snapshot, user_gw, cfg, cal, today=today, now=now
+        )
+        return await asyncio.to_thread(render_report, snapshot, cfg, project=project)
 
     @server.tool(
         tags=read_tags,
@@ -453,13 +519,20 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
     ) -> str:
         """Xem danh sách các yêu cầu dời lịch đang chờ duyệt."""
         cfg = load_config()
-        user_gw = await get_user_gateway(ctx)
+        user_gw = await get_user_gateway(ctx, write=False)
         roles_gw = get_roles_reader(cfg)
-        ident = resolve_identity(user_gw, roles_gw, cfg, _identity_cache)
+        ident = await asyncio.to_thread(
+            resolve_identity, user_gw, roles_gw, cfg, _identity_cache
+        )
         cal = WorkCalendar(cfg.holidays)
-        today = datetime.now(timezone.utc).date()
-        snapshot = _make_snapshot(user_gw, cfg, cal, today=today)
-        return render_pending_approvals(snapshot, ident.username, cfg)
+        now = datetime.now(ZoneInfo(cfg.timezone))
+        today = now.astimezone(ZoneInfo(cfg.timezone)).date()
+        snapshot = await asyncio.to_thread(
+            _make_snapshot, user_gw, cfg, cal, today=today, now=now
+        )
+        return await asyncio.to_thread(
+            render_pending_approvals, snapshot, ident.username, cfg
+        )
 
     # -------------------------------------------------------------------------
     # WRITE TOOLS (18)
@@ -485,9 +558,11 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
     ) -> str:
         """Nhận việc và lên lịch thực hiện cho phần việc (Dev Task/Bug)."""
         cfg = load_config()
-        user_gw = await get_user_gateway(ctx)
+        user_gw = await get_user_gateway(ctx, write=True)
         roles_gw = get_roles_reader(cfg)
-        ident = resolve_identity(user_gw, roles_gw, cfg, _identity_cache)
+        ident = await asyncio.to_thread(
+            resolve_identity, user_gw, roles_gw, cfg, _identity_cache
+        )
 
         proj = key.split("-")[0]
         refusal = _check_project_role(ident, proj, {"dev"}, "Developer (dev)")
@@ -498,7 +573,8 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
 
         cal = WorkCalendar(cfg.holidays)
         actions = Actions(user_gw, cfg, cal)
-        res = actions.schedule(
+        res = await asyncio.to_thread(
+            actions.schedule,
             key=key,
             start=start,
             end=end,
@@ -507,9 +583,10 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
             dry_run=dry_run,
         )
         if res.ok and not dry_run:
-            now = datetime.now(timezone.utc)
-            next_it = _get_next_agenda_item(user_gw, ident, cfg, cal, now)
-            res = dataclasses.replace(res, next=next_it)
+            now = datetime.now(ZoneInfo(cfg.timezone))
+            res = await asyncio.to_thread(
+                _attach_next_agenda_item, res, user_gw, ident, cfg, cal, now
+            )
         return json.dumps(
             action_result_to_dict(res), indent=2, ensure_ascii=False
         )
@@ -535,9 +612,11 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
     ) -> str:
         """Bắt đầu thực hiện công việc (chuyển sang Dev In Progress)."""
         cfg = load_config()
-        user_gw = await get_user_gateway(ctx)
+        user_gw = await get_user_gateway(ctx, write=True)
         roles_gw = get_roles_reader(cfg)
-        ident = resolve_identity(user_gw, roles_gw, cfg, _identity_cache)
+        ident = await asyncio.to_thread(
+            resolve_identity, user_gw, roles_gw, cfg, _identity_cache
+        )
 
         proj = key.split("-")[0]
         refusal = _check_project_role(ident, proj, {"dev"}, "Developer (dev)")
@@ -548,13 +627,19 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
 
         cal = WorkCalendar(cfg.holidays)
         actions = Actions(user_gw, cfg, cal)
-        res = actions.start(
-            key=key, start=start, end=end, estimate=estimate, dry_run=dry_run
+        res = await asyncio.to_thread(
+            actions.start,
+            key=key,
+            start=start,
+            end=end,
+            estimate=estimate,
+            dry_run=dry_run,
         )
         if res.ok and not dry_run:
-            now = datetime.now(timezone.utc)
-            next_it = _get_next_agenda_item(user_gw, ident, cfg, cal, now)
-            res = dataclasses.replace(res, next=next_it)
+            now = datetime.now(ZoneInfo(cfg.timezone))
+            res = await asyncio.to_thread(
+                _attach_next_agenda_item, res, user_gw, ident, cfg, cal, now
+            )
         return json.dumps(
             action_result_to_dict(res), indent=2, ensure_ascii=False
         )
@@ -578,13 +663,15 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
     ) -> str:
         """Ghi nhận thời gian làm việc vào issue."""
         cfg = load_config()
-        user_gw = await get_user_gateway(ctx)
+        user_gw = await get_user_gateway(ctx, write=True)
         roles_gw = get_roles_reader(cfg)
-        ident = resolve_identity(user_gw, roles_gw, cfg, _identity_cache)
+        ident = await asyncio.to_thread(
+            resolve_identity, user_gw, roles_gw, cfg, _identity_cache
+        )
 
         proj = key.split("-")[0]
         refusal = _check_project_role(
-            ident, proj, {"dev", "qc", "lead_ba"}, "hợp lệ"
+            ident, proj, {"dev", "qc", "lead_ba"}, "Dev, QC hoặc Lead-BA"
         )
         if refusal:
             return json.dumps(
@@ -593,7 +680,8 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
 
         cal = WorkCalendar(cfg.holidays)
         actions = Actions(user_gw, cfg, cal)
-        res = actions.log_work(
+        res = await asyncio.to_thread(
+            actions.log_work,
             key=key,
             time_spent=time_spent,
             note=note,
@@ -601,9 +689,10 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
             dry_run=dry_run,
         )
         if res.ok and not dry_run:
-            now = datetime.now(timezone.utc)
-            next_it = _get_next_agenda_item(user_gw, ident, cfg, cal, now)
-            res = dataclasses.replace(res, next=next_it)
+            now = datetime.now(ZoneInfo(cfg.timezone))
+            res = await asyncio.to_thread(
+                _attach_next_agenda_item, res, user_gw, ident, cfg, cal, now
+            )
         return json.dumps(
             action_result_to_dict(res), indent=2, ensure_ascii=False
         )
@@ -623,9 +712,11 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
     ) -> str:
         """Hoàn thành phần việc và chuyển sang hàng đợi kiểm thử (QC TO DO)."""
         cfg = load_config()
-        user_gw = await get_user_gateway(ctx)
+        user_gw = await get_user_gateway(ctx, write=True)
         roles_gw = get_roles_reader(cfg)
-        ident = resolve_identity(user_gw, roles_gw, cfg, _identity_cache)
+        ident = await asyncio.to_thread(
+            resolve_identity, user_gw, roles_gw, cfg, _identity_cache
+        )
 
         proj = key.split("-")[0]
         refusal = _check_project_role(ident, proj, {"dev"}, "Developer (dev)")
@@ -636,11 +727,14 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
 
         cal = WorkCalendar(cfg.holidays)
         actions = Actions(user_gw, cfg, cal)
-        res = actions.submit_qc(key=key, note=note, dry_run=dry_run)
+        res = await asyncio.to_thread(
+            actions.submit_qc, key=key, note=note, dry_run=dry_run
+        )
         if res.ok and not dry_run:
-            now = datetime.now(timezone.utc)
-            next_it = _get_next_agenda_item(user_gw, ident, cfg, cal, now)
-            res = dataclasses.replace(res, next=next_it)
+            now = datetime.now(ZoneInfo(cfg.timezone))
+            res = await asyncio.to_thread(
+                _attach_next_agenda_item, res, user_gw, ident, cfg, cal, now
+            )
         return json.dumps(
             action_result_to_dict(res), indent=2, ensure_ascii=False
         )
@@ -660,9 +754,11 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
     ) -> str:
         """Hoàn thành trực tiếp cho Ad-hoc Task hoặc Bug."""
         cfg = load_config()
-        user_gw = await get_user_gateway(ctx)
+        user_gw = await get_user_gateway(ctx, write=True)
         roles_gw = get_roles_reader(cfg)
-        ident = resolve_identity(user_gw, roles_gw, cfg, _identity_cache)
+        ident = await asyncio.to_thread(
+            resolve_identity, user_gw, roles_gw, cfg, _identity_cache
+        )
 
         proj = key.split("-")[0]
         refusal = _check_project_role(ident, proj, {"dev"}, "Developer (dev)")
@@ -673,11 +769,14 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
 
         cal = WorkCalendar(cfg.holidays)
         actions = Actions(user_gw, cfg, cal)
-        res = actions.finish(key=key, note=note, dry_run=dry_run)
+        res = await asyncio.to_thread(
+            actions.finish, key=key, note=note, dry_run=dry_run
+        )
         if res.ok and not dry_run:
-            now = datetime.now(timezone.utc)
-            next_it = _get_next_agenda_item(user_gw, ident, cfg, cal, now)
-            res = dataclasses.replace(res, next=next_it)
+            now = datetime.now(ZoneInfo(cfg.timezone))
+            res = await asyncio.to_thread(
+                _attach_next_agenda_item, res, user_gw, ident, cfg, cal, now
+            )
         return json.dumps(
             action_result_to_dict(res), indent=2, ensure_ascii=False
         )
@@ -696,9 +795,11 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
     ) -> str:
         """Bắt đầu kiểm thử phần việc hoặc luồng (Test In Progress)."""
         cfg = load_config()
-        user_gw = await get_user_gateway(ctx)
+        user_gw = await get_user_gateway(ctx, write=True)
         roles_gw = get_roles_reader(cfg)
-        ident = resolve_identity(user_gw, roles_gw, cfg, _identity_cache)
+        ident = await asyncio.to_thread(
+            resolve_identity, user_gw, roles_gw, cfg, _identity_cache
+        )
 
         proj = key.split("-")[0]
         refusal = _check_project_role(ident, proj, {"qc"}, "QC (Tester)")
@@ -709,11 +810,12 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
 
         cal = WorkCalendar(cfg.holidays)
         actions = Actions(user_gw, cfg, cal)
-        res = actions.qc_start(key=key, dry_run=dry_run)
+        res = await asyncio.to_thread(actions.qc_start, key=key, dry_run=dry_run)
         if res.ok and not dry_run:
-            now = datetime.now(timezone.utc)
-            next_it = _get_next_agenda_item(user_gw, ident, cfg, cal, now)
-            res = dataclasses.replace(res, next=next_it)
+            now = datetime.now(ZoneInfo(cfg.timezone))
+            res = await asyncio.to_thread(
+                _attach_next_agenda_item, res, user_gw, ident, cfg, cal, now
+            )
         return json.dumps(
             action_result_to_dict(res), indent=2, ensure_ascii=False
         )
@@ -725,6 +827,10 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         key: Annotated[
             str, Field(description="Mã issue hoặc Story đã kiểm thử đạt")
         ],
+        time_spent: Annotated[
+            str | None,
+            Field(description="Thời gian kiểm thử (nếu log work)", default=None),
+        ] = None,
         note: Annotated[
             str, Field(description="Ghi chú kết quả kiểm thử", default="")
         ] = "",
@@ -735,9 +841,11 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
     ) -> str:
         """Xác nhận kiểm thử đạt (chuyển Done hoặc Ready For UAT)."""
         cfg = load_config()
-        user_gw = await get_user_gateway(ctx)
+        user_gw = await get_user_gateway(ctx, write=True)
         roles_gw = get_roles_reader(cfg)
-        ident = resolve_identity(user_gw, roles_gw, cfg, _identity_cache)
+        ident = await asyncio.to_thread(
+            resolve_identity, user_gw, roles_gw, cfg, _identity_cache
+        )
 
         proj = key.split("-")[0]
         refusal = _check_project_role(ident, proj, {"qc"}, "QC (Tester)")
@@ -748,11 +856,18 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
 
         cal = WorkCalendar(cfg.holidays)
         actions = Actions(user_gw, cfg, cal)
-        res = actions.qc_pass(key=key, note=note, dry_run=dry_run)
+        res = await asyncio.to_thread(
+            actions.qc_pass,
+            key=key,
+            time_spent=time_spent,
+            note=note,
+            dry_run=dry_run,
+        )
         if res.ok and not dry_run:
-            now = datetime.now(timezone.utc)
-            next_it = _get_next_agenda_item(user_gw, ident, cfg, cal, now)
-            res = dataclasses.replace(res, next=next_it)
+            now = datetime.now(ZoneInfo(cfg.timezone))
+            res = await asyncio.to_thread(
+                _attach_next_agenda_item, res, user_gw, ident, cfg, cal, now
+            )
         return json.dumps(
             action_result_to_dict(res), indent=2, ensure_ascii=False
         )
@@ -765,11 +880,18 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
             str, Field(description="Mã issue hoặc Story kiểm thử không đạt")
         ],
         bugs: Annotated[
-            list[dict[str, Any]] | None,
+            list[Any] | None,
             Field(description="Danh sách Bug cần tạo kèm", default=None),
         ] = None,
-        note: Annotated[
+        time_spent: Annotated[
+            str | None,
+            Field(description="Thời gian làm việc cần log", default=None),
+        ] = None,
+        reason: Annotated[
             str, Field(description="Lý do không đạt", default="")
+        ] = "",
+        note: Annotated[
+            str, Field(description="Lý do/ghi chú không đạt", default="")
         ] = "",
         *,
         dry_run: Annotated[
@@ -778,9 +900,11 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
     ) -> str:
         """Xác nhận kiểm thử không đạt và tạo bug sub-task trả lại Dev."""
         cfg = load_config()
-        user_gw = await get_user_gateway(ctx)
+        user_gw = await get_user_gateway(ctx, write=True)
         roles_gw = get_roles_reader(cfg)
-        ident = resolve_identity(user_gw, roles_gw, cfg, _identity_cache)
+        ident = await asyncio.to_thread(
+            resolve_identity, user_gw, roles_gw, cfg, _identity_cache
+        )
 
         proj = key.split("-")[0]
         refusal = _check_project_role(ident, proj, {"qc"}, "QC (Tester)")
@@ -789,15 +913,22 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
                 action_result_to_dict(refusal), indent=2, ensure_ascii=False
             )
 
+        actual_reason = note or reason
         cal = WorkCalendar(cfg.holidays)
         actions = Actions(user_gw, cfg, cal)
-        res = actions.qc_fail(
-            key=key, bugs=bugs or [], note=note, dry_run=dry_run
+        res = await asyncio.to_thread(
+            actions.qc_fail,
+            key=key,
+            time_spent=time_spent,
+            reason=actual_reason,
+            bugs=bugs or [],
+            dry_run=dry_run,
         )
         if res.ok and not dry_run:
-            now = datetime.now(timezone.utc)
-            next_it = _get_next_agenda_item(user_gw, ident, cfg, cal, now)
-            res = dataclasses.replace(res, next=next_it)
+            now = datetime.now(ZoneInfo(cfg.timezone))
+            res = await asyncio.to_thread(
+                _attach_next_agenda_item, res, user_gw, ident, cfg, cal, now
+            )
         return json.dumps(
             action_result_to_dict(res), indent=2, ensure_ascii=False
         )
@@ -821,13 +952,15 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
     ) -> str:
         """Báo tắc nghẽn và cắm cờ Flagged trên issue."""
         cfg = load_config()
-        user_gw = await get_user_gateway(ctx)
+        user_gw = await get_user_gateway(ctx, write=True)
         roles_gw = get_roles_reader(cfg)
-        ident = resolve_identity(user_gw, roles_gw, cfg, _identity_cache)
+        ident = await asyncio.to_thread(
+            resolve_identity, user_gw, roles_gw, cfg, _identity_cache
+        )
 
         proj = key.split("-")[0]
         refusal = _check_project_role(
-            ident, proj, {"dev", "qc", "lead_ba"}, "hợp lệ"
+            ident, proj, {"dev", "qc", "lead_ba"}, "Dev, QC hoặc Lead-BA"
         )
         if refusal:
             return json.dumps(
@@ -836,13 +969,18 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
 
         cal = WorkCalendar(cfg.holidays)
         actions = Actions(user_gw, cfg, cal)
-        res = actions.block(
-            key=key, reason=reason, blocked_by=blocked_by, dry_run=dry_run
+        res = await asyncio.to_thread(
+            actions.block,
+            key=key,
+            reason=reason,
+            blocked_by=blocked_by,
+            dry_run=dry_run,
         )
         if res.ok and not dry_run:
-            now = datetime.now(timezone.utc)
-            next_it = _get_next_agenda_item(user_gw, ident, cfg, cal, now)
-            res = dataclasses.replace(res, next=next_it)
+            now = datetime.now(ZoneInfo(cfg.timezone))
+            res = await asyncio.to_thread(
+                _attach_next_agenda_item, res, user_gw, ident, cfg, cal, now
+            )
         return json.dumps(
             action_result_to_dict(res), indent=2, ensure_ascii=False
         )
@@ -862,13 +1000,15 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
     ) -> str:
         """Gỡ cờ tắc nghẽn trên issue sau khi vấn đề được giải quyết."""
         cfg = load_config()
-        user_gw = await get_user_gateway(ctx)
+        user_gw = await get_user_gateway(ctx, write=True)
         roles_gw = get_roles_reader(cfg)
-        ident = resolve_identity(user_gw, roles_gw, cfg, _identity_cache)
+        ident = await asyncio.to_thread(
+            resolve_identity, user_gw, roles_gw, cfg, _identity_cache
+        )
 
         proj = key.split("-")[0]
         refusal = _check_project_role(
-            ident, proj, {"dev", "qc", "lead_ba"}, "hợp lệ"
+            ident, proj, {"dev", "qc", "lead_ba"}, "Dev, QC hoặc Lead-BA"
         )
         if refusal:
             return json.dumps(
@@ -877,11 +1017,14 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
 
         cal = WorkCalendar(cfg.holidays)
         actions = Actions(user_gw, cfg, cal)
-        res = actions.unblock(key=key, note=note, dry_run=dry_run)
+        res = await asyncio.to_thread(
+            actions.unblock, key=key, note=note, dry_run=dry_run
+        )
         if res.ok and not dry_run:
-            now = datetime.now(timezone.utc)
-            next_it = _get_next_agenda_item(user_gw, ident, cfg, cal, now)
-            res = dataclasses.replace(res, next=next_it)
+            now = datetime.now(ZoneInfo(cfg.timezone))
+            res = await asyncio.to_thread(
+                _attach_next_agenda_item, res, user_gw, ident, cfg, cal, now
+            )
         return json.dumps(
             action_result_to_dict(res), indent=2, ensure_ascii=False
         )
@@ -921,18 +1064,20 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
     ) -> str:
         """Đề xuất dời lịch kết thúc phần việc hoặc xác nhận không ảnh hưởng."""
         cfg = load_config()
-        user_gw = await get_user_gateway(ctx)
+        user_gw = await get_user_gateway(ctx, write=True)
         roles_gw = get_roles_reader(cfg)
-        ident = resolve_identity(user_gw, roles_gw, cfg, _identity_cache)
+        ident = await asyncio.to_thread(
+            resolve_identity, user_gw, roles_gw, cfg, _identity_cache
+        )
 
         cal = WorkCalendar(cfg.holidays)
         actions = Actions(user_gw, cfg, cal)
-        iss = actions._get_issue(key)
+        iss = await asyncio.to_thread(actions._get_issue, key)
         proj = iss.project
 
         # Permission check
         if no_impact:
-            if not (ident.username == iss.assignee or ident.is_lead):
+            if ident.username != iss.assignee:
                 refusal = ActionResult(
                     ok=False,
                     message=(
@@ -945,8 +1090,11 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
                 return json.dumps(
                     action_result_to_dict(refusal), indent=2, ensure_ascii=False
                 )
-            res = actions.confirm_no_impact(
-                key=key, note=reason, dry_run=dry_run
+            res = await asyncio.to_thread(
+                actions.confirm_no_impact,
+                key=key,
+                note=reason,
+                dry_run=dry_run,
             )
         else:
             is_assignee = ident.username == iss.assignee
@@ -964,7 +1112,8 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
                 return json.dumps(
                     action_result_to_dict(refusal), indent=2, ensure_ascii=False
                 )
-            res = actions.request_reschedule(
+            res = await asyncio.to_thread(
+                actions.request_reschedule,
                 key=key,
                 proposed_end=proposed_end or "",
                 reason=reason,
@@ -973,9 +1122,10 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
             )
 
         if res.ok and not dry_run:
-            now = datetime.now(timezone.utc)
-            next_it = _get_next_agenda_item(user_gw, ident, cfg, cal, now)
-            res = dataclasses.replace(res, next=next_it)
+            now = datetime.now(ZoneInfo(cfg.timezone))
+            res = await asyncio.to_thread(
+                _attach_next_agenda_item, res, user_gw, ident, cfg, cal, now
+            )
         return json.dumps(
             action_result_to_dict(res), indent=2, ensure_ascii=False
         )
@@ -998,9 +1148,11 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
     ) -> str:
         """Lead-BA điều chỉnh hạn bàn giao (Due Date) cho Story cấp luồng."""
         cfg = load_config()
-        user_gw = await get_user_gateway(ctx)
+        user_gw = await get_user_gateway(ctx, write=True)
         roles_gw = get_roles_reader(cfg)
-        ident = resolve_identity(user_gw, roles_gw, cfg, _identity_cache)
+        ident = await asyncio.to_thread(
+            resolve_identity, user_gw, roles_gw, cfg, _identity_cache
+        )
 
         proj = story_key.split("-")[0]
         refusal = _check_project_role(ident, proj, {"lead_ba"}, "Lead-BA")
@@ -1011,13 +1163,21 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
 
         cal = WorkCalendar(cfg.holidays)
         actions = Actions(user_gw, cfg, cal)
-        res = actions.flow_reschedule(
-            story_key=story_key, new_due=new_due, reason=reason, dry_run=dry_run
+        new_due_date = (
+            date.fromisoformat(new_due) if isinstance(new_due, str) else new_due
+        )
+        res = await asyncio.to_thread(
+            actions.flow_reschedule,
+            story_key=story_key,
+            new_due=new_due_date,
+            reason=reason,
+            dry_run=dry_run,
         )
         if res.ok and not dry_run:
-            now = datetime.now(timezone.utc)
-            next_it = _get_next_agenda_item(user_gw, ident, cfg, cal, now)
-            res = dataclasses.replace(res, next=next_it)
+            now = datetime.now(ZoneInfo(cfg.timezone))
+            res = await asyncio.to_thread(
+                _attach_next_agenda_item, res, user_gw, ident, cfg, cal, now
+            )
         return json.dumps(
             action_result_to_dict(res), indent=2, ensure_ascii=False
         )
@@ -1050,9 +1210,11 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
     ) -> str:
         """Quản lý tiến trình UAT theo nhóm Actor trong Epic."""
         cfg = load_config()
-        user_gw = await get_user_gateway(ctx)
+        user_gw = await get_user_gateway(ctx, write=True)
         roles_gw = get_roles_reader(cfg)
-        ident = resolve_identity(user_gw, roles_gw, cfg, _identity_cache)
+        ident = await asyncio.to_thread(
+            resolve_identity, user_gw, roles_gw, cfg, _identity_cache
+        )
 
         proj = epic.split("-")[0]
         refusal = _check_project_role(ident, proj, {"lead_ba"}, "Lead-BA")
@@ -1063,7 +1225,8 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
 
         cal = WorkCalendar(cfg.holidays)
         actions = Actions(user_gw, cfg, cal)
-        res = actions.uat(
+        res = await asyncio.to_thread(
+            actions.uat,
             epic=epic,
             actor=actor,
             action=action,
@@ -1073,9 +1236,10 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
             dry_run=dry_run,
         )
         if res.ok and not dry_run:
-            now = datetime.now(timezone.utc)
-            next_it = _get_next_agenda_item(user_gw, ident, cfg, cal, now)
-            res = dataclasses.replace(res, next=next_it)
+            now = datetime.now(ZoneInfo(cfg.timezone))
+            res = await asyncio.to_thread(
+                _attach_next_agenda_item, res, user_gw, ident, cfg, cal, now
+            )
         return json.dumps(
             action_result_to_dict(res), indent=2, ensure_ascii=False
         )
@@ -1106,9 +1270,11 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
     ) -> str:
         """Lead-BA quyết định duyệt hoặc từ chối đề xuất dời lịch."""
         cfg = load_config()
-        user_gw = await get_user_gateway(ctx)
+        user_gw = await get_user_gateway(ctx, write=True)
         roles_gw = get_roles_reader(cfg)
-        ident = resolve_identity(user_gw, roles_gw, cfg, _identity_cache)
+        ident = await asyncio.to_thread(
+            resolve_identity, user_gw, roles_gw, cfg, _identity_cache
+        )
 
         proj = key.split("-")[0]
         refusal = _check_project_role(ident, proj, {"lead_ba"}, "Lead-BA")
@@ -1119,17 +1285,24 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
 
         cal = WorkCalendar(cfg.holidays)
         actions = Actions(user_gw, cfg, cal)
-        res = actions.decide_reschedule(
+        new_end_date = (
+            date.fromisoformat(new_end)
+            if isinstance(new_end, str) and new_end
+            else None
+        )
+        res = await asyncio.to_thread(
+            actions.decide_reschedule,
             key=key,
             approved=approved,
             reason=reason,
-            new_end=new_end,
+            new_end=new_end_date,
             dry_run=dry_run,
         )
         if res.ok and not dry_run:
-            now = datetime.now(timezone.utc)
-            next_it = _get_next_agenda_item(user_gw, ident, cfg, cal, now)
-            res = dataclasses.replace(res, next=next_it)
+            now = datetime.now(ZoneInfo(cfg.timezone))
+            res = await asyncio.to_thread(
+                _attach_next_agenda_item, res, user_gw, ident, cfg, cal, now
+            )
         return json.dumps(
             action_result_to_dict(res), indent=2, ensure_ascii=False
         )
@@ -1147,9 +1320,11 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
     ) -> str:
         """Hủy phần việc hoặc Story (chuyển Cancelled kèm resolution Won't Do)."""
         cfg = load_config()
-        user_gw = await get_user_gateway(ctx)
+        user_gw = await get_user_gateway(ctx, write=True)
         roles_gw = get_roles_reader(cfg)
-        ident = resolve_identity(user_gw, roles_gw, cfg, _identity_cache)
+        ident = await asyncio.to_thread(
+            resolve_identity, user_gw, roles_gw, cfg, _identity_cache
+        )
 
         proj = key.split("-")[0]
         refusal = _check_project_role(ident, proj, {"lead_ba"}, "Lead-BA")
@@ -1160,11 +1335,14 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
 
         cal = WorkCalendar(cfg.holidays)
         actions = Actions(user_gw, cfg, cal)
-        res = actions.cancel(key=key, reason=reason, dry_run=dry_run)
+        res = await asyncio.to_thread(
+            actions.cancel, key=key, reason=reason, dry_run=dry_run
+        )
         if res.ok and not dry_run:
-            now = datetime.now(timezone.utc)
-            next_it = _get_next_agenda_item(user_gw, ident, cfg, cal, now)
-            res = dataclasses.replace(res, next=next_it)
+            now = datetime.now(ZoneInfo(cfg.timezone))
+            res = await asyncio.to_thread(
+                _attach_next_agenda_item, res, user_gw, ident, cfg, cal, now
+            )
         return json.dumps(
             action_result_to_dict(res), indent=2, ensure_ascii=False
         )
@@ -1174,7 +1352,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
     async def eggs_end_day(
         ctx: Context,
         entries: Annotated[
-            list[dict[str, Any]],
+            list[Any],
             Field(
                 description=(
                     "Danh sách nhật ký ghi giờ cuối ngày: "
@@ -1188,15 +1366,50 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         ] = False,
     ) -> str:
         """Cập nhật ghi nhận giờ và trạng thái công việc kết thúc ngày làm việc."""
-        cfg = load_config()
-        user_gw = await get_user_gateway(ctx)
-        roles_gw = get_roles_reader(cfg)
-        ident = resolve_identity(user_gw, roles_gw, cfg, _identity_cache)
+        if not entries:
+            refusal = ActionResult(
+                ok=False,
+                message="Danh sách công việc cuối ngày không được để trống.",
+                changes=[],
+                next_actions=[],
+            )
+            return json.dumps(
+                action_result_to_dict(refusal), indent=2, ensure_ascii=False
+            )
 
         for e in entries:
-            pk = e.get("key", "").split("-")[0]
+            if not isinstance(e, dict):
+                refusal = ActionResult(
+                    ok=False,
+                    message="Mỗi mục công việc cuối ngày phải là một đối tượng (dict).",
+                    changes=[],
+                    next_actions=[],
+                )
+                return json.dumps(
+                    action_result_to_dict(refusal), indent=2, ensure_ascii=False
+                )
+            if not e.get("key") or not str(e["key"]).strip():
+                refusal = ActionResult(
+                    ok=False,
+                    message="Mỗi mục công việc cuối ngày phải có mã 'key'.",
+                    changes=[],
+                    next_actions=[],
+                )
+                return json.dumps(
+                    action_result_to_dict(refusal), indent=2, ensure_ascii=False
+                )
+
+        cfg = load_config()
+        user_gw = await get_user_gateway(ctx, write=True)
+        roles_gw = get_roles_reader(cfg)
+        ident = await asyncio.to_thread(
+            resolve_identity, user_gw, roles_gw, cfg, _identity_cache
+        )
+
+        for e in entries:
+            pk = str(e["key"]).split("-")[0]
             refusal = _check_project_role(
-                ident, pk, {"dev", "qc", "lead_ba"}, "hợp lệ"
+                ident, pk, {"dev", "qc", "lead_ba"}, "Dev, QC hoặc Lead-BA"
             )
             if refusal:
                 return json.dumps(
@@ -1206,11 +1419,14 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         cal = WorkCalendar(cfg.holidays)
         actions = Actions(user_gw, cfg, cal)
         typed_entries = [EndDayEntry(**e) for e in entries]
-        res = actions.end_day(entries=typed_entries, dry_run=dry_run)
+        res = await asyncio.to_thread(
+            actions.end_day, entries=typed_entries, dry_run=dry_run
+        )
         if res.ok and not dry_run:
-            now = datetime.now(timezone.utc)
-            next_it = _get_next_agenda_item(user_gw, ident, cfg, cal, now)
-            res = dataclasses.replace(res, next=next_it)
+            now = datetime.now(ZoneInfo(cfg.timezone))
+            res = await asyncio.to_thread(
+                _attach_next_agenda_item, res, user_gw, ident, cfg, cal, now
+            )
         return json.dumps(
             action_result_to_dict(res), indent=2, ensure_ascii=False
         )
@@ -1236,9 +1452,11 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
     ) -> str:
         """Ghi nhận User Report mới từ kênh hỗ trợ vào Epic OPS tháng của dự án."""
         cfg = load_config()
-        user_gw = await get_user_gateway(ctx)
+        user_gw = await get_user_gateway(ctx, write=True)
         roles_gw = get_roles_reader(cfg)
-        ident = resolve_identity(user_gw, roles_gw, cfg, _identity_cache)
+        ident = await asyncio.to_thread(
+            resolve_identity, user_gw, roles_gw, cfg, _identity_cache
+        )
 
         refusal = _check_project_role(
             ident, project, {"qc", "lead_ba"}, "QC hoặc Lead-BA"
@@ -1250,7 +1468,8 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
 
         cal = WorkCalendar(cfg.holidays)
         actions = Actions(user_gw, cfg, cal)
-        res = actions.triage_open(
+        res = await asyncio.to_thread(
+            actions.triage_open,
             project=project,
             text=text,
             source_url=source_url,
@@ -1259,9 +1478,10 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
             dry_run=dry_run,
         )
         if res.ok and not dry_run:
-            now = datetime.now(timezone.utc)
-            next_it = _get_next_agenda_item(user_gw, ident, cfg, cal, now)
-            res = dataclasses.replace(res, next=next_it)
+            now = datetime.now(ZoneInfo(cfg.timezone))
+            res = await asyncio.to_thread(
+                _attach_next_agenda_item, res, user_gw, ident, cfg, cal, now
+            )
         return json.dumps(
             action_result_to_dict(res), indent=2, ensure_ascii=False
         )
@@ -1304,9 +1524,11 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
     ) -> str:
         """Kết luận phân tích User Report và tạo/liên kết công việc xử lý."""
         cfg = load_config()
-        user_gw = await get_user_gateway(ctx)
+        user_gw = await get_user_gateway(ctx, write=True)
         roles_gw = get_roles_reader(cfg)
-        ident = resolve_identity(user_gw, roles_gw, cfg, _identity_cache)
+        ident = await asyncio.to_thread(
+            resolve_identity, user_gw, roles_gw, cfg, _identity_cache
+        )
 
         proj = key.split("-")[0]
         refusal = _check_project_role(
@@ -1319,7 +1541,8 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
 
         cal = WorkCalendar(cfg.holidays)
         actions = Actions(user_gw, cfg, cal)
-        res = actions.triage_close(
+        res = await asyncio.to_thread(
+            actions.triage_close,
             key=key,
             verdict=verdict,
             note=note,
@@ -1329,9 +1552,10 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
             dry_run=dry_run,
         )
         if res.ok and not dry_run:
-            now = datetime.now(timezone.utc)
-            next_it = _get_next_agenda_item(user_gw, ident, cfg, cal, now)
-            res = dataclasses.replace(res, next=next_it)
+            now = datetime.now(ZoneInfo(cfg.timezone))
+            res = await asyncio.to_thread(
+                _attach_next_agenda_item, res, user_gw, ident, cfg, cal, now
+            )
         return json.dumps(
             action_result_to_dict(res), indent=2, ensure_ascii=False
         )

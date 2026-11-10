@@ -6,6 +6,7 @@ import pytest
 from mcp_atlassian.eggs.actions import Actions, EndDayEntry
 from mcp_atlassian.eggs.calendar import WorkCalendar
 from mcp_atlassian.eggs.config import EggsConfig, ProjectConfig
+from mcp_atlassian.eggs.gateway import JiraError
 from tests.eggs.fakes import FakeGateway
 
 TZ = ZoneInfo("Asia/Ho_Chi_Minh")
@@ -44,6 +45,7 @@ def cfg():
             "report_source": "customfield_report_source",
             "reported_by": "customfield_reported_by",
             "reported_at": "customfield_reported_at",
+            "health_flags": "customfield_health_flags",
         },
         statuses={
             "open": "Open",
@@ -87,6 +89,7 @@ def cfg():
             "uat_fail": "UAT Fail",
             "start_triage": "Start Triage",
             "close_report": "Close Report",
+            "set_due": "Set Due Date",
         },
         projects={
             "HMKPOS": ProjectConfig(
@@ -1039,6 +1042,7 @@ def _base_fixtures(cfg):
         "QC Fail", "Cancel", "Request Reschedule", "Approve Reschedule",
         "Reject Reschedule", "Block", "Unblock", "Confirm No Impact",
         "Client UAT", "UAT Sign-off", "UAT Fail", "Start Triage", "Close Report",
+        "Set Due Date",
     ]
     return {
         "issues": {
@@ -1128,8 +1132,9 @@ def test_happy_path_exact_call_sequence_block(cfg, cal):
     assert res.ok is True
     assert [c[0] for c in gw.calls] == ["get_issue", "get_transitions", "transition"]
     assert gw.calls[2][1] == ("HMKPOS-101", "Block")
-    assert gw.calls[2][2]["fields"]["customfield_flagged"] == "Impediment"
+    assert gw.calls[2][2]["fields"]["customfield_block_reason"] == "Wait for API"
     assert gw.calls[2][2]["fields"]["customfield_blocked_by"] == {"value": "Nội bộ"}
+    assert "customfield_flagged" not in gw.calls[2][2]["fields"]
 
 
 def test_happy_path_exact_call_sequence_unblock(cfg, cal):
@@ -1140,8 +1145,8 @@ def test_happy_path_exact_call_sequence_unblock(cfg, cal):
     assert res.ok is True
     assert [c[0] for c in gw.calls] == ["get_issue", "get_transitions", "transition"]
     assert gw.calls[2][1] == ("HMKPOS-101", "Unblock")
-    assert gw.calls[2][2]["fields"]["customfield_flagged"] is None
-    assert gw.calls[2][2]["fields"]["customfield_blocked_by"] is None
+    assert gw.calls[2][2]["fields"] is None
+    assert gw.calls[2][2]["comment"] == "Resolved API issue"
 
 
 def test_happy_path_exact_call_sequence_request_reschedule(cfg, cal):
@@ -1150,20 +1155,25 @@ def test_happy_path_exact_call_sequence_request_reschedule(cfg, cal):
     actions = _make_actions(gw, cfg, cal)
     res = actions.request_reschedule("HMKPOS-101", new_end=date(2026, 11, 25), reason="Extra requirement")
     assert res.ok is True
-    assert [c[0] for c in gw.calls] == ["get_issue", "get_transitions", "current_user", "transition"]
-    assert gw.calls[3][1] == ("HMKPOS-101", "Request Reschedule")
-    assert gw.calls[3][2]["fields"]["customfield_proposed_end"] == "2026-11-25"
+    assert [c[0] for c in gw.calls] == ["get_issue", "get_transitions", "transition"]
+    assert gw.calls[2][1] == ("HMKPOS-101", "Request Reschedule")
+    assert gw.calls[2][2]["fields"]["customfield_proposed_end"] == "2026-11-25"
+    assert gw.calls[2][2]["fields"]["customfield_reschedule_reason"] == {"value": "Extra requirement"}
+    assert "customfield_reschedule_requester" not in gw.calls[2][2]["fields"]
 
 
 def test_happy_path_exact_call_sequence_confirm_no_impact(cfg, cal):
     data = _base_fixtures(cfg)
-    gw = FakeGateway(issues=data["issues"], transitions=data["transitions"])
+    data["issues"]["HMKPOS-101"]["fields"]["assignee"] = {"name": "test_user"}
+    data["issues"]["HMKPOS-101"]["fields"]["customfield_health_flags"] = [{"value": "NEED_RESCHEDULE"}]
+    gw = FakeGateway(issues=data["issues"], transitions=data["transitions"], user="test_user")
     actions = _make_actions(gw, cfg, cal)
     res = actions.confirm_no_impact("HMKPOS-101", note="Overtime to keep schedule")
     assert res.ok is True
-    assert [c[0] for c in gw.calls] == ["get_issue", "get_transitions", "transition"]
-    assert gw.calls[2][1] == ("HMKPOS-101", "Confirm No Impact")
-    assert gw.calls[2][2]["comment"] == "Overtime to keep schedule"
+    assert [c[0] for c in gw.calls] == ["get_issue", "current_user", "get_transitions", "transition"]
+    assert gw.calls[3][1] == ("HMKPOS-101", "Confirm No Impact")
+    assert gw.calls[3][2]["fields"] is None
+    assert gw.calls[3][2]["comment"] == "Overtime to keep schedule"
 
 
 def test_happy_path_exact_call_sequence_end_day(cfg, cal):
@@ -1215,9 +1225,11 @@ def test_happy_path_exact_call_sequence_flow_reschedule(cfg, cal):
     actions = _make_actions(gw, cfg, cal)
     res = actions.flow_reschedule("HMKPOS-100", new_due=date(2026, 11, 25), reason="Customer delay")
     assert res.ok is True
-    assert [c[0] for c in gw.calls] == ["get_issue", "get_transitions", "current_user", "transition"]
-    assert gw.calls[3][1] == ("HMKPOS-100", "Request Reschedule")
-    assert gw.calls[3][2]["fields"]["customfield_proposed_end"] == "2026-11-25"
+    assert [c[0] for c in gw.calls] == ["get_issue", "get_transitions", "transition"]
+    assert gw.calls[2][1] == ("HMKPOS-100", "Request Reschedule")
+    assert gw.calls[2][2]["fields"]["customfield_proposed_end"] == "2026-11-25"
+    assert gw.calls[2][2]["fields"]["customfield_reschedule_reason"] == {"value": "Customer delay"}
+    assert "customfield_reschedule_requester" not in gw.calls[2][2]["fields"]
 
 
 def test_happy_path_exact_call_sequence_uat_start(cfg, cal):
@@ -1271,7 +1283,8 @@ def test_happy_path_exact_call_sequence_decide_reschedule_approve(cfg, cal):
     assert res.ok is True
     assert [c[0] for c in gw.calls] == ["get_issue", "current_user", "get_transitions", "transition"]
     assert gw.calls[3][1] == ("HMKPOS-101", "Approve Reschedule")
-    assert gw.calls[3][2]["fields"]["customfield_10109"] == "2026-11-25"
+    assert gw.calls[3][2]["fields"] is None
+    assert gw.calls[3][2]["comment"] == "Phê duyệt dời lịch: Approved"
 
 
 def test_happy_path_exact_call_sequence_decide_reschedule_reject(cfg, cal):
@@ -1282,7 +1295,8 @@ def test_happy_path_exact_call_sequence_decide_reschedule_reject(cfg, cal):
     assert res.ok is True
     assert [c[0] for c in gw.calls] == ["get_issue", "current_user", "get_transitions", "transition"]
     assert gw.calls[3][1] == ("HMKPOS-101", "Reject Reschedule")
-    assert gw.calls[3][2]["fields"]["customfield_reschedule_status"] is None
+    assert gw.calls[3][2]["fields"] is None
+    assert gw.calls[3][2]["comment"] == "Từ chối dời lịch: Rejected deadline cannot be moved"
 
 
 def test_happy_path_exact_call_sequence_cancel(cfg, cal):
@@ -1769,6 +1783,177 @@ def test_block_allowed_values_from_config(cal):
     res_fail = actions.block("HMKPOS-101", reason="Waiting for internal team", blocked_by="Nội bộ")
     assert res_fail.ok is False
     assert "blocked_by" in res_fail.message
+
+
+def test_flow_reschedule_open_and_analyzing_uses_set_due(cfg, cal):
+    data = _base_fixtures(cfg)
+    data["issues"]["HMKPOS-100"]["fields"]["status"]["name"] = "Open"
+    gw = FakeGateway(issues=data["issues"], transitions=data["transitions"])
+    actions = _make_actions(gw, cfg, cal)
+
+    # 1. Story in Open uses set_due transition
+    res_open = actions.flow_reschedule(
+        "HMKPOS-100", new_due=date(2026, 11, 28), reason="Initial scope estimation"
+    )
+    assert res_open.ok is True
+    assert [c[0] for c in gw.calls] == ["get_issue", "get_transitions", "transition"]
+    assert gw.calls[2][1] == ("HMKPOS-100", "Set Due Date")
+    assert gw.calls[2][2]["fields"] == {"duedate": "2026-11-28"}
+
+    # 2. Story in Analyzing uses set_due transition
+    gw.calls.clear()
+    data["issues"]["HMKPOS-100"]["fields"]["status"]["name"] = "Analyzing"
+    res_analyzing = actions.flow_reschedule(
+        "HMKPOS-100", new_due=date(2026, 11, 29), reason="BA analysis updated"
+    )
+    assert res_analyzing.ok is True
+    assert gw.calls[2][1] == ("HMKPOS-100", "Set Due Date")
+    assert gw.calls[2][2]["fields"] == {"duedate": "2026-11-29"}
+
+    # 3. Story in Ready For Dev uses request_reschedule
+    gw.calls.clear()
+    data["issues"]["HMKPOS-100"]["fields"]["status"]["name"] = "Ready For Dev"
+    res_ready = actions.flow_reschedule(
+        "HMKPOS-100", new_due=date(2026, 11, 30), reason="Need more time"
+    )
+    assert res_ready.ok is True
+    assert gw.calls[2][1] == ("HMKPOS-100", "Request Reschedule")
+    assert gw.calls[2][2]["fields"]["customfield_proposed_end"] == "2026-11-30"
+
+
+def test_story_qc_pass_worklog_requirement(cfg, cal):
+    data = _base_fixtures(cfg)
+    data["issues"]["HMKPOS-100"]["fields"]["status"]["name"] = "Test In Progress"
+    gw = FakeGateway(
+        issues=data["issues"],
+        transitions=data["transitions"],
+        user="qc_user",
+    )
+    actions = _make_actions(gw, cfg, cal)
+
+    # Case A: No time_spent, and caller has NO existing worklog -> refused
+    res_no_wl = actions.qc_pass("HMKPOS-100", note="QC Pass without time")
+    assert res_no_wl.ok is False
+    assert "worklog trên Story" in res_no_wl.message
+
+    # Case B: time_spent provided -> logs work first, then transitions
+    gw.calls.clear()
+    res_with_time = actions.qc_pass(
+        "HMKPOS-100", time_spent="2h", note="Tested all scenarios"
+    )
+    assert res_with_time.ok is True
+    assert [c[0] for c in gw.calls] == [
+        "get_issue",
+        "get_transitions",
+        "add_worklog",
+        "transition",
+    ]
+    assert gw.calls[2][1] == ("HMKPOS-100", "2h", "Tested all scenarios")
+    assert gw.calls[3][1] == ("HMKPOS-100", "QC Pass")
+
+    # Case C: No time_spent, but caller already has a worklog on the Story -> allowed
+    gw.calls.clear()
+    res_existing_wl = actions.qc_pass("HMKPOS-100", note="QC Pass existing worklog")
+    assert res_existing_wl.ok is True
+    assert [c[0] for c in gw.calls] == [
+        "get_issue",
+        "current_user",
+        "get_issue",
+        "get_transitions",
+        "transition",
+    ]
+    assert gw.calls[4][1] == ("HMKPOS-100", "QC Pass")
+
+
+def test_story_qc_fail_bug_subtask_requirement(cfg, cal):
+    data = _base_fixtures(cfg)
+    data["issues"]["HMKPOS-100"]["fields"]["status"]["name"] = "Test In Progress"
+    gw = FakeGateway(
+        issues=data["issues"],
+        transitions=data["transitions"],
+        user="qc_user",
+    )
+    actions = _make_actions(gw, cfg, cal)
+
+    # Case A: No bugs provided and no existing bug sub-task -> refused
+    res_no_bug = actions.qc_fail("HMKPOS-100", reason="Found issues")
+    assert res_no_bug.ok is False
+    assert "ít nhất 1 Bug sub-task đang mở" in res_no_bug.message
+
+    # Case B: Bugs provided -> creates bug subtask then transitions
+    gw.calls.clear()
+    res_with_bug = actions.qc_fail(
+        "HMKPOS-100", reason="Found broken UI", bugs=["Fix checkout button"]
+    )
+    assert res_with_bug.ok is True
+    assert [c[0] for c in gw.calls] == [
+        "get_issue",
+        "get_transitions",
+        "create_issue",
+        "transition",
+    ]
+    assert gw.calls[2][1][0]["summary"] == "[CH][BUG] Fix checkout button"
+    assert gw.calls[3][1] == ("HMKPOS-100", "QC Fail")
+
+    # Case C: No bugs provided, but an open Bug sub-task already exists on the Story
+    gw.calls.clear()
+    data["issues"]["HMKPOS-100"]["fields"]["subtasks"] = [
+        {
+            "key": "HMKPOS-199",
+            "fields": {
+                "issuetype": {"name": "Bug", "subtask": True},
+                "status": {"name": "DEV To Do"},
+            },
+        }
+    ]
+    res_existing_bug = actions.qc_fail(
+        "HMKPOS-100", reason="Already has bug sub-task"
+    )
+    assert res_existing_bug.ok is True
+    assert [c[0] for c in gw.calls] == [
+        "get_issue",
+        "get_issue",
+        "get_transitions",
+        "transition",
+    ]
+    assert gw.calls[3][1] == ("HMKPOS-100", "QC Fail")
+
+
+def test_decide_reschedule_self_approval_refusal(cfg, cal):
+    data = _base_fixtures(cfg)
+    # HMKPOS-101 has reschedule_requester = "requester.user"
+    gw = FakeGateway(
+        issues=data["issues"],
+        transitions=data["transitions"],
+        user="requester.user",  # same as requester
+    )
+    actions = _make_actions(gw, cfg, cal)
+
+    # Attempt self-approval
+    res = actions.decide_reschedule("HMKPOS-101", approve=True, note="Self approval")
+    assert res.ok is False
+    assert "Người yêu cầu không được tự duyệt" in res.message
+
+
+def test_transition_jira_400_error_messages(cfg, cal):
+    data = _base_fixtures(cfg)
+    gw = FakeGateway(issues=data["issues"], transitions=data["transitions"])
+    # Simulate Jira 400 error from validator
+    gw.errors_on_transition = {
+        ("HMKPOS-101", "Cancel"): JiraError(
+            "Lỗi từ Jira (400 Bad Request)",
+            status_code=400,
+            error_messages=["Lý do không hợp lệ."],
+            errors={"customfield_101": "Trường này là bắt buộc."},
+        )
+    }
+    actions = _make_actions(gw, cfg, cal)
+
+    res = actions.cancel("HMKPOS-101", reason="Cancelled reason")
+    assert res.ok is False
+    assert "Lý do không hợp lệ." in res.message
+    assert "Trường này là bắt buộc." in res.message
+
 
 
 
