@@ -178,6 +178,54 @@ def test_adhoc_task_in_qc_owned_by_own_qc_owner(cal, cfg):
     assert esc2.owner == "qc.adhoc"
 
 
+def test_bug_standalone_in_qc_owned_by_own_qc_owner(cal, cfg):
+    epic = _make_issue(key="PROJ-EPIC", issue_type="epic", assignee="epic.owner")
+    bug_ready = _make_issue(
+        key="PROJ-30",
+        issue_type="bug",
+        status="ready_for_qc",
+        assignee="dev.worker",
+        qc_owner="qc.bug_tester",
+        parent_type=None,
+    )
+    bug_testing = _make_issue(
+        key="PROJ-31",
+        issue_type="bug",
+        status="testing",
+        assignee="dev.worker",
+        qc_owner="qc.bug_tester",
+        parent_type=None,
+    )
+
+    flags = frozenset({"STALE"})
+    esc1 = escalate(bug_ready, flags, story=None, epic=epic, today=TODAY, cal=cal, cfg=cfg)
+    assert esc1 is not None
+    assert esc1.level == 0
+    assert esc1.owner == "qc.bug_tester"
+
+    esc2 = escalate(bug_testing, flags, story=None, epic=epic, today=TODAY, cal=cal, cfg=cfg)
+    assert esc2 is not None
+    assert esc2.level == 0
+    assert esc2.owner == "qc.bug_tester"
+
+
+def test_bug_standalone_in_qc_without_qc_owner_falls_back(cal, cfg):
+    epic = _make_issue(key="PROJ-EPIC", issue_type="epic", assignee="epic.owner")
+    bug_ready = _make_issue(
+        key="PROJ-32",
+        issue_type="bug",
+        status="ready_for_qc",
+        assignee="dev.worker",
+        qc_owner=None,
+        parent_type=None,
+    )
+    flags = frozenset({"STALE"})
+    esc = escalate(bug_ready, flags, story=None, epic=epic, today=TODAY, cal=cal, cfg=cfg)
+    assert esc is not None
+    assert esc.level == 0
+    assert esc.owner == "epic.owner"
+
+
 def test_adhoc_task_in_qc_without_qc_owner_falls_back(cal, cfg):
     epic = _make_issue(key="PROJ-EPIC", issue_type="epic", assignee="epic.owner")
     adhoc_ready = _make_issue(

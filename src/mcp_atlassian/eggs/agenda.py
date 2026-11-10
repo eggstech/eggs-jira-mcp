@@ -372,6 +372,14 @@ def build_agenda(
                             tool="eggs_finish", args={"key": key}, missing=[]
                         )
                     )
+                elif issue.type == "bug":
+                    actions.append(
+                        SuggestedAction(
+                            tool="eggs_submit_qc",
+                            args={"key": key},
+                            missing=[] if issue.qc_owner else ["qc_owner"],
+                        )
+                    )
                 else:
                     actions.append(
                         SuggestedAction(
@@ -651,6 +659,14 @@ def build_agenda(
                 )
                 actions.append(
                     SuggestedAction(tool="eggs_finish", args={"key": key}, missing=[])
+                )
+            elif issue.type == "bug":
+                actions.append(
+                    SuggestedAction(
+                        tool="eggs_submit_qc",
+                        args={"key": key},
+                        missing=[] if issue.qc_owner else ["qc_owner"],
+                    )
                 )
             else:
                 actions.append(

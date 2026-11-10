@@ -207,6 +207,43 @@ def test_mapping_adhoc_reads_qc_owner(base_config):
     assert issue.is_work_item is True
 
 
+def test_mapping_bug_reads_qc_owner(base_config):
+    bug_raw = {
+        "id": "10030",
+        "key": "HMKPOS-60",
+        "fields": {
+            "summary": "Fix login crash",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Bug stand-alone", "subtask": False},
+            "status": {"name": "Dev In Progress"},
+            "assignee": {"name": "dev.user"},
+            "customfield_qc_owner": {"name": "qc.tester"},
+        },
+    }
+    issue = issue_from_json(bug_raw, base_config)
+    assert issue.type == "bug"
+    assert issue.qc_owner == "qc.tester"
+    assert issue.is_work_item is True
+
+
+def test_mapping_bug_sub_ignores_own_qc_owner(base_config):
+    bug_sub_raw = {
+        "id": "10031",
+        "key": "HMKPOS-61",
+        "fields": {
+            "summary": "Sub bug",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Bug", "subtask": True},
+            "status": {"name": "Dev In Progress"},
+            "assignee": {"name": "dev.user"},
+            "customfield_qc_owner": {"name": "qc.tester"},
+        },
+    }
+    issue = issue_from_json(bug_sub_raw, base_config)
+    assert issue.type == "bug_sub"
+    assert issue.qc_owner is None
+
+
 
 def test_status_changed_at_extracts_latest():
     changelog = {

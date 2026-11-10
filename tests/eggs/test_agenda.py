@@ -174,6 +174,17 @@ def test_suggested_actions_by_flag_kind(cfg, cal):
     )
     agenda_bug_sa = build_agenda(snap_bug_sa, identity, cfg, now, cal)
     assert [a.tool for a in agenda_bug_sa[0].actions] == ["eggs_submit_qc", "eggs_request_reschedule"]
+    assert agenda_bug_sa[0].actions[0].missing == ["qc_owner"]
+
+    iss_bug_sa_qc = _make_issue("RFID-3SAQ", issue_type="bug", parent_type=None, summary="Bug standalone with QC", status="in_progress", qc_owner="bob")
+    snap_bug_sa_qc = Snapshot(
+        issues={"RFID-3SAQ": iss_bug_sa_qc},
+        flags={"RFID-3SAQ": frozenset({"OVERDUE"})},
+        escalations={"RFID-3SAQ": Escalation(level=0, owner="alice", since=date(2026, 11, 8))},
+        flows={}, epics={}, not_updated=[], today=date(2026, 11, 9),
+    )
+    agenda_bug_sa_qc = build_agenda(snap_bug_sa_qc, identity, cfg, now, cal)
+    assert agenda_bug_sa_qc[0].actions[0].missing == []
 
     # Work item NEED_RESCHEDULE on adhoc item -> eggs_finish + eggs_submit_qc (missing qc_owner) + eggs_request_reschedule
     iss_adhoc = _make_issue("RFID-4", issue_type="adhoc", summary="Adhoc task", status="in_progress")
@@ -588,6 +599,51 @@ def test_agenda_qc_queue_uses_story_qc_owner(cfg, cal):
     assert any(act.tool == "eggs_qc_start" for act in agenda[0].actions)
 
 
+def test_agenda_qc_queue_bug_standalone_routed_to_own_qc_owner(cfg, cal):
+    identity = Identity(
+        username="qc_alice",
+        display_name="QC Alice",
+        roles={"RFID": {"qc"}},
+        is_lead=False,
+    )
+    now = datetime(2026, 11, 9, 10, 0, tzinfo=ZoneInfo("Asia/Ho_Chi_Minh"))
+
+    bug1 = _make_issue("RFID-B1", issue_type="bug", status="ready_for_qc", qc_owner="qc_alice")
+    bug2 = _make_issue("RFID-B2", issue_type="bug", status="ready_for_qc", qc_owner="other_qc")
+
+    issues = {bug1.key: bug1, bug2.key: bug2}
+    snapshot = Snapshot(
+        issues=issues, flags={}, escalations={}, flows={}, epics={}, not_updated=[], today=date(2026, 11, 9)
+    )
+
+    agenda = build_agenda(snapshot, identity, cfg, now, cal)
+    assert len(agenda) == 1
+    assert agenda[0].key == "RFID-B1"
+    assert agenda[0].priority == 4
+    assert any(act.tool == "eggs_qc_start" for act in agenda[0].actions)
+
+
+def test_agenda_qc_queue_bug_sub_missing_parent_not_routed(cfg, cal):
+    identity = Identity(
+        username="qc_alice",
+        display_name="QC Alice",
+        roles={"RFID": {"qc"}},
+        is_lead=False,
+    )
+    now = datetime(2026, 11, 9, 10, 0, tzinfo=ZoneInfo("Asia/Ho_Chi_Minh"))
+
+    # Bug sub with parent not in snapshot has qc_owner=None, so it must not be routed silently
+    bug_sub = _make_issue("RFID-BS1", issue_type="bug_sub", status="ready_for_qc", parent_key="RFID-MISSING")
+
+    issues = {bug_sub.key: bug_sub}
+    snapshot = Snapshot(
+        issues=issues, flags={}, escalations={}, flows={}, epics={}, not_updated=[], today=date(2026, 11, 9)
+    )
+
+    agenda = build_agenda(snapshot, identity, cfg, now, cal)
+    assert len(agenda) == 0
+
+
 def test_agenda_end_day_after_17_without_worklog(cfg, cal):
     identity = Identity(
         username="dev1",
@@ -734,8 +790,10 @@ def test_agenda_priority_7_adhoc_suggests_both_finish_and_submit_qc(cfg, cal):
     dev_under_story = _make_issue("RFID-4", issue_type="dev_task", parent_type="story", status="in_progress", assignee="alice")
     # 5. Bug sub under story: submit_qc, log_work (keeps eggs_submit_qc only)
     bug_sub = _make_issue("RFID-5", issue_type="bug_sub", parent_type="story", status="in_progress", assignee="alice")
-    # 6. Bug stand-alone: submit_qc, log_work (keeps eggs_submit_qc only)
+    # 6. Bug stand-alone without QC: submit_qc (missing qc_owner), log_work
     bug_sa = _make_issue("RFID-6", issue_type="bug", parent_type=None, status="in_progress", assignee="alice")
+    # 7. Bug stand-alone with QC: submit_qc (missing=[]), log_work
+    bug_sa_qc = _make_issue("RFID-7", issue_type="bug", parent_type=None, status="in_progress", assignee="alice", qc_owner="bob")
 
     issues = {
         adhoc_no_qc.key: adhoc_no_qc,
@@ -744,6 +802,7 @@ def test_agenda_priority_7_adhoc_suggests_both_finish_and_submit_qc(cfg, cal):
         dev_under_story.key: dev_under_story,
         bug_sub.key: bug_sub,
         bug_sa.key: bug_sa,
+        bug_sa_qc.key: bug_sa_qc,
     }
     snapshot = Snapshot(
         issues=issues, flags={}, escalations={}, flows={}, epics={}, not_updated=[], today=date(2026, 11, 9)
@@ -794,10 +853,18 @@ def test_agenda_priority_7_adhoc_suggests_both_finish_and_submit_qc(cfg, cal):
         ("eggs_log_work", ["time_spent", "note"]),
     ]
 
-    # Bug stand-alone
+    # Bug stand-alone without QC
     it6 = by_key["RFID-6"]
     tools6 = [(a.tool, a.missing) for a in it6.actions]
     assert tools6 == [
+        ("eggs_submit_qc", ["qc_owner"]),
+        ("eggs_log_work", ["time_spent", "note"]),
+    ]
+
+    # Bug stand-alone with QC
+    it7 = by_key["RFID-7"]
+    tools7 = [(a.tool, a.missing) for a in it7.actions]
+    assert tools7 == [
         ("eggs_submit_qc", []),
         ("eggs_log_work", ["time_spent", "note"]),
     ]

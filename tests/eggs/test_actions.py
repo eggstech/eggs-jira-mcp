@@ -383,7 +383,7 @@ def test_submit_qc_with_qc_owner_on_dev_task_refused(cfg, cal):
     # HMKPOS-101 is a dev_task under Story HMKPOS-10
     res = actions.submit_qc("HMKPOS-101", time_spent="1h", qc_owner="qc.tester")
     assert res.ok is False
-    assert "Story" in res.message or "kế thừa" in res.message
+    assert res.message == "QC Owner của Dev Task/Bug con lấy từ Story hoặc Ad-hoc Task cha."
     write_methods = {"transition", "update_fields", "add_comment", "add_worklog", "create_issue", "link"}
     assert [c for c in gateway.calls if c[0] in write_methods] == []
 
@@ -412,6 +412,135 @@ def test_submit_qc_with_qc_owner_replaces_different_owner_on_adhoc(cfg, cal):
     res = actions.submit_qc("HMKPOS-50", qc_owner="new.qc")
     assert res.ok is True
     assert "Đổi QC Owner: old.qc → new.qc" in res.changes
+
+
+def test_submit_qc_bug_without_owner_refused(cfg, cal):
+    raw_bug = {
+        "key": "HMKPOS-60",
+        "fields": {
+            "summary": "Standalone bug",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Bug stand-alone", "subtask": False},
+            "status": {"name": "Dev In Progress"},
+            "assignee": {"name": "dev.user"},
+        },
+    }
+    gateway = FakeGateway(
+        issues={"HMKPOS-60": raw_bug},
+        transitions={"HMKPOS-60": ["Submit QC"]},
+    )
+    actions = _make_actions(gateway, cfg, cal)
+    res = actions.submit_qc("HMKPOS-60", time_spent="1h", note="Testing bug submit")
+    assert res.ok is False
+    assert "Bug stand-alone HMKPOS-60 cần có QC Owner" in res.message
+    assert "Ai sẽ kiểm thử" in res.message
+    assert "finish" not in res.message.lower()
+    assert res.next_actions == ["submit_qc"]
+    write_methods = {"transition", "update_fields", "add_comment", "add_worklog", "create_issue", "link"}
+    assert [c for c in gateway.calls if c[0] in write_methods] == []
+
+
+def test_submit_qc_bug_with_owner_sends_field(cfg, cal):
+    raw_bug = {
+        "key": "HMKPOS-60",
+        "fields": {
+            "summary": "Standalone bug",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Bug stand-alone", "subtask": False},
+            "status": {"name": "Dev In Progress"},
+            "assignee": {"name": "dev.user"},
+        },
+    }
+    gateway = FakeGateway(
+        issues={"HMKPOS-60": raw_bug},
+        transitions={"HMKPOS-60": ["Submit QC"]},
+    )
+    actions = _make_actions(gateway, cfg, cal)
+
+    # Dry-run
+    res_dry = actions.submit_qc("HMKPOS-60", qc_owner="tuan.bui", dry_run=True)
+    assert res_dry.ok is True
+    assert any("tuan.bui" in c for c in res_dry.changes)
+    assert any("QC Owner" in c for c in res_dry.changes)
+    write_methods = {"transition", "update_fields", "add_comment", "add_worklog", "create_issue", "link"}
+    assert [c for c in gateway.calls if c[0] in write_methods] == []
+
+    # Real call
+    res = actions.submit_qc("HMKPOS-60", qc_owner="tuan.bui")
+    assert res.ok is True
+    trans_calls = [c for c in gateway.calls if c[0] == "transition"]
+    assert len(trans_calls) == 1
+    assert trans_calls[0][1] == ("HMKPOS-60", "Submit QC")
+    assert trans_calls[0][2]["fields"] == {"customfield_qc_owner": {"name": "tuan.bui"}}
+
+
+def test_submit_qc_bug_existing_owner_needs_no_param(cfg, cal):
+    raw_bug = {
+        "key": "HMKPOS-60",
+        "fields": {
+            "summary": "Standalone bug with owner",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Bug stand-alone", "subtask": False},
+            "status": {"name": "Dev In Progress"},
+            "assignee": {"name": "dev.user"},
+            "customfield_qc_owner": {"name": "existing.qc"},
+        },
+    }
+    gateway = FakeGateway(
+        issues={"HMKPOS-60": raw_bug},
+        transitions={"HMKPOS-60": ["Submit QC"]},
+    )
+    actions = _make_actions(gateway, cfg, cal)
+    res = actions.submit_qc("HMKPOS-60")
+    assert res.ok is True
+    assert any("QC Owner: existing.qc" in c for c in res.changes)
+
+
+def test_submit_qc_bug_replaces_owner(cfg, cal):
+    raw_bug = {
+        "key": "HMKPOS-60",
+        "fields": {
+            "summary": "Standalone bug with owner",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Bug stand-alone", "subtask": False},
+            "status": {"name": "Dev In Progress"},
+            "assignee": {"name": "dev.user"},
+            "customfield_qc_owner": {"name": "old.qc"},
+        },
+    }
+    gateway = FakeGateway(
+        issues={"HMKPOS-60": raw_bug},
+        transitions={"HMKPOS-60": ["Submit QC"]},
+    )
+    actions = _make_actions(gateway, cfg, cal)
+    res = actions.submit_qc("HMKPOS-60", qc_owner="new.qc")
+    assert res.ok is True
+    assert "Đổi QC Owner: old.qc → new.qc" in res.changes
+
+
+def test_submit_qc_with_qc_owner_on_bug_sub_refused(cfg, cal):
+    raw_sub = {
+        "key": "HMKPOS-61",
+        "fields": {
+            "summary": "Sub bug",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Bug", "subtask": True},
+            "status": {"name": "Dev In Progress"},
+            "assignee": {"name": "dev.user"},
+            "parent": {
+                "key": "HMKPOS-10",
+                "fields": {"issuetype": {"name": "Story", "subtask": False}},
+            },
+        },
+    }
+    gateway = FakeGateway(
+        issues={"HMKPOS-61": raw_sub},
+        transitions={"HMKPOS-61": ["Submit QC"]},
+    )
+    actions = _make_actions(gateway, cfg, cal)
+    res = actions.submit_qc("HMKPOS-61", qc_owner="qc.tester")
+    assert res.ok is False
+    assert res.message == "QC Owner của Dev Task/Bug con lấy từ Story hoặc Ad-hoc Task cha."
 
 
 def test_request_reschedule_past_date_refused(cfg, cal):
@@ -976,6 +1105,149 @@ def test_triage_close_bug_production_goes_to_ops(cfg, cal):
     bug_fields = cr_calls[0][1][0]
     assert bug_fields["customfield_epic_link"] == "HMKPOS-OPS"
     assert bug_fields["issuetype"]["name"] == "Bug stand-alone"
+
+
+def test_triage_close_bug_production_sets_qc_owner_from_report_assignee(cfg, cal):
+    ops_epic = {
+        "key": "HMKPOS-OPS",
+        "fields": {
+            "summary": cfg.ops_epic_summary.format(month=TODAY.month, year=TODAY.year),
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Epic", "subtask": False},
+            "status": {"name": "Dev In Progress"},
+        },
+    }
+    raw_report = {
+        "key": "HMKPOS-REP1",
+        "fields": {
+            "summary": "Prod login failure",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "User Report", "subtask": False},
+            "status": {"name": "Analyzing"},
+            "assignee": {"name": "qc.triage_user"},
+        },
+    }
+    gateway = FakeGateway(
+        issues={"HMKPOS-OPS": ops_epic, "HMKPOS-REP1": raw_report},
+        transitions={"HMKPOS-REP1": ["Close Report"]},
+    )
+    actions = _make_actions(gateway, cfg, cal)
+
+    # Dry-run
+    res_dry = actions.triage_close(
+        key="HMKPOS-REP1",
+        verdict="bug",
+        note="Production hotfix needed",
+        time_spent="1h",
+        dry_run=True,
+    )
+    assert res_dry.ok is True
+    assert "QC Owner: qc.triage_user" in res_dry.changes
+
+    # Real run
+    res = actions.triage_close(
+        key="HMKPOS-REP1",
+        verdict="bug",
+        note="Production hotfix needed",
+        time_spent="1h",
+    )
+    assert res.ok is True
+    assert "QC Owner: qc.triage_user" in res.changes
+    cr_calls = [c for c in gateway.calls if c[0] == "create_issue"]
+    assert len(cr_calls) == 1
+    bug_fields = cr_calls[0][1][0]
+    assert bug_fields["customfield_qc_owner"] == {"name": "qc.triage_user"}
+
+
+def test_triage_close_bug_production_sets_qc_owner_from_config_if_no_assignee(cfg, cal):
+    ops_epic = {
+        "key": "HMKPOS-OPS",
+        "fields": {
+            "summary": cfg.ops_epic_summary.format(month=TODAY.month, year=TODAY.year),
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Epic", "subtask": False},
+            "status": {"name": "Dev In Progress"},
+        },
+    }
+    raw_report = {
+        "key": "HMKPOS-REP1",
+        "fields": {
+            "summary": "Prod login failure",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "User Report", "subtask": False},
+            "status": {"name": "Analyzing"},
+            "assignee": None,
+        },
+    }
+    gateway = FakeGateway(
+        issues={"HMKPOS-OPS": ops_epic, "HMKPOS-REP1": raw_report},
+        transitions={"HMKPOS-REP1": ["Close Report"]},
+    )
+    actions = _make_actions(gateway, cfg, cal)
+    res = actions.triage_close(
+        key="HMKPOS-REP1",
+        verdict="bug",
+        note="Production hotfix needed",
+        time_spent="1h",
+    )
+    assert res.ok is True
+    assert "QC Owner: triage.qc" in res.changes
+    cr_calls = [c for c in gateway.calls if c[0] == "create_issue"]
+    assert len(cr_calls) == 1
+    bug_fields = cr_calls[0][1][0]
+    assert bug_fields["customfield_qc_owner"] == {"name": "triage.qc"}
+
+
+def test_triage_close_bug_production_without_fields_qc_owner_creates_issue_and_reports_in_changes(cfg, cal):
+    cfg_no_qc = replace(cfg, fields={k: v for k, v in cfg.fields.items() if k != "qc_owner"})
+    ops_epic = {
+        "key": "HMKPOS-OPS",
+        "fields": {
+            "summary": cfg.ops_epic_summary.format(month=TODAY.month, year=TODAY.year),
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Epic", "subtask": False},
+            "status": {"name": "Dev In Progress"},
+        },
+    }
+    raw_report = {
+        "key": "HMKPOS-REP1",
+        "fields": {
+            "summary": "Prod login failure",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "User Report", "subtask": False},
+            "status": {"name": "Analyzing"},
+            "assignee": {"name": "qc.triage_user"},
+        },
+    }
+    gateway = FakeGateway(
+        issues={"HMKPOS-OPS": ops_epic, "HMKPOS-REP1": raw_report},
+        transitions={"HMKPOS-REP1": ["Close Report"]},
+    )
+    actions = _make_actions(gateway, cfg_no_qc, cal)
+    # Dry run
+    res_dry = actions.triage_close(
+        key="HMKPOS-REP1",
+        verdict="bug",
+        note="Production hotfix needed",
+        time_spent="1h",
+        dry_run=True,
+    )
+    assert res_dry.ok is True
+    assert any("fields.qc_owner" in c for c in res_dry.changes)
+
+    # Real run
+    res = actions.triage_close(
+        key="HMKPOS-REP1",
+        verdict="bug",
+        note="Production hotfix needed",
+        time_spent="1h",
+    )
+    assert res.ok is True
+    assert any("fields.qc_owner" in c for c in res.changes)
+    cr_calls = [c for c in gateway.calls if c[0] == "create_issue"]
+    assert len(cr_calls) == 1
+    bug_fields = cr_calls[0][1][0]
+    assert "customfield_qc_owner" not in bug_fields
 
 
 def test_triage_close_feature_requires_link(cfg, cal):
@@ -2115,6 +2387,104 @@ def test_end_day_adhoc_ready_for_qc_without_owner_dry_run_shows_failure(cfg, cal
     assert "HMKPOS-50: Thất bại" in res.message
     assert "chưa log time" in res.message.lower() or "thời gian" in res.message.lower()
     assert "qc_owner" in res.message.lower()
+    assert "HMKPOS-101: Thành công" in res.message
+    assert not any(c[0] in ("add_worklog", "transition") for c in gw.calls)
+
+
+def test_end_day_bug_ready_for_qc_without_owner_fails_entry_and_runs_others(cfg, cal):
+    raw_dev_task = {
+        "key": "HMKPOS-101",
+        "fields": {
+            "summary": "Dev task",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Dev Task", "subtask": True},
+            "status": {"name": "Dev In Progress"},
+            "assignee": {"name": "dev.user"},
+        },
+    }
+    raw_bug = {
+        "key": "HMKPOS-60",
+        "fields": {
+            "summary": "Standalone bug",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Bug stand-alone", "subtask": False},
+            "status": {"name": "Dev In Progress"},
+            "assignee": {"name": "dev.user"},
+            # no qc_owner
+        },
+    }
+    gw = FakeGateway(
+        issues={"HMKPOS-101": raw_dev_task, "HMKPOS-60": raw_bug},
+        transitions={
+            "HMKPOS-101": ["Submit QC", "Done"],
+            "HMKPOS-60": ["Submit QC", "Done"],
+        },
+    )
+    actions = _make_actions(gw, cfg, cal)
+    entries = [
+        EndDayEntry(key="HMKPOS-101", time_spent="2h", note="Work done", move_to=None),
+        EndDayEntry(key="HMKPOS-60", time_spent="1h", note="Done bug", move_to="ready_for_qc"),
+    ]
+    res = actions.end_day(entries)
+
+    assert res.ok is False
+    assert "HMKPOS-101: Thành công" in res.message
+    assert "HMKPOS-60: Thất bại" in res.message
+    assert "Bug stand-alone" in res.message
+    assert "cần có QC Owner" in res.message
+    assert "finish" not in res.message.lower()
+
+    # HMKPOS-101 worklog written
+    wl_calls = [c for c in gw.calls if c[0] == "add_worklog" and c[1][0] == "HMKPOS-101"]
+    assert len(wl_calls) == 1
+    assert wl_calls[0][1] == ("HMKPOS-101", "2h", "Work done")
+
+    # HMKPOS-60 worklog and transition not executed
+    trans_calls = [c for c in gw.calls if c[0] == "transition" and c[1][0] == "HMKPOS-60"]
+    assert trans_calls == []
+    assert not any(c[0] == "add_worklog" and c[1][0] == "HMKPOS-60" for c in gw.calls)
+
+
+def test_end_day_bug_ready_for_qc_without_owner_dry_run_shows_failure(cfg, cal):
+    raw_dev_task = {
+        "key": "HMKPOS-101",
+        "fields": {
+            "summary": "Dev task",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Dev Task", "subtask": True},
+            "status": {"name": "Dev In Progress"},
+            "assignee": {"name": "dev.user"},
+        },
+    }
+    raw_bug = {
+        "key": "HMKPOS-60",
+        "fields": {
+            "summary": "Standalone bug",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Bug stand-alone", "subtask": False},
+            "status": {"name": "Dev In Progress"},
+            "assignee": {"name": "dev.user"},
+            # no qc_owner
+        },
+    }
+    gw = FakeGateway(
+        issues={"HMKPOS-101": raw_dev_task, "HMKPOS-60": raw_bug},
+        transitions={
+            "HMKPOS-101": ["Submit QC", "Done"],
+            "HMKPOS-60": ["Submit QC", "Done"],
+        },
+    )
+    actions = _make_actions(gw, cfg, cal)
+    entries = [
+        EndDayEntry(key="HMKPOS-101", time_spent="2h", note="Work done", move_to=None),
+        EndDayEntry(key="HMKPOS-60", time_spent="1h", note="Done bug", move_to="ready_for_qc"),
+    ]
+    res = actions.end_day(entries, dry_run=True)
+    assert res.ok is False
+    assert "HMKPOS-60: Thất bại" in res.message
+    assert "Bug stand-alone" in res.message
+    assert "cần có QC Owner" in res.message
+    assert "finish" not in res.message.lower()
     assert "HMKPOS-101: Thành công" in res.message
     assert not any(c[0] in ("add_worklog", "transition") for c in gw.calls)
 

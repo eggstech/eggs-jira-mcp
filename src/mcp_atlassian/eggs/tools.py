@@ -714,8 +714,8 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
             str | None,
             Field(
                 description=(
-                    "Jira username của QC Owner "
-                    "(chỉ dùng cho Ad-hoc Task khi cần QC)"
+                    "Jira username của QC Owner (chọn cho Ad-hoc Task khi cần QC "
+                    "và Bug stand-alone; Dev Task/Bug (sub) kế thừa từ parent)"
                 ),
                 default=None,
             ),
@@ -730,9 +730,11 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         Đối với Dev Task: Dev lựa chọn dùng eggs_finish (không cần QC riêng, QC
         kiểm thử ở cấp Story) hoặc eggs_submit_qc (khi thuộc Story). Dev Task thuộc
         Ad-hoc Task hoặc Bug stand-alone không qua QC riêng, chỉ dùng eggs_finish.
-        Đối với Ad-hoc Task: Dev lựa chọn dùng eggs_finish nếu không cần QC, hoặc
-        eggs_submit_qc kèm qc_owner nếu cần QC. Bug (sub dưới Story hoặc Ad-hoc Task,
-        và Bug stand-alone) luôn qua QC bằng eggs_submit_qc (không có eggs_finish).
+        QC Owner (qc_owner) được chọn cho Ad-hoc Task (khi cần QC) và Bug stand-alone
+        (bắt buộc, có thể đã được điền sẵn từ triage); Dev Task/Bug (sub) kế thừa từ
+        Story hoặc Ad-hoc Task cha.
+        Bug (sub dưới Story hoặc Ad-hoc Task, và Bug stand-alone) luôn qua QC bằng
+        eggs_submit_qc (không có eggs_finish).
         Ad-hoc Task và Bug stand-alone chỉ nộp QC khi mọi sub-task đã hoàn thành.
         """
         cfg = await asyncio.to_thread(load_config)

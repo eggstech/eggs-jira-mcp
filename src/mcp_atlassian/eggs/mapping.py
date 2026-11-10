@@ -202,7 +202,7 @@ def issue_from_json(raw: dict, cfg: EggsConfig) -> Issue:
     part = _parse_option(get_cf("part"))
     qc_owner = (
         _parse_user(get_cf("qc_owner"))
-        if issue_type in ("story", "adhoc")
+        if issue_type in ("story", "adhoc", "bug")
         else None
     )
     reschedule_requester = _parse_user(get_cf("reschedule_requester"))

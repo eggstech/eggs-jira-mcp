@@ -69,7 +69,7 @@ def escalate(
             l0_candidate = epic_assignee
     elif issue.is_work_item:
         if issue.status in {"ready_for_qc", "testing"}:
-            if issue.type == "adhoc":
+            if issue.type in ("adhoc", "bug"):
                 l0_candidate = issue.qc_owner
             elif (issue.parent_type in ("story", "adhoc")) or (
                 story and story.type in ("story", "adhoc")

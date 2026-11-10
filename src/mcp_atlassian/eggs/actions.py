@@ -437,11 +437,11 @@ class Actions:
                     next_actions=[],
                 )
 
-        if qc_owner and issue.type != "adhoc":
+        if qc_owner and issue.type not in ("adhoc", "bug"):
             return ActionResult(
                 ok=False,
                 message=(
-                    "QC Owner của Dev Task/Bug được kế thừa từ Story "
+                    "QC Owner của Dev Task/Bug con lấy từ Story "
                     "hoặc Ad-hoc Task cha."
                 ),
                 changes=[],
@@ -450,18 +450,28 @@ class Actions:
 
         fields: dict[str, Any] | None = None
         effective_qc_owner: str | None = None
-        if issue.type == "adhoc":
+        if issue.type in ("adhoc", "bug"):
             effective_qc_owner = qc_owner or issue.qc_owner
             if not effective_qc_owner:
-                return ActionResult(
-                    ok=False,
-                    message=(
+                if issue.type == "bug":
+                    message = (
+                        f"Bug stand-alone {key} cần có QC Owner để chuyển sang "
+                        "QC TO DO. Ai sẽ kiểm thử task này? Vui lòng cung cấp "
+                        "qc_owner."
+                    )
+                    next_acts = ["submit_qc"]
+                else:
+                    message = (
                         f"Ad-hoc Task {key} cần có QC Owner để chuyển sang "
                         "QC TO DO. Ai sẽ kiểm thử task này? Vui lòng cung cấp "
                         "qc_owner hoặc dùng finish() nếu không cần QC."
-                    ),
+                    )
+                    next_acts = ["submit_qc", "finish"]
+                return ActionResult(
+                    ok=False,
+                    message=message,
                     changes=[],
-                    next_actions=["submit_qc", "finish"],
+                    next_actions=next_acts,
                 )
             if qc_owner:
                 qc_field_id = self.cfg.fields.get("qc_owner")
@@ -479,7 +489,7 @@ class Actions:
             return self._unavailable_result(key, "submit_qc", avail)
 
         changes = ["Chuyển trạng thái sang QC TO DO"]
-        if issue.type == "adhoc" and effective_qc_owner:
+        if issue.type in ("adhoc", "bug") and effective_qc_owner:
             if issue.qc_owner and qc_owner and issue.qc_owner != qc_owner:
                 changes.append(f"Đổi QC Owner: {issue.qc_owner} → {qc_owner}")
             else:
@@ -904,21 +914,23 @@ class Actions:
                 )
             sub_results.append((e.key, sub_res))
 
-        adhoc_missing_qc_keys: set[str] = set()
+        missing_qc_types: dict[str, str] = {}
         fatal_failures: list[str] = []
 
         for e, (k, r) in zip(entries, sub_results, strict=True):
             if not r.ok:
-                is_adhoc_no_qc = False
+                is_missing_qc = False
+                issue_type = ""
                 if e.move_to == "ready_for_qc":
                     try:
                         iss = self._get_issue(e.key)
                     except (JiraError, KeyError, ValueError):
                         iss = None
-                    if iss and iss.type == "adhoc" and not iss.qc_owner:
-                        is_adhoc_no_qc = True
-                if is_adhoc_no_qc:
-                    adhoc_missing_qc_keys.add(k)
+                    if iss and iss.type in ("adhoc", "bug") and not iss.qc_owner:
+                        is_missing_qc = True
+                        issue_type = iss.type
+                if is_missing_qc:
+                    missing_qc_types[k] = issue_type
                 else:
                     fatal_failures.append(f"{k}: {r.message}")
 
@@ -930,7 +942,13 @@ class Actions:
                 next_actions=[],
             )
 
-        def _adhoc_no_qc_message(k: str) -> str:
+        def _missing_qc_message(k: str, itype: str) -> str:
+            if itype == "bug":
+                return (
+                    f"Chưa log time cho {k}: Bug stand-alone cần có QC Owner "
+                    "để chuyển sang QC TO DO. Ai sẽ kiểm thử task này? "
+                    "Vui lòng cung cấp qc_owner."
+                )
             return (
                 f"Chưa log time cho {k}: Ad-hoc Task cần có QC Owner để chuyển sang "
                 "QC TO DO. Ai sẽ kiểm thử task này? Vui lòng cung cấp qc_owner "
@@ -938,11 +956,13 @@ class Actions:
             )
 
         if dry_run:
-            if adhoc_missing_qc_keys:
+            if missing_qc_types:
                 dry_results = []
                 for _e, (k, r) in zip(entries, sub_results, strict=True):
-                    if k in adhoc_missing_qc_keys:
-                        dry_results.append((k, False, _adhoc_no_qc_message(k)))
+                    if k in missing_qc_types:
+                        dry_results.append(
+                            (k, False, _missing_qc_message(k, missing_qc_types[k]))
+                        )
                     else:
                         dry_results.append((k, True, r.message))
                 per_key_lines = [
@@ -974,9 +994,11 @@ class Actions:
         write_changes: list[str] = []
         any_failed = False
         for e in entries:
-            if e.key in adhoc_missing_qc_keys:
+            if e.key in missing_qc_types:
                 any_failed = True
-                write_results.append((e.key, False, _adhoc_no_qc_message(e.key)))
+                write_results.append(
+                    (e.key, False, _missing_qc_message(e.key, missing_qc_types[e.key]))
+                )
                 continue
             try:
                 if e.move_to == "ready_for_qc":
@@ -2159,6 +2181,15 @@ class Actions:
                 changes.append(
                     "Tạo Bug stand-alone trong Epic [OPS] và liên kết Causes"
                 )
+                proj_cfg = self.cfg.projects.get(report.project)
+                qc_owner_user = report.assignee or (
+                    proj_cfg.triage_owner if proj_cfg else None
+                )
+                if self.cfg.fields.get("qc_owner"):
+                    if qc_owner_user:
+                        changes.append(f"QC Owner: {qc_owner_user}")
+                else:
+                    changes.append("Không có cấu hình fields.qc_owner")
         elif link_key:
             changes.append(f"Liên kết tới {link_key}")
         changes.append("Đóng User Report (Close Report)")
@@ -2200,6 +2231,13 @@ class Actions:
                 }
                 if self.cfg.fields.get("epic_link"):
                     create_payload[self.cfg.fields["epic_link"]] = ops_epic.key
+                proj_cfg = self.cfg.projects.get(report.project)
+                qc_owner_user = report.assignee or (
+                    proj_cfg.triage_owner if proj_cfg else None
+                )
+                qc_field_id = self.cfg.fields.get("qc_owner")
+                if qc_field_id and qc_owner_user:
+                    create_payload[qc_field_id] = {"name": qc_owner_user}
                 bug_key = self.gateway.create_issue(create_payload)
                 self.gateway.link(
                     self.cfg.link_types["causes"], inward_key=key, outward_key=bug_key

@@ -993,6 +993,9 @@ class TestEggsToolBehavior:
 
         tool_submit = await server.get_tool("eggs_submit_qc")
         assert "qc_owner" in tool_submit.parameters["properties"]
+        qc_prop_desc = tool_submit.parameters["properties"]["qc_owner"]["description"]
+        assert "Ad-hoc Task" in qc_prop_desc
+        assert "Bug stand-alone" in qc_prop_desc
         assert "eggs_finish" in tool_submit.description
         assert "qc_owner" in tool_submit.description
         assert "Dev Task" in tool_submit.description
