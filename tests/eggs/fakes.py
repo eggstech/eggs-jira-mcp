@@ -29,6 +29,8 @@ class FakeGateway(JiraGateway):
         role_members: dict[str, dict[str, list[str]]] | None = None,
         errors_on_transition: dict[tuple[str, str], JiraError] | None = None,
         field_definitions: list[dict] | None = None,
+        existing_users: set[str] | None = None,
+        allowed_field_values: dict[tuple[str, str, str], list[str]] | None = None,
     ) -> None:
         self.issues = dict(issues or {})
         self.worklogs = list(worklogs or [])
@@ -41,6 +43,9 @@ class FakeGateway(JiraGateway):
         self.role_members = dict(role_members or {})
         self.errors_on_transition = dict(errors_on_transition or {})
         self.field_definitions = list(field_definitions or [])
+        self.existing_users = set(existing_users) if existing_users is not None else None
+        self.allowed_field_values = dict(allowed_field_values or {})
+        self.issue_properties: dict[tuple[str, str], Any] = {}
         self.calls: list[tuple[str, tuple, dict[str, Any]]] = []
         self._next_id = 1000
 
@@ -303,3 +308,23 @@ class FakeGateway(JiraGateway):
                         }
                     )
         return wls
+
+    def user_exists(self, username: str) -> bool:
+        self._record("user_exists", username)
+        if self.existing_users is not None:
+            return username in self.existing_users
+        return True
+
+    def field_allowed_values(
+        self, project: str, issue_type: str, field_id: str
+    ) -> list[str]:
+        self._record("field_allowed_values", project, issue_type, field_id)
+        if (project, issue_type, field_id) in self.allowed_field_values:
+            return list(self.allowed_field_values[(project, issue_type, field_id)])
+        if (project, "", field_id) in self.allowed_field_values:
+            return list(self.allowed_field_values[(project, "", field_id)])
+        return []
+
+    def set_issue_property(self, key: str, name: str, value: Any) -> None:
+        self._record("set_issue_property", key, name, value)
+        self.issue_properties[(key, name)] = value

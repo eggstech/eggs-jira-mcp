@@ -479,3 +479,61 @@ class AtlassianGateway(JiraGateway):
         if isinstance(res, list):
             return list(res)
         return []
+
+    def user_exists(self, username: str) -> bool:
+        """Check if user exists via GET rest/api/2/user?username=."""
+        try:
+            res = self.client.get(f"rest/api/2/user?username={username}")
+            return bool(res and isinstance(res, dict) and res.get("name"))
+        except HTTPError as e:
+            if e.response is not None and e.response.status_code == 404:
+                return False
+            raise _handle_http_error(e) from e
+
+    def field_allowed_values(
+        self, project: str, issue_type: str, field_id: str
+    ) -> list[str]:
+        """Fetch allowed values for a field via createmeta."""
+        try:
+            res = self.client.get(
+                "rest/api/2/issue/createmeta",
+                params={
+                    "projectKeys": project,
+                    "issuetypeNames": issue_type,
+                    "expand": "projects.issuetypes.fields",
+                },
+            )
+        except HTTPError as e:
+            raise _handle_http_error(e) from e
+
+        if not isinstance(res, dict):
+            return []
+        projects = res.get("projects") or []
+        for p in projects:
+            for it in p.get("issuetypes") or []:
+                fields = it.get("fields") or {}
+                field_info = fields.get(field_id)
+                if not field_info:
+                    for f in fields.values():
+                        if isinstance(f, dict) and f.get("name") == field_id:
+                            field_info = f
+                            break
+                if field_info and isinstance(field_info, dict):
+                    allowed = field_info.get("allowedValues") or []
+                    vals: list[str] = []
+                    for opt in allowed:
+                        if isinstance(opt, dict):
+                            val = opt.get("value") or opt.get("name")
+                            if val:
+                                vals.append(str(val))
+                        elif isinstance(opt, str):
+                            vals.append(opt)
+                    return vals
+        return []
+
+    def set_issue_property(self, key: str, name: str, value: Any) -> None:
+        """Set an issue property via PUT rest/api/2/issue/{key}/properties/{name}."""
+        try:
+            self.client.put(f"rest/api/2/issue/{key}/properties/{name}", data=value)
+        except HTTPError as e:
+            raise _handle_http_error(e) from e

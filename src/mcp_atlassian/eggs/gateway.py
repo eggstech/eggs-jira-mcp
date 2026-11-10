@@ -142,3 +142,17 @@ class JiraGateway(Protocol):
     def get_worklogs(self, key: str) -> list[dict]:
         """Fetch all worklogs for an issue via GET /rest/api/2/issue/{key}/worklog."""
         ...
+
+    def user_exists(self, username: str) -> bool:
+        """Check whether a Jira user exists."""
+        ...
+
+    def field_allowed_values(
+        self, project: str, issue_type: str, field_id: str
+    ) -> list[str]:
+        """Fetch allowed values for a field in a project/issue type (createmeta)."""
+        ...
+
+    def set_issue_property(self, key: str, name: str, value: Any) -> None:
+        """Set an issue property via PUT rest/api/2/issue/{key}/properties/{name}."""
+        ...
