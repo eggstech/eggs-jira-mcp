@@ -7,6 +7,7 @@ import dataclasses
 import json
 import logging
 import os
+import threading
 from datetime import date, datetime
 from functools import wraps
 from typing import Annotated, Any
@@ -93,6 +94,7 @@ EGGS_TOOLSET_DEFINITION = ToolsetDefinition(
 
 _identity_cache = IdentityCache(ttl_seconds=600)
 _roles_reader: JiraGateway | None = None
+_roles_reader_lock = threading.Lock()
 
 
 def clear_identity_cache() -> None:
@@ -109,25 +111,28 @@ def get_roles_reader(cfg: EggsConfig | None = None) -> JiraGateway:
     """Return the singleton gateway for role reading via EGGS_BOT_TOKEN."""
     global _roles_reader
     if _roles_reader is None:
-        c = cfg or load_config()
-        url = os.getenv("JIRA_URL", c.jira_url if c else None)
-        token = os.getenv("EGGS_BOT_TOKEN")
-        if not url:
-            raise ValueError("Thiếu cấu hình JIRA_URL để kết nối Jira.")
-        if not token:
-            raise ValueError(
-                "Thiếu biến môi trường EGGS_BOT_TOKEN để đọc vai trò dự án."
-            )
-        fetcher = JiraFetcher(
-            JiraConfig(url=url, auth_type="pat", personal_token=token)
-        )
-        _roles_reader = AtlassianGateway(fetcher.jira, cfg=c)
+        with _roles_reader_lock:
+            if _roles_reader is None:
+                c = cfg or load_config()
+                url = os.getenv("JIRA_URL", c.jira_url if c else None)
+                token = os.getenv("EGGS_BOT_TOKEN")
+                if not url:
+                    raise ValueError("Thiếu cấu hình JIRA_URL để kết nối Jira.")
+                if not token:
+                    raise ValueError(
+                        "Thiếu biến môi trường EGGS_BOT_TOKEN để đọc vai trò dự án."
+                    )
+                fetcher = JiraFetcher(
+                    JiraConfig(url=url, auth_type="pat", personal_token=token)
+                )
+                _roles_reader = AtlassianGateway(fetcher.jira, cfg=c)
     return _roles_reader
 
 
 def set_roles_reader(gateway: JiraGateway | None) -> None:
     global _roles_reader
-    _roles_reader = gateway
+    with _roles_reader_lock:
+        _roles_reader = gateway
 
 
 async def get_user_gateway(ctx: Context, *, write: bool = False) -> JiraGateway:
@@ -150,7 +155,7 @@ async def get_user_gateway(ctx: Context, *, write: bool = False) -> JiraGateway:
                     "nhập dùng chung."
                 )
 
-    cfg = load_config()
+    cfg = await asyncio.to_thread(load_config)
     fetcher = await get_jira_fetcher(ctx)
     return AtlassianGateway(fetcher.jira, cfg=cfg)
 
@@ -338,7 +343,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
     )
     async def eggs_version(ctx: Context) -> str:
         """Kiểm tra phiên bản server EGGS Jira MCP và phiên bản kit tối thiểu."""
-        cfg = load_config()
+        cfg = await asyncio.to_thread(load_config)
         data = {
             "server": __version__,
             "kit_min_version": cfg.kit_min_version,
@@ -370,9 +375,9 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
     )
     async def eggs_whoami(ctx: Context) -> str:
         """Xác định danh tính người dùng hiện tại và vai trò theo từng dự án."""
-        cfg = load_config()
+        cfg = await asyncio.to_thread(load_config)
         user_gw = await get_user_gateway(ctx, write=False)
-        roles_gw = get_roles_reader(cfg)
+        roles_gw = await asyncio.to_thread(get_roles_reader, cfg)
         ident = await asyncio.to_thread(
             resolve_identity, user_gw, roles_gw, cfg, _identity_cache
         )
@@ -393,9 +398,9 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         ] = None,
     ) -> str:
         """Cửa vào duy nhất: Trả về agenda việc cần làm và danh mục ý định."""
-        cfg = load_config()
+        cfg = await asyncio.to_thread(load_config)
         user_gw = await get_user_gateway(ctx, write=False)
-        roles_gw = get_roles_reader(cfg)
+        roles_gw = await asyncio.to_thread(get_roles_reader, cfg)
         ident = await asyncio.to_thread(
             resolve_identity, user_gw, roles_gw, cfg, _identity_cache
         )
@@ -453,7 +458,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         ] = None,
     ) -> str:
         """Xem bảng theo dõi tiến độ Actor của Epic hoặc dự án."""
-        cfg = load_config()
+        cfg = await asyncio.to_thread(load_config)
         user_gw = await get_user_gateway(ctx, write=False)
         cal = WorkCalendar(cfg.holidays)
         now = datetime.now(ZoneInfo(cfg.timezone))
@@ -467,7 +472,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
 
         target_epics: list[str] = []
         for ek, iss in snapshot.issues.items():
-            if iss.issuetype == cfg.issue_types.get("epic", "Epic"):
+            if iss.type == "epic":
                 if project and iss.project != project:
                     continue
                 target_epics.append(ek)
@@ -497,7 +502,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         ] = None,
     ) -> str:
         """Báo cáo tổng hợp tình hình công việc trong ngày."""
-        cfg = load_config()
+        cfg = await asyncio.to_thread(load_config)
         user_gw = await get_user_gateway(ctx, write=False)
         cal = WorkCalendar(cfg.holidays)
         now = datetime.now(ZoneInfo(cfg.timezone))
@@ -518,9 +523,9 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         ] = None,
     ) -> str:
         """Xem danh sách các yêu cầu dời lịch đang chờ duyệt."""
-        cfg = load_config()
+        cfg = await asyncio.to_thread(load_config)
         user_gw = await get_user_gateway(ctx, write=False)
-        roles_gw = get_roles_reader(cfg)
+        roles_gw = await asyncio.to_thread(get_roles_reader, cfg)
         ident = await asyncio.to_thread(
             resolve_identity, user_gw, roles_gw, cfg, _identity_cache
         )
@@ -557,9 +562,9 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         ] = False,
     ) -> str:
         """Nhận việc và lên lịch thực hiện cho phần việc (Dev Task/Bug)."""
-        cfg = load_config()
+        cfg = await asyncio.to_thread(load_config)
         user_gw = await get_user_gateway(ctx, write=True)
-        roles_gw = get_roles_reader(cfg)
+        roles_gw = await asyncio.to_thread(get_roles_reader, cfg)
         ident = await asyncio.to_thread(
             resolve_identity, user_gw, roles_gw, cfg, _identity_cache
         )
@@ -611,9 +616,9 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         ] = False,
     ) -> str:
         """Bắt đầu thực hiện công việc (chuyển sang Dev In Progress)."""
-        cfg = load_config()
+        cfg = await asyncio.to_thread(load_config)
         user_gw = await get_user_gateway(ctx, write=True)
-        roles_gw = get_roles_reader(cfg)
+        roles_gw = await asyncio.to_thread(get_roles_reader, cfg)
         ident = await asyncio.to_thread(
             resolve_identity, user_gw, roles_gw, cfg, _identity_cache
         )
@@ -662,9 +667,9 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         ] = False,
     ) -> str:
         """Ghi nhận thời gian làm việc vào issue."""
-        cfg = load_config()
+        cfg = await asyncio.to_thread(load_config)
         user_gw = await get_user_gateway(ctx, write=True)
-        roles_gw = get_roles_reader(cfg)
+        roles_gw = await asyncio.to_thread(get_roles_reader, cfg)
         ident = await asyncio.to_thread(
             resolve_identity, user_gw, roles_gw, cfg, _identity_cache
         )
@@ -711,9 +716,9 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         ] = False,
     ) -> str:
         """Hoàn thành phần việc và chuyển sang hàng đợi kiểm thử (QC TO DO)."""
-        cfg = load_config()
+        cfg = await asyncio.to_thread(load_config)
         user_gw = await get_user_gateway(ctx, write=True)
-        roles_gw = get_roles_reader(cfg)
+        roles_gw = await asyncio.to_thread(get_roles_reader, cfg)
         ident = await asyncio.to_thread(
             resolve_identity, user_gw, roles_gw, cfg, _identity_cache
         )
@@ -753,9 +758,9 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         ] = False,
     ) -> str:
         """Hoàn thành trực tiếp cho Ad-hoc Task hoặc Bug."""
-        cfg = load_config()
+        cfg = await asyncio.to_thread(load_config)
         user_gw = await get_user_gateway(ctx, write=True)
-        roles_gw = get_roles_reader(cfg)
+        roles_gw = await asyncio.to_thread(get_roles_reader, cfg)
         ident = await asyncio.to_thread(
             resolve_identity, user_gw, roles_gw, cfg, _identity_cache
         )
@@ -794,9 +799,9 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         ] = False,
     ) -> str:
         """Bắt đầu kiểm thử phần việc hoặc luồng (Test In Progress)."""
-        cfg = load_config()
+        cfg = await asyncio.to_thread(load_config)
         user_gw = await get_user_gateway(ctx, write=True)
-        roles_gw = get_roles_reader(cfg)
+        roles_gw = await asyncio.to_thread(get_roles_reader, cfg)
         ident = await asyncio.to_thread(
             resolve_identity, user_gw, roles_gw, cfg, _identity_cache
         )
@@ -840,9 +845,9 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         ] = False,
     ) -> str:
         """Xác nhận kiểm thử đạt (chuyển Done hoặc Ready For UAT)."""
-        cfg = load_config()
+        cfg = await asyncio.to_thread(load_config)
         user_gw = await get_user_gateway(ctx, write=True)
-        roles_gw = get_roles_reader(cfg)
+        roles_gw = await asyncio.to_thread(get_roles_reader, cfg)
         ident = await asyncio.to_thread(
             resolve_identity, user_gw, roles_gw, cfg, _identity_cache
         )
@@ -899,9 +904,9 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         ] = False,
     ) -> str:
         """Xác nhận kiểm thử không đạt và tạo bug sub-task trả lại Dev."""
-        cfg = load_config()
+        cfg = await asyncio.to_thread(load_config)
         user_gw = await get_user_gateway(ctx, write=True)
-        roles_gw = get_roles_reader(cfg)
+        roles_gw = await asyncio.to_thread(get_roles_reader, cfg)
         ident = await asyncio.to_thread(
             resolve_identity, user_gw, roles_gw, cfg, _identity_cache
         )
@@ -951,9 +956,9 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         ] = False,
     ) -> str:
         """Báo tắc nghẽn và cắm cờ Flagged trên issue."""
-        cfg = load_config()
+        cfg = await asyncio.to_thread(load_config)
         user_gw = await get_user_gateway(ctx, write=True)
-        roles_gw = get_roles_reader(cfg)
+        roles_gw = await asyncio.to_thread(get_roles_reader, cfg)
         ident = await asyncio.to_thread(
             resolve_identity, user_gw, roles_gw, cfg, _identity_cache
         )
@@ -999,9 +1004,9 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         ] = False,
     ) -> str:
         """Gỡ cờ tắc nghẽn trên issue sau khi vấn đề được giải quyết."""
-        cfg = load_config()
+        cfg = await asyncio.to_thread(load_config)
         user_gw = await get_user_gateway(ctx, write=True)
-        roles_gw = get_roles_reader(cfg)
+        roles_gw = await asyncio.to_thread(get_roles_reader, cfg)
         ident = await asyncio.to_thread(
             resolve_identity, user_gw, roles_gw, cfg, _identity_cache
         )
@@ -1063,9 +1068,9 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         ] = False,
     ) -> str:
         """Đề xuất dời lịch kết thúc phần việc hoặc xác nhận không ảnh hưởng."""
-        cfg = load_config()
+        cfg = await asyncio.to_thread(load_config)
         user_gw = await get_user_gateway(ctx, write=True)
-        roles_gw = get_roles_reader(cfg)
+        roles_gw = await asyncio.to_thread(get_roles_reader, cfg)
         ident = await asyncio.to_thread(
             resolve_identity, user_gw, roles_gw, cfg, _identity_cache
         )
@@ -1076,8 +1081,10 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         proj = iss.project
 
         # Permission check
+        caller_user = (ident.username or "").lower()
+        assignee_user = (iss.assignee or "").lower()
         if no_impact:
-            if ident.username != iss.assignee:
+            if caller_user != assignee_user:
                 refusal = ActionResult(
                     ok=False,
                     message=(
@@ -1097,7 +1104,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
                 dry_run=dry_run,
             )
         else:
-            is_assignee = ident.username == iss.assignee
+            is_assignee = caller_user == assignee_user
             is_lead_ba = "lead_ba" in ident.roles.get(proj, set())
             if not (is_assignee or is_lead_ba or ident.is_lead):
                 refusal = ActionResult(
@@ -1147,9 +1154,9 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         ] = False,
     ) -> str:
         """Lead-BA điều chỉnh hạn bàn giao (Due Date) cho Story cấp luồng."""
-        cfg = load_config()
+        cfg = await asyncio.to_thread(load_config)
         user_gw = await get_user_gateway(ctx, write=True)
-        roles_gw = get_roles_reader(cfg)
+        roles_gw = await asyncio.to_thread(get_roles_reader, cfg)
         ident = await asyncio.to_thread(
             resolve_identity, user_gw, roles_gw, cfg, _identity_cache
         )
@@ -1209,9 +1216,9 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         ] = False,
     ) -> str:
         """Quản lý tiến trình UAT theo nhóm Actor trong Epic."""
-        cfg = load_config()
+        cfg = await asyncio.to_thread(load_config)
         user_gw = await get_user_gateway(ctx, write=True)
-        roles_gw = get_roles_reader(cfg)
+        roles_gw = await asyncio.to_thread(get_roles_reader, cfg)
         ident = await asyncio.to_thread(
             resolve_identity, user_gw, roles_gw, cfg, _identity_cache
         )
@@ -1269,9 +1276,9 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         ] = False,
     ) -> str:
         """Lead-BA quyết định duyệt hoặc từ chối đề xuất dời lịch."""
-        cfg = load_config()
+        cfg = await asyncio.to_thread(load_config)
         user_gw = await get_user_gateway(ctx, write=True)
-        roles_gw = get_roles_reader(cfg)
+        roles_gw = await asyncio.to_thread(get_roles_reader, cfg)
         ident = await asyncio.to_thread(
             resolve_identity, user_gw, roles_gw, cfg, _identity_cache
         )
@@ -1319,9 +1326,9 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         ] = False,
     ) -> str:
         """Hủy phần việc hoặc Story (chuyển Cancelled kèm resolution Won't Do)."""
-        cfg = load_config()
+        cfg = await asyncio.to_thread(load_config)
         user_gw = await get_user_gateway(ctx, write=True)
-        roles_gw = get_roles_reader(cfg)
+        roles_gw = await asyncio.to_thread(get_roles_reader, cfg)
         ident = await asyncio.to_thread(
             resolve_identity, user_gw, roles_gw, cfg, _identity_cache
         )
@@ -1377,21 +1384,15 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
                 action_result_to_dict(refusal), indent=2, ensure_ascii=False
             )
 
-        for e in entries:
+        allowed_entry_fields = {f.name for f in dataclasses.fields(EndDayEntry)}
+        for idx, e in enumerate(entries):
             if not isinstance(e, dict):
                 refusal = ActionResult(
                     ok=False,
-                    message="Mỗi mục công việc cuối ngày phải là một đối tượng (dict).",
-                    changes=[],
-                    next_actions=[],
-                )
-                return json.dumps(
-                    action_result_to_dict(refusal), indent=2, ensure_ascii=False
-                )
-            if not e.get("key") or not str(e["key"]).strip():
-                refusal = ActionResult(
-                    ok=False,
-                    message="Mỗi mục công việc cuối ngày phải có mã 'key'.",
+                    message=(
+                        f"Mục {idx}: công việc cuối ngày phải là một "
+                        "đối tượng (dict)."
+                    ),
                     changes=[],
                     next_actions=[],
                 )
@@ -1399,9 +1400,59 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
                     action_result_to_dict(refusal), indent=2, ensure_ascii=False
                 )
 
-        cfg = load_config()
+            unknown_keys = sorted(set(e.keys()) - allowed_entry_fields)
+            if unknown_keys:
+                bad_fields = ", ".join(unknown_keys)
+                refusal = ActionResult(
+                    ok=False,
+                    message=f"Mục {idx}: chứa trường không hợp lệ: {bad_fields}.",
+                    changes=[],
+                    next_actions=[],
+                )
+                return json.dumps(
+                    action_result_to_dict(refusal), indent=2, ensure_ascii=False
+                )
+
+            if not e.get("key") or not str(e["key"]).strip():
+                refusal = ActionResult(
+                    ok=False,
+                    message=f"Mục {idx}: thiếu trường bắt buộc 'key'.",
+                    changes=[],
+                    next_actions=[],
+                )
+                return json.dumps(
+                    action_result_to_dict(refusal), indent=2, ensure_ascii=False
+                )
+
+            if not e.get("time_spent") or not str(e["time_spent"]).strip():
+                refusal = ActionResult(
+                    ok=False,
+                    message=f"Mục {idx}: thiếu trường bắt buộc 'time_spent'.",
+                    changes=[],
+                    next_actions=[],
+                )
+                return json.dumps(
+                    action_result_to_dict(refusal), indent=2, ensure_ascii=False
+                )
+
+            move_to = e.get("move_to")
+            if move_to not in (None, "ready_for_qc", "done"):
+                refusal = ActionResult(
+                    ok=False,
+                    message=(
+                        f"Mục {idx}: giá trị 'move_to' không hợp lệ: {move_to}. "
+                        "Chỉ chấp nhận 'ready_for_qc', 'done' hoặc để trống."
+                    ),
+                    changes=[],
+                    next_actions=[],
+                )
+                return json.dumps(
+                    action_result_to_dict(refusal), indent=2, ensure_ascii=False
+                )
+
+        cfg = await asyncio.to_thread(load_config)
         user_gw = await get_user_gateway(ctx, write=True)
-        roles_gw = get_roles_reader(cfg)
+        roles_gw = await asyncio.to_thread(get_roles_reader, cfg)
         ident = await asyncio.to_thread(
             resolve_identity, user_gw, roles_gw, cfg, _identity_cache
         )
@@ -1418,7 +1469,15 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
 
         cal = WorkCalendar(cfg.holidays)
         actions = Actions(user_gw, cfg, cal)
-        typed_entries = [EndDayEntry(**e) for e in entries]
+        typed_entries = [
+            EndDayEntry(
+                key=str(e["key"]).strip(),
+                time_spent=str(e["time_spent"]).strip(),
+                note=str(e.get("note", "") or ""),
+                move_to=e.get("move_to"),
+            )
+            for e in entries
+        ]
         res = await asyncio.to_thread(
             actions.end_day, entries=typed_entries, dry_run=dry_run
         )
@@ -1451,9 +1510,9 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         ] = False,
     ) -> str:
         """Ghi nhận User Report mới từ kênh hỗ trợ vào Epic OPS tháng của dự án."""
-        cfg = load_config()
+        cfg = await asyncio.to_thread(load_config)
         user_gw = await get_user_gateway(ctx, write=True)
-        roles_gw = get_roles_reader(cfg)
+        roles_gw = await asyncio.to_thread(get_roles_reader, cfg)
         ident = await asyncio.to_thread(
             resolve_identity, user_gw, roles_gw, cfg, _identity_cache
         )
@@ -1523,9 +1582,9 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         ] = False,
     ) -> str:
         """Kết luận phân tích User Report và tạo/liên kết công việc xử lý."""
-        cfg = load_config()
+        cfg = await asyncio.to_thread(load_config)
         user_gw = await get_user_gateway(ctx, write=True)
-        roles_gw = get_roles_reader(cfg)
+        roles_gw = await asyncio.to_thread(get_roles_reader, cfg)
         ident = await asyncio.to_thread(
             resolve_identity, user_gw, roles_gw, cfg, _identity_cache
         )

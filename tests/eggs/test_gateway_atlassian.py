@@ -29,6 +29,29 @@ def test_update_fields_with_override_screen_security(mock_client):
     )
 
 
+def test_get_subtasks(mock_client):
+    gateway = AtlassianGateway(mock_client)
+    mock_client.get.return_value = {
+        "fields": {
+            "subtasks": [{"id": "1", "key": "PROJ-124"}]
+        }
+    }
+    subtasks = gateway.get_subtasks("PROJ-123")
+    assert subtasks == [{"id": "1", "key": "PROJ-124"}]
+    mock_client.get.assert_called_once_with("rest/api/2/issue/PROJ-123")
+
+
+def test_get_worklogs(mock_client):
+    gateway = AtlassianGateway(mock_client)
+    mock_client.get.return_value = {
+        "total": 1,
+        "worklogs": [{"id": "w1", "author": {"name": "alice"}}]
+    }
+    worklogs = gateway.get_worklogs("PROJ-123")
+    assert worklogs == [{"id": "w1", "author": {"name": "alice"}}]
+    mock_client.get.assert_called_once_with("rest/api/2/issue/PROJ-123/worklog")
+
+
 def test_update_fields_without_override(mock_client):
     gateway = AtlassianGateway(mock_client)
     gateway.update_fields("PROJ-123", {"summary": "Updated"})

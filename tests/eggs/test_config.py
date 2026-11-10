@@ -185,6 +185,7 @@ def test_load_example_config():
         assert cfg.projects[active_key].frozen is False, f"{active_key} should not be frozen"
     assert cfg.fields["planned_start"] == "customfield_10108"
     assert cfg.fields["planned_end"] == "customfield_10109"
+    assert cfg.fields["epic_name"] == "customfield_10102"
     assert cfg.timezone == "Asia/Ho_Chi_Minh"
     assert cfg.frozen_label == "legacy-frozen"
     assert cfg.flagged_impediment_value == "Impediment"
@@ -441,5 +442,6 @@ projects:
     assert cfg.roles["lead_ba"] == ["Business Analysts", "Administrators"]
     assert cfg.roles["qc"] == ["Testers"]
     assert cfg.roles["dev"] == ["Developers"]
+    assert cfg.fields["epic_name"] == "customfield_10102"
 
 

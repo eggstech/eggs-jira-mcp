@@ -9,6 +9,10 @@ from typing import Any
 
 import yaml
 
+DEFAULT_FIELDS: dict[str, str] = {
+    "epic_name": "customfield_10102",
+}
+
 
 @dataclass(frozen=True)
 class Thresholds:
@@ -257,7 +261,7 @@ def load_config(path: str | None = None) -> EggsConfig:
         ),
         hotfix_prefix=data.get("hotfix_prefix", "[HOTFIX]"),
         bot_user=data.get("bot_user", "eggsbot"),
-        fields=data.get("fields", {}),
+        fields=dict(DEFAULT_FIELDS, **(data.get("fields") or {})),
         statuses=data.get("statuses", {}),
         issue_types=data.get("issue_types", {}),
         transitions=data.get("transitions", {}),

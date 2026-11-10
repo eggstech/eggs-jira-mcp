@@ -425,3 +425,17 @@ class AtlassianGateway(JiraGateway):
         """Fetch all Jira field definitions."""
         res = self.client.get("rest/api/2/field")
         return res if isinstance(res, list) else []
+
+    def get_subtasks(self, key: str) -> list[dict]:
+        """Fetch all subtasks for an issue."""
+        issue = self.get_issue(key)
+        return list(issue.get("fields", {}).get("subtasks", []))
+
+    def get_worklogs(self, key: str) -> list[dict]:
+        """Fetch all worklogs for an issue via GET /rest/api/2/issue/{key}/worklog."""
+        res = self.client.get(f"rest/api/2/issue/{key}/worklog")
+        if isinstance(res, dict):
+            return list(res.get("worklogs", []))
+        if isinstance(res, list):
+            return list(res)
+        return []

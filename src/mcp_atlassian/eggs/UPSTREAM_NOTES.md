@@ -60,4 +60,9 @@
   In `detect_interruptions`, the assignee's owned dev_tasks under a parent Story are indexed without filtering out resolved tasks, so an assignee whose dev_task is already Done is still exempt from having their `bug_sub` under that same Story flagged as an interruption.
 - **Reschedule action parameter aliases:**
   `Actions.request_reschedule` gained `proposed_end` as an alias alongside `new_end`. `Actions.flow_reschedule` gained `key` and `proposed_due` as aliases alongside `story_key` and `new_due`. Old parameter names are preserved for backwards compatibility.
+- **JiraGateway protocol methods for subtasks & worklogs:**
+  `get_subtasks` and `get_worklogs` methods added to `JiraGateway` protocol, `AtlassianGateway`, and test fakes to avoid `hasattr` duck-typing checks in production code (`_has_open_bug_subtask` and `qc_pass`).
+- **Jira DC Epic Name requirement:**
+  `customfield_10102` (`epic_name`) added to default fields configuration and create payload for `ensure_ops_epics` on Jira Data Center.
+
 

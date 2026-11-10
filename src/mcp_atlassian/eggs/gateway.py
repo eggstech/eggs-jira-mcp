@@ -114,3 +114,11 @@ class JiraGateway(Protocol):
     def get_fields(self) -> list[dict]:
         """Fetch all Jira field definitions."""
         ...
+
+    def get_subtasks(self, key: str) -> list[dict]:
+        """Fetch all subtasks for an issue."""
+        ...
+
+    def get_worklogs(self, key: str) -> list[dict]:
+        """Fetch all worklogs for an issue via GET /rest/api/2/issue/{key}/worklog."""
+        ...

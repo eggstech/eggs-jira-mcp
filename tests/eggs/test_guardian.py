@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import logging
 from datetime import date, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -10,6 +11,7 @@ import yaml
 
 from mcp_atlassian.eggs.calendar import WorkCalendar
 from mcp_atlassian.eggs.config import EggsConfig, ProjectConfig
+from mcp_atlassian.eggs.gateway import JiraError
 from mcp_atlassian.eggs.guardian import evaluate, main
 from mcp_atlassian.eggs.model import Worklog
 from tests.eggs.fakes import FakeGateway
@@ -219,6 +221,102 @@ def test_cleared_flag_adds_comment(cfg: EggsConfig, cal: WorkCalendar):
     assert payload[cfg.fields["health_flags"]] is None
 
 
+def test_evaluate_update_fields_error_adds_no_comment(cfg: EggsConfig, cal: WorkCalendar):
+    # If update_fields raises, NO comment must be added
+    issues = {
+        "RFID-1": {
+            "key": "RFID-1",
+            "fields": {
+                "project": {"key": "RFID"},
+                "issuetype": {"name": "Dev Task", "subtask": True},
+                "status": {"name": "Dev In Progress"},
+                "status_category_change_date": "2026-11-10T08:00:00.000+0700",
+                "assignee": {"name": "alice"},
+                "customfield_10108": "2026-11-18",
+                "customfield_10109": "2026-11-19",
+                "customfield_10700": "2026-11-19",
+                "customfield_10712": [{"value": "STALE"}],  # previously STALE
+                "customfield_10713": "2026-11-16",
+                "customfield_10714": 0,
+                "customfield_10715": {"name": "alice"},
+            },
+        }
+    }
+    worklogs = [
+        Worklog(issue_key="RFID-1", author="alice", started=NOW_WED, seconds=3600),
+    ]
+    gw = FakeGateway(issues=issues, worklogs=worklogs)
+
+    def failing_update_fields(
+        key: str, fields: dict, *, override_screen_security: bool = False
+    ) -> None:
+        raise JiraError("Jira write permission denied")
+
+    gw.update_fields = failing_update_fields
+
+    with pytest.raises(JiraError):
+        evaluate(gw, cfg, NOW_WED, cal)
+
+    comment_calls = [c for c in gw.calls if c[0] == "add_comment"]
+    assert len(comment_calls) == 0
+
+
+def test_guardian_main_evaluate_logs_only_counts_no_issue_content(
+    cfg: EggsConfig, monkeypatch: pytest.MonkeyPatch, tmp_path, caplog
+):
+    config_file = tmp_path / "eggs.yaml"
+    config_file.write_text(yaml.safe_dump(dataclasses.asdict(cfg), allow_unicode=True))
+
+    monkeypatch.setenv("JIRA_URL", cfg.jira_url)
+    monkeypatch.setenv("EGGS_BOT_TOKEN", "dummy_token")
+    monkeypatch.setenv("EGGS_CONFIG", str(config_file))
+
+    # Issue with clearable flag
+    issues = {
+        "RFID-1": {
+            "key": "RFID-1",
+            "fields": {
+                "summary": "Secret issue summary that must never be logged",
+                "project": {"key": "RFID"},
+                "issuetype": {"name": "Dev Task", "subtask": True},
+                "status": {"name": "Dev In Progress"},
+                "status_category_change_date": "2026-11-10T08:00:00.000+0700",
+                "assignee": {"name": "alice"},
+                "customfield_10108": "2026-11-18",
+                "customfield_10109": "2026-11-19",
+                "customfield_10700": "2026-11-19",
+                "customfield_10712": [{"value": "STALE"}],
+                "customfield_10713": "2026-11-16",
+                "customfield_10714": 0,
+                "customfield_10715": {"name": "alice"},
+            },
+        }
+    }
+    worklogs = [
+        Worklog(issue_key="RFID-1", author="alice", started=NOW_WED, seconds=3600),
+    ]
+    gw = FakeGateway(issues=issues, worklogs=worklogs)
+    monkeypatch.setattr("mcp_atlassian.eggs.guardian.datetime", type("MockDT", (), {
+        "now": lambda tz=None: NOW_WED,
+        "combine": datetime.combine,
+    }))
+
+    with caplog.at_level(logging.INFO):
+        code = main(["evaluate"], gateway=gw)
+
+    assert code == 0
+    # Must log count of changed issues and fields
+    eval_logs = [rec.message for rec in caplog.records if "1" in rec.message]
+    assert len(eval_logs) > 0
+    # Must NOT log issue key, summary, or field content
+    for rec in caplog.records:
+        assert "RFID-1" not in rec.message
+        assert "Secret issue summary" not in rec.message
+        assert "customfield_" not in rec.message
+        assert "health_flags" not in rec.message
+
+
+
 def test_story_gets_forecast_and_at_risk(cfg: EggsConfig, cal: WorkCalendar):
     # Story due 2026-11-20, child dev task planned_end 2026-11-23 -> forecast = 2026-11-24 (due + buffer) -> AT_RISK
     issues = {
@@ -291,6 +389,154 @@ def test_report_posts_lead_and_project_webhooks(cfg: EggsConfig, monkeypatch: py
     assert cfg.lead_chat_webhook in webhooks_called
     assert cfg.projects["RFID"].chat_webhook in webhooks_called
     assert cfg.projects["CP"].chat_webhook in webhooks_called
+
+
+def test_report_continues_on_failure_and_returns_1(cfg: EggsConfig, monkeypatch: pytest.MonkeyPatch, tmp_path):
+    config_file = tmp_path / "eggs.yaml"
+    config_file.write_text(yaml.safe_dump(dataclasses.asdict(cfg), allow_unicode=True))
+
+    monkeypatch.setenv("JIRA_URL", cfg.jira_url)
+    monkeypatch.setenv("EGGS_BOT_TOKEN", "dummy_token")
+    monkeypatch.setenv("EGGS_CONFIG", str(config_file))
+
+    gw = FakeGateway(issues={})
+    posted: list[str] = []
+
+    def mock_post_to_chat(webhook: str, text: str, http_post: Any = None, project_key: str | None = None) -> None:
+        if project_key == "CP":
+            raise RuntimeError("Gửi Google Chat thất bại cho CP (HTTP 500 | HTTPError)")
+        posted.append(webhook)
+
+    monkeypatch.setattr("mcp_atlassian.eggs.guardian.post_to_chat", mock_post_to_chat)
+    monkeypatch.setattr("mcp_atlassian.eggs.guardian.datetime", type("MockDT", (), {
+        "now": lambda tz=None: NOW_WED,
+        "combine": datetime.combine,
+    }))
+
+    code = main(["report"], gateway=gw)
+    assert code == 1
+    # Lead and RFID still posted despite CP failure (1 failing among 3)
+    assert cfg.lead_chat_webhook in posted
+    assert cfg.projects["RFID"].chat_webhook in posted
+
+
+def test_report_unknown_project_stderr_and_exit_1(cfg: EggsConfig, monkeypatch: pytest.MonkeyPatch, tmp_path, capsys):
+    config_file = tmp_path / "eggs.yaml"
+    config_file.write_text(yaml.safe_dump(dataclasses.asdict(cfg), allow_unicode=True))
+
+    monkeypatch.setenv("JIRA_URL", cfg.jira_url)
+    monkeypatch.setenv("EGGS_BOT_TOKEN", "dummy_token")
+    monkeypatch.setenv("EGGS_CONFIG", str(config_file))
+
+    gw = FakeGateway(issues={})
+    monkeypatch.setattr("mcp_atlassian.eggs.guardian.datetime", type("MockDT", (), {
+        "now": lambda tz=None: NOW_WED,
+        "combine": datetime.combine,
+    }))
+
+    code = main(["report", "--project", "UNKNOWN"], gateway=gw)
+    assert code == 1
+    captured = capsys.readouterr()
+    assert "Dự án không tồn tại" in captured.err
+
+
+def test_report_frozen_project_stderr_and_exit_1(cfg: EggsConfig, monkeypatch: pytest.MonkeyPatch, tmp_path, capsys):
+    # Create config with a frozen project
+    cfg_data = dataclasses.asdict(cfg)
+    cfg_data["projects"]["RFID"]["frozen"] = True
+    config_file = tmp_path / "eggs.yaml"
+    config_file.write_text(yaml.safe_dump(cfg_data, allow_unicode=True))
+
+    monkeypatch.setenv("JIRA_URL", cfg.jira_url)
+    monkeypatch.setenv("EGGS_BOT_TOKEN", "dummy_token")
+    monkeypatch.setenv("EGGS_CONFIG", str(config_file))
+
+    gw = FakeGateway(issues={})
+    monkeypatch.setattr("mcp_atlassian.eggs.guardian.datetime", type("MockDT", (), {
+        "now": lambda tz=None: NOW_WED,
+        "combine": datetime.combine,
+    }))
+
+    code = main(["report", "--project", "RFID"], gateway=gw)
+    assert code == 1
+    captured = capsys.readouterr()
+    assert "đang bị đóng băng" in captured.err
+
+
+def test_remind_continues_on_failure_and_returns_1(cfg: EggsConfig, monkeypatch: pytest.MonkeyPatch, tmp_path):
+    config_file = tmp_path / "eggs.yaml"
+    config_file.write_text(yaml.safe_dump(dataclasses.asdict(cfg), allow_unicode=True))
+
+    monkeypatch.setenv("JIRA_URL", cfg.jira_url)
+    monkeypatch.setenv("EGGS_BOT_TOKEN", "dummy_token")
+    monkeypatch.setenv("EGGS_CONFIG", str(config_file))
+
+    # In-progress issues missing worklogs for both RFID and CP
+    issues = {
+        "RFID-1": {
+            "key": "RFID-1",
+            "fields": {
+                "project": {"key": "RFID"},
+                "issuetype": {"name": "Dev Task", "subtask": True},
+                "status": {"name": "Dev In Progress"},
+                "assignee": {"name": "alice"},
+            },
+        },
+        "CP-1": {
+            "key": "CP-1",
+            "fields": {
+                "project": {"key": "CP"},
+                "issuetype": {"name": "Dev Task", "subtask": True},
+                "status": {"name": "Dev In Progress"},
+                "assignee": {"name": "bob"},
+            },
+        },
+    }
+    gw = FakeGateway(issues=issues, worklogs=[])
+    posted: list[str] = []
+
+    def mock_post_to_chat(webhook: str, text: str, http_post: Any = None, project_key: str | None = None) -> None:
+        if project_key == "RFID":
+            raise RuntimeError("Gửi Google Chat thất bại cho RFID (HTTP 500 | HTTPError)")
+        posted.append(webhook)
+
+    monkeypatch.setattr("mcp_atlassian.eggs.guardian.post_to_chat", mock_post_to_chat)
+    monkeypatch.setattr("mcp_atlassian.eggs.guardian.datetime", type("MockDT", (), {
+        "now": lambda tz=None: NOW_WED,
+        "combine": datetime.combine,
+    }))
+
+    code = main(["remind"], gateway=gw)
+    assert code == 1
+    # CP and lead still posted despite RFID failure
+    assert cfg.projects["CP"].chat_webhook in posted
+    assert cfg.lead_chat_webhook in posted
+
+
+def test_remind_does_not_send_lead_message_when_nothing_missing(cfg: EggsConfig, monkeypatch: pytest.MonkeyPatch, tmp_path):
+    config_file = tmp_path / "eggs.yaml"
+    config_file.write_text(yaml.safe_dump(dataclasses.asdict(cfg), allow_unicode=True))
+
+    monkeypatch.setenv("JIRA_URL", cfg.jira_url)
+    monkeypatch.setenv("EGGS_BOT_TOKEN", "dummy_token")
+    monkeypatch.setenv("EGGS_CONFIG", str(config_file))
+
+    gw = FakeGateway(issues={}, worklogs=[])
+    posted: list[str] = []
+
+    def mock_post_to_chat(webhook: str, text: str, http_post: Any = None, project_key: str | None = None) -> None:
+        posted.append(webhook)
+
+    monkeypatch.setattr("mcp_atlassian.eggs.guardian.post_to_chat", mock_post_to_chat)
+    monkeypatch.setattr("mcp_atlassian.eggs.guardian.datetime", type("MockDT", (), {
+        "now": lambda tz=None: NOW_WED,
+        "combine": datetime.combine,
+    }))
+
+    code = main(["remind"], gateway=gw)
+    assert code == 0
+    # Nothing missing -> lead message MUST NOT be sent
+    assert len(posted) == 0
 
 
 def test_remind_lists_workers_without_role(cfg: EggsConfig, monkeypatch: pytest.MonkeyPatch, tmp_path):
@@ -395,12 +641,76 @@ def test_ops_epics_creates_missing_only(cfg: EggsConfig, cal: WorkCalendar):
     assert create_payload["assignee"]["name"] == cfg.projects["CP"].default_lead_ba
     # Due date = last working day of Nov 2026 (Nov 30 is Mon)
     assert create_payload["duedate"] == "2026-11-30"
+    # Exact payload must include epic_name customfield_10102 = summary
+    assert create_payload["customfield_10102"] == summary_rfid
+    assert set(create_payload.keys()) == {
+        "project", "issuetype", "summary", "assignee", "duedate", "customfield_10102"
+    }
 
     # Second run is idempotent: creates nothing
     gw.calls.clear()
     created2 = ensure_ops_epics(gw, cfg, TODAY_WED, cal)
     assert len(created2) == 0
     assert len([c for c in gw.calls if c[0] == "create_issue"]) == 0
+
+
+def test_ensure_ops_epics_error_prints_stderr_continues_and_returns_1(
+    cfg: EggsConfig, cal: WorkCalendar, capsys
+):
+    from mcp_atlassian.eggs.guardian import ensure_ops_epics
+
+    # Neither RFID nor CP has OPS epic
+    gw = FakeGateway(issues={})
+
+    def mock_create_issue(fields: dict) -> str:
+        if fields["project"]["key"] == "CP":
+            raise JiraError("Jira DC error: Custom field validation failed")
+        return f"{fields['project']['key']}-100"
+
+    gw.create_issue = mock_create_issue
+
+    res = ensure_ops_epics(gw, cfg, TODAY_WED, cal)
+    assert res == 1
+
+    captured = capsys.readouterr()
+    # Prints the Jira error text (not a traceback)
+    assert "Jira DC error: Custom field validation failed" in captured.err
+    assert "Traceback" not in captured.err
+
+    # Successfully continued with RFID despite CP failure
+    assert any("RFID" in msg for msg in res)
+
+
+def test_guardian_help_without_env(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    monkeypatch.delenv("EGGS_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("EGGS_CONFIG", raising=False)
+
+    with pytest.raises(SystemExit) as exc:
+        main(["--help"])
+    assert exc.value.code == 0
+
+
+def test_resolve_fields_needs_only_jira_url_and_token(
+    monkeypatch: pytest.MonkeyPatch, capsys
+):
+    monkeypatch.setenv("JIRA_URL", "https://jira.example.com")
+    monkeypatch.setenv("EGGS_BOT_TOKEN", "dummy_token")
+    monkeypatch.delenv("EGGS_CONFIG", raising=False)
+
+    gw = FakeGateway(
+        field_definitions=[
+            {"id": "customfield_10102", "name": "Epic Name"},
+            {"id": "customfield_10108", "name": "Planned Start"},
+        ]
+    )
+
+    code = main(["resolve-fields"], gateway=gw)
+    assert code == 0
+
+    captured = capsys.readouterr()
+    assert "customfield_10102" in captured.out
+    assert "epic_name" in captured.out
 
 
 def test_missing_env_exits_2(monkeypatch: pytest.MonkeyPatch):

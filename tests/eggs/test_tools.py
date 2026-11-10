@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 from datetime import date, datetime, timezone
@@ -77,6 +78,7 @@ def cfg() -> EggsConfig:
             "reported_by": "customfield_reported_by",
             "reported_at": "customfield_reported_at",
             "actor": "customfield_actor",
+            "health_flags": "customfield_10712",
         },
         statuses={
             "open": "Open",
@@ -680,7 +682,94 @@ class TestEggsToolBehavior:
             assert "assignee: dev2" in data["message"]
 
     @pytest.mark.asyncio
-    async def test_end_day_validations(self, cfg: EggsConfig):
+    async def test_username_comparison_case_insensitive_henry(self, cfg: EggsConfig):
+        server = FastMCP("test_jira")
+        register_eggs_tools(server, force=True)
+
+        # Issue assignee is lowercase 'henry'
+        issues = {
+            "RFID-10": {
+                "key": "RFID-10",
+                "fields": {
+                    "project": {"key": "RFID"},
+                    "issuetype": {"name": "Dev Task", "subtask": True},
+                    "status": {"name": "Dev In Progress"},
+                    "assignee": {"name": "henry"},
+                    "customfield_10108": "2026-11-18",
+                    "customfield_10109": "2026-11-19",
+                    cfg.fields["baseline_end"]: "2026-11-19",
+                    "customfield_10712": [{"value": "NEED_RESCHEDULE"}],
+                },
+            }
+        }
+        cfg_with_trans = dataclasses.replace(
+            cfg,
+            transitions={
+                "confirm_no_impact": "Confirm No Impact",
+                "request_reschedule": "Request Reschedule",
+            },
+        )
+        # Caller is capitalized 'Henry'
+        user_gateway = FakeGateway(
+            issues=issues,
+            user="Henry",
+            transitions={"RFID-10": ["Confirm No Impact", "Request Reschedule"]},
+        )
+        bot_gateway = FakeGateway(
+            user="eggsbot",
+            role_members={"RFID": {"Developers": ["henry"]}},
+        )
+
+        with (
+            patch("mcp_atlassian.eggs.tools.load_config", return_value=cfg_with_trans),
+            patch("mcp_atlassian.eggs.tools.get_user_gateway", AsyncMock(return_value=user_gateway)),
+            patch("mcp_atlassian.eggs.tools.get_roles_reader", return_value=bot_gateway),
+        ):
+            # 1. confirm_no_impact with Henry vs henry
+            res_str = await server.call_tool(
+                "eggs_request_reschedule",
+                {"key": "RFID-10", "no_impact": True, "reason": "No impact confirm"},
+            )
+            data = json.loads(res_str.content[0].text)
+            assert data["ok"] is True, f"Failed: {data.get('message')}"
+
+            # 2. request_reschedule with Henry vs henry
+            res_str2 = await server.call_tool(
+                "eggs_request_reschedule",
+                {"key": "RFID-10", "proposed_end": "2026-11-20", "reason": "Need more time"},
+            )
+            data2 = json.loads(res_str2.content[0].text)
+            assert data2["ok"] is True, f"Failed: {data2.get('message')}"
+
+    @pytest.mark.asyncio
+    async def test_workstream_lists_epics_with_logical_type_check(self, cfg: EggsConfig):
+        server = FastMCP("test_jira")
+        register_eggs_tools(server, force=True)
+
+        issues = {
+            "RFID-EPIC": {
+                "key": "RFID-EPIC",
+                "fields": {
+                    "project": {"key": "RFID"},
+                    "issuetype": {"name": "Epic", "subtask": False},
+                    "status": {"name": "DEV To Do"},
+                    "summary": "RFID Epic 1",
+                },
+            }
+        }
+        user_gateway = FakeGateway(issues=issues, user="cuong.huynh")
+        bot_gateway = FakeGateway(user="eggsbot")
+
+        with (
+            patch("mcp_atlassian.eggs.tools.load_config", return_value=cfg),
+            patch("mcp_atlassian.eggs.tools.get_user_gateway", AsyncMock(return_value=user_gateway)),
+            patch("mcp_atlassian.eggs.tools.get_roles_reader", return_value=bot_gateway),
+        ):
+            res = await server.call_tool("eggs_workstream_status", {"project": "RFID"})
+            text = res.content[0].text
+            assert "Không tìm thấy workstream nào" not in text
+            assert "RFID-EPIC" in text
+
         server = FastMCP("test_jira")
         register_eggs_tools(server, force=True)
 
@@ -713,13 +802,42 @@ class TestEggsToolBehavior:
             res_nondict = await server.call_tool("eggs_end_day", {"entries": ["invalid"]})
             data_nondict = json.loads(res_nondict.content[0].text)
             assert data_nondict["ok"] is False
+            assert "Mục 0" in data_nondict["message"]
             assert "phải là một đối tượng (dict)" in data_nondict["message"]
 
             # 3. Entry missing key
             res_nokey = await server.call_tool("eggs_end_day", {"entries": [{"time_spent": "1h"}]})
             data_nokey = json.loads(res_nokey.content[0].text)
             assert data_nokey["ok"] is False
-            assert "phải có mã 'key'" in data_nokey["message"]
+            assert "Mục 0" in data_nokey["message"]
+            assert "thiếu trường bắt buộc 'key'" in data_nokey["message"]
+
+            # 3b. Entry missing time_spent
+            res_notime = await server.call_tool("eggs_end_day", {"entries": [{"key": "RFID-1"}, {"key": "RFID-2"}]})
+            data_notime = json.loads(res_notime.content[0].text)
+            assert data_notime["ok"] is False
+            assert "Mục 0" in data_notime["message"]
+            assert "thiếu trường bắt buộc 'time_spent'" in data_notime["message"]
+
+            # 3c. Entry with unknown keys
+            res_unknown = await server.call_tool(
+                "eggs_end_day",
+                {"entries": [{"key": "RFID-1", "time_spent": "1h"}, {"key": "RFID-2", "time_spent": "1h", "unknown_field": 123}]},
+            )
+            data_unknown = json.loads(res_unknown.content[0].text)
+            assert data_unknown["ok"] is False
+            assert "Mục 1" in data_unknown["message"]
+            assert "không hợp lệ" in data_unknown["message"] or "unknown_field" in data_unknown["message"]
+
+            # 3d. Entry with invalid move_to
+            res_moveto = await server.call_tool(
+                "eggs_end_day",
+                {"entries": [{"key": "RFID-1", "time_spent": "1h", "move_to": "in_progress"}]},
+            )
+            data_moveto = json.loads(res_moveto.content[0].text)
+            assert data_moveto["ok"] is False
+            assert "Mục 0" in data_moveto["message"]
+            assert "move_to" in data_moveto["message"]
 
             # 4. Entry for project with missing role (e.g. CP-10)
             res_norole = await server.call_tool(
@@ -811,4 +929,61 @@ class TestEggsToolBehavior:
         assert attached.ok is True
         assert "Thực hiện thành công." in attached.message
         assert "Không lấy được việc tiếp theo." in attached.message
+
+    def test_get_roles_reader_thread_safe_singleton_with_lock(self, cfg: EggsConfig, monkeypatch: pytest.MonkeyPatch):
+        import concurrent.futures
+        import threading
+
+        from mcp_atlassian.eggs import tools
+
+        assert hasattr(tools, "_roles_reader_lock"), "tools must define _roles_reader_lock"
+        assert isinstance(tools._roles_reader_lock, type(threading.Lock()))
+
+        monkeypatch.setenv("JIRA_URL", "https://jira.example.com")
+        monkeypatch.setenv("EGGS_BOT_TOKEN", "bot-token-123")
+
+        gateways = []
+        with patch("mcp_atlassian.eggs.tools.JiraFetcher") as mock_fetcher:
+            mock_jira = MagicMock()
+            mock_fetcher.return_value.jira = mock_jira
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+                futures = [executor.submit(get_roles_reader, cfg) for _ in range(16)]
+                gateways = [f.result() for f in futures]
+
+            assert len(gateways) == 16
+            assert all(g is gateways[0] for g in gateways)
+            # Fetcher should have been called only once despite 16 concurrent threads
+            assert mock_fetcher.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_async_tools_use_to_thread_for_config_and_roles_reader(self, cfg: EggsConfig):
+        import asyncio
+
+        from mcp_atlassian.eggs import tools
+
+        server = FastMCP("test_jira")
+        register_eggs_tools(server, force=True)
+
+        mock_user_gw = FakeGateway(user="alice")
+        mock_roles_gw = FakeGateway()
+
+        real_to_thread = asyncio.to_thread
+        to_thread_calls = []
+
+        async def tracked_to_thread(func, *args, **kwargs):
+            to_thread_calls.append(func)
+            return await real_to_thread(func, *args, **kwargs)
+
+        with (
+            patch("mcp_atlassian.eggs.tools.asyncio.to_thread", side_effect=tracked_to_thread),
+            patch("mcp_atlassian.eggs.tools.get_user_gateway", AsyncMock(return_value=mock_user_gw)),
+            patch("mcp_atlassian.eggs.tools.load_config", return_value=cfg),
+            patch("mcp_atlassian.eggs.tools.get_roles_reader", return_value=mock_roles_gw),
+        ):
+            await server.call_tool("eggs_whoami", {})
+
+            assert tools.load_config in to_thread_calls, "load_config must be called via asyncio.to_thread"
+            assert tools.get_roles_reader in to_thread_calls, "get_roles_reader must be called via asyncio.to_thread"
+
 

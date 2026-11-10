@@ -1,4 +1,5 @@
-from datetime import date, datetime
+from datetime import date, datetime, timezone
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -7,6 +8,7 @@ from mcp_atlassian.eggs.actions import Actions, EndDayEntry
 from mcp_atlassian.eggs.calendar import WorkCalendar
 from mcp_atlassian.eggs.config import EggsConfig, ProjectConfig
 from mcp_atlassian.eggs.gateway import JiraError
+from mcp_atlassian.eggs.model import Worklog
 from tests.eggs.fakes import FakeGateway
 
 TZ = ZoneInfo("Asia/Ho_Chi_Minh")
@@ -1865,6 +1867,43 @@ def test_story_qc_pass_worklog_requirement(cfg, cal):
     assert gw.calls[4][1] == ("HMKPOS-100", "QC Pass")
 
 
+def test_story_qc_pass_fetches_full_worklogs_when_total_exceeds_len(cfg, cal):
+    data = _base_fixtures(cfg)
+    data["issues"]["HMKPOS-100"]["fields"]["status"]["name"] = "Test In Progress"
+    # 20 worklogs inline by others, but total is 25
+    data["issues"]["HMKPOS-100"]["fields"]["worklog"] = {
+        "total": 25,
+        "worklogs": [{"author": {"name": f"dev_{i}"}} for i in range(20)],
+    }
+    gw = FakeGateway(
+        issues=data["issues"],
+        transitions=data["transitions"],
+        user="qc_user",
+    )
+    # Full worklog list includes qc_user
+    gw.worklogs = [
+        Worklog(
+            issue_key="HMKPOS-100",
+            author="qc_user",
+            started=datetime.now(timezone.utc),
+            seconds=3600,
+        )
+    ]
+
+    actions = _make_actions(gw, cfg, cal)
+    res = actions.qc_pass("HMKPOS-100", note="QC Pass with paginated worklogs")
+    assert res.ok is True
+    assert any(c[0] == "get_worklogs" for c in gw.calls)
+
+
+def test_no_hasattr_test_fake_branches_in_actions():
+    actions_path = Path(__file__).parents[2] / "src" / "mcp_atlassian" / "eggs" / "actions.py"
+    code = actions_path.read_text(encoding="utf-8")
+    assert 'hasattr(self.gateway, "issues")' not in code
+    assert 'hasattr(self.gateway, "worklogs")' not in code
+
+
+
 def test_story_qc_fail_bug_subtask_requirement(cfg, cal):
     data = _base_fixtures(cfg)
     data["issues"]["HMKPOS-100"]["fields"]["status"]["name"] = "Test In Progress"
@@ -1912,7 +1951,7 @@ def test_story_qc_fail_bug_subtask_requirement(cfg, cal):
     assert res_existing_bug.ok is True
     assert [c[0] for c in gw.calls] == [
         "get_issue",
-        "get_issue",
+        "get_subtasks",
         "get_transitions",
         "transition",
     ]

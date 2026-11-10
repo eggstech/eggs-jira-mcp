@@ -480,7 +480,7 @@ def render_my_day(snapshot: Snapshot, user: str, cfg: EggsConfig) -> str:
         iss
         for iss in snapshot.issues.values()
         if "APPROVAL_PENDING" in snapshot.flags.get(iss.key, frozenset())
-        and iss.reschedule_requester != user
+        and (iss.reschedule_requester or "").lower() != (user or "").lower()
     ]
     if pending_approvals:
         lines.append("\nYêu cầu chờ duyệt:")
@@ -500,7 +500,7 @@ def render_pending_approvals(snapshot: Snapshot, user: str, cfg: EggsConfig) -> 
         iss
         for iss in snapshot.issues.values()
         if "APPROVAL_PENDING" in snapshot.flags.get(iss.key, frozenset())
-        and iss.reschedule_requester != user
+        and (iss.reschedule_requester or "").lower() != (user or "").lower()
     ]
 
     if not pending:

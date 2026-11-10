@@ -106,8 +106,7 @@ class Actions:
             raise
 
     def _has_open_bug_subtask(self, story_issue: Issue) -> bool:
-        raw = self.gateway.get_issue(story_issue.key)
-        subtasks = raw.get("fields", {}).get("subtasks", [])
+        subtasks = self.gateway.get_subtasks(story_issue.key)
         for st in subtasks:
             fields = st.get("fields", {})
             type_name = fields.get("issuetype", {}).get("name")
@@ -121,24 +120,6 @@ class Actions:
                     "cancelled",
                 ):
                     return True
-        if hasattr(self.gateway, "issues"):
-            for _k, iss_dict in self.gateway.issues.items():
-                fields = iss_dict.get("fields", {})
-                parent_key = fields.get("parent", {}).get("key")
-                if parent_key == story_issue.key:
-                    type_name = fields.get("issuetype", {}).get("name")
-                    status_name = fields.get("status", {}).get("name")
-                    if (
-                        type_name
-                        and self.cfg.type_logical(type_name, is_subtask=True)
-                        == "bug_sub"
-                    ):
-                        if (
-                            status_name
-                            and self.cfg.status_logical(status_name)
-                            not in ("done", "cancelled")
-                        ):
-                            return True
         return False
 
     # -------------------------------------------------------------------------
@@ -605,6 +586,19 @@ class Actions:
                 changes=[],
                 next_actions=[],
             )
+        if isinstance(actual_end, str):
+            try:
+                actual_end = date.fromisoformat(actual_end)
+            except ValueError:
+                return ActionResult(
+                    ok=False,
+                    message=(
+                        f"Định dạng ngày không hợp lệ: {actual_end}. "
+                        "Yêu cầu YYYY-MM-DD."
+                    ),
+                    changes=[],
+                    next_actions=[],
+                )
 
         if not reason or not reason.strip():
             return ActionResult(
@@ -935,16 +929,16 @@ class Actions:
         if issue.type == "story" and not time_spent:
             caller = self.gateway.current_user()
             raw = self.gateway.get_issue(key)
-            raw_worklogs = raw.get("fields", {}).get("worklog", {}).get("worklogs", [])
+            worklog_field = raw.get("fields", {}).get("worklog", {})
+            raw_worklogs = worklog_field.get("worklogs", [])
+            total_worklogs = worklog_field.get("total", len(raw_worklogs))
+            if total_worklogs > len(raw_worklogs):
+                raw_worklogs = self.gateway.get_worklogs(key)
+
             has_worklog = any(
                 wl.get("author", {}).get("name", "").lower() == caller.lower()
                 for wl in raw_worklogs
             )
-            if not has_worklog and hasattr(self.gateway, "worklogs"):
-                has_worklog = any(
-                    w.issue_key == key and w.author.lower() == caller.lower()
-                    for w in self.gateway.worklogs
-                )
             if not has_worklog:
                 return ActionResult(
                     ok=False,

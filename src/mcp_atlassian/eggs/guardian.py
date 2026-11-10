@@ -35,6 +35,7 @@ LOGICAL_FIELD_NAMES: dict[str, str] = {
     "planned_start": "Planned Start",
     "planned_end": "Planned End",
     "epic_link": "Epic Link",
+    "epic_name": "Epic Name",
     "flagged": "Flagged",
     "qc_owner": "QC Owner",
     "part": "Part",
@@ -61,13 +62,27 @@ LOGICAL_FIELD_NAMES: dict[str, str] = {
 }
 
 
+class EvaluationResult(list):
+    """Result of guardian evaluation, keeping backwards-compatibility as a list."""
+
+    def __init__(
+        self,
+        changes: list[str],
+        issue_count: int = 0,
+        field_count: int = 0,
+    ) -> None:
+        super().__init__(changes)
+        self.issue_count = issue_count
+        self.field_count = field_count
+
+
 def evaluate(
     gateway: JiraGateway,
     cfg: EggsConfig,
     now: datetime,
     cal: WorkCalendar,
     dry_run: bool = False,  # noqa: FBT001, FBT002
-) -> list[str]:
+) -> EvaluationResult:
     """Evaluate health flags, escalations and forecasts, writing updates to Jira.
 
     - Guardian writes ONLY the 7 guardian fields with override_screen_security=True.
@@ -84,6 +99,8 @@ def evaluate(
         cfg.fields[f] for f in GUARDIAN_LOGICAL_FIELDS if f in cfg.fields
     }
     changes: list[str] = []
+    changed_issues_set: set[str] = set()
+    total_fields_count = 0
 
     for key, iss in snapshot.issues.items():
         if iss.type is None or iss.frozen:
@@ -152,15 +169,7 @@ def evaluate(
                     desired_unscheduled if desired_unscheduled is not None else CLEAR
                 )
 
-        # Comment on cleared flags
-        cleared_flags = sorted(iss.health_flags - new_flags)
-        for flag in cleared_flags:
-            comment_body = f"[{cfg.bot_user}] Đã xử lý: {flag}"
-            if not dry_run:
-                gateway.add_comment(key, comment_body)
-            changes.append(f"{key}: cleared flag {flag}")
-
-        # Write fields
+        # Write fields FIRST
         if field_changes:
             payload = issue_fields_for_write(cfg, **field_changes)
             # Strict safety check: ONLY guardian field ids written
@@ -175,8 +184,36 @@ def evaluate(
             if not dry_run:
                 gateway.update_fields(key, payload, override_screen_security=True)
             changes.append(f"{key}: updated {list(field_changes.keys())}")
+            changed_issues_set.add(key)
+            total_fields_count += len(field_changes)
 
-    return changes
+        # Comment on cleared flags ONLY after successful field write
+        cleared_flags = sorted(iss.health_flags - new_flags)
+        for flag in cleared_flags:
+            comment_body = f"[{cfg.bot_user}] Đã xử lý: {flag}"
+            if not dry_run:
+                gateway.add_comment(key, comment_body)
+            changes.append(f"{key}: cleared flag {flag}")
+            changed_issues_set.add(key)
+
+    return EvaluationResult(
+        changes,
+        issue_count=len(changed_issues_set),
+        field_count=total_fields_count,
+    )
+
+
+class OpsEpicResult(list):
+    """Result of ensure_ops_epics, keeping backwards-compatibility as a list."""
+
+    def __init__(self, items: Any = (), exit_code: int = 0) -> None:
+        super().__init__(items)
+        self.exit_code = exit_code
+
+    def __eq__(self, other: Any) -> bool:
+        if isinstance(other, int):
+            return self.exit_code == other
+        return super().__eq__(other)
 
 
 def ensure_ops_epics(
@@ -185,13 +222,15 @@ def ensure_ops_epics(
     today: date,
     cal: WorkCalendar,
     dry_run: bool = False,  # noqa: FBT001, FBT002
-) -> list[str]:
+) -> OpsEpicResult:
     """Ensure the current month's OPS epic exists per active project."""
     created: list[str] = []
+    failed = False
     expected_summary = cfg.ops_epic_summary.format(
         month=today.month, year=today.year
     )
     epic_type_name = cfg.issue_types["epic"][0]
+    epic_name_field = cfg.fields.get("epic_name", "customfield_10102")
 
     # Calculate last working day of the month
     last_day = calendar.monthrange(today.year, today.month)[1]
@@ -225,19 +264,24 @@ def ensure_ops_epics(
                 "summary": expected_summary,
                 "assignee": {"name": p.default_lead_ba},
                 "duedate": last_working_day.isoformat(),
+                epic_name_field: expected_summary,
             }
             if not dry_run:
-                key = gateway.create_issue(create_payload)
-                created.append(
-                    f"Created OPS epic {key} for {proj_key}: {expected_summary}"
-                )
+                try:
+                    key = gateway.create_issue(create_payload)
+                    created.append(
+                        f"Created OPS epic {key} for {proj_key}: {expected_summary}"
+                    )
+                except Exception as e:  # noqa: BLE001
+                    sys.stderr.write(f"Lỗi tạo OPS epic cho {proj_key}: {e}\n")
+                    failed = True
             else:
                 created.append(
                     f"[dry-run] Would create OPS epic for {proj_key}: "
                     f"{expected_summary}"
                 )
 
-    return created
+    return OpsEpicResult(created, exit_code=1 if failed else 0)
 
 
 def run_report(
@@ -248,7 +292,7 @@ def run_report(
     project: str | None = None,
     dry_run: bool = False,  # noqa: FBT001, FBT002
     http_post: Any = None,
-) -> None:
+) -> int:
     """Render daily report and post to Google Chat webhooks."""
     tz = ZoneInfo(cfg.timezone)
     today = now.astimezone(tz).date()
@@ -256,20 +300,28 @@ def run_report(
         cal.previous_working_day(today), time.min, tzinfo=tz
     )
     snapshot = build_snapshot(gateway, cfg, today, cal, since=since)
+    failures: list[Exception] = []
 
     if project:
         if project not in cfg.projects:
             sys.stderr.write(f"Dự án không tồn tại trong cấu hình: {project}\n")
-            return
+            return 1
+        if cfg.projects[project].frozen:
+            sys.stderr.write(f"Dự án đang bị đóng băng: {project}\n")
+            return 1
         text = render_report(snapshot, cfg, project=project)
         if dry_run:
             sys.stdout.write(text + "\n")
         else:
             webhook = cfg.projects[project].chat_webhook
             if webhook:
-                post_to_chat(
-                    webhook, text, http_post=http_post, project_key=project
-                )
+                try:
+                    post_to_chat(
+                        webhook, text, http_post=http_post, project_key=project
+                    )
+                except Exception as e:  # noqa: BLE001
+                    logger.error("Gửi báo cáo dự án %s thất bại: %s", project, e)
+                    failures.append(e)
     else:
         # Lead global report
         lead_text = render_report(snapshot, cfg, project=None)
@@ -278,12 +330,16 @@ def run_report(
             sys.stdout.write(lead_text + "\n")
         else:
             if cfg.lead_chat_webhook:
-                post_to_chat(
-                    cfg.lead_chat_webhook,
-                    lead_text,
-                    http_post=http_post,
-                    project_key=None,
-                )
+                try:
+                    post_to_chat(
+                        cfg.lead_chat_webhook,
+                        lead_text,
+                        http_post=http_post,
+                        project_key=None,
+                    )
+                except Exception as e:  # noqa: BLE001
+                    logger.error("Gửi báo cáo Lead thất bại: %s", e)
+                    failures.append(e)
 
         # Per-project reports
         for proj_key, p in sorted(cfg.projects.items()):
@@ -293,12 +349,18 @@ def run_report(
                     sys.stdout.write(f"=== BÁO CÁO DỰ ÁN {proj_key} ===\n")
                     sys.stdout.write(proj_text + "\n")
                 else:
-                    post_to_chat(
-                        p.chat_webhook,
-                        proj_text,
-                        http_post=http_post,
-                        project_key=proj_key,
-                    )
+                    try:
+                        post_to_chat(
+                            p.chat_webhook,
+                            proj_text,
+                            http_post=http_post,
+                            project_key=proj_key,
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        logger.error("Gửi báo cáo dự án %s thất bại: %s", proj_key, e)
+                        failures.append(e)
+
+    return 1 if failures else 0
 
 
 def run_remind(
@@ -308,7 +370,7 @@ def run_remind(
     cal: WorkCalendar,
     dry_run: bool = False,  # noqa: FBT001, FBT002
     http_post: Any = None,
-) -> None:
+) -> int:
     """Send end-of-day reminder to people without worklogs today."""
     tz = ZoneInfo(cfg.timezone)
     today = now.astimezone(tz).date()
@@ -316,6 +378,7 @@ def run_remind(
         cal.add_working_days(today, -5), time.min, tzinfo=tz
     )
     snapshot = build_snapshot(gateway, cfg, today, cal, since=since)
+    failures: list[Exception] = []
 
     norm_bot = cfg.bot_user.strip().lower()
     authors_today = {
@@ -382,9 +445,16 @@ def run_remind(
                 if dry_run:
                     sys.stdout.write(f"=== Remind {proj_key} ===\n{msg}\n")
                 else:
-                    post_to_chat(
-                        p.chat_webhook, msg, http_post=http_post, project_key=proj_key
-                    )
+                    try:
+                        post_to_chat(
+                            p.chat_webhook,
+                            msg,
+                            http_post=http_post,
+                            project_key=proj_key,
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        logger.error("Gửi nhắc nhở dự án %s thất bại: %s", proj_key, e)
+                        failures.append(e)
 
     # Post to lead webhook
     lead_sections: list[str] = []
@@ -402,23 +472,24 @@ def run_remind(
             )
         )
 
-    if lead_sections or cfg.lead_chat_webhook:
-        lead_body = (
-            "\n\n".join(lead_sections)
-            if lead_sections
-            else "Mọi người đã cập nhật công việc đầy đủ hôm nay."
-        )
+    if lead_sections and cfg.lead_chat_webhook:
+        lead_body = "\n\n".join(lead_sections)
         lead_msg = f"{lead_body}\n\n{suffix}"
         if dry_run:
             sys.stdout.write(f"=== Remind Lead ===\n{lead_msg}\n")
         else:
-            if cfg.lead_chat_webhook:
+            try:
                 post_to_chat(
                     cfg.lead_chat_webhook,
                     lead_msg,
                     http_post=http_post,
                     project_key=None,
                 )
+            except Exception as e:  # noqa: BLE001
+                logger.error("Gửi nhắc nhở Lead thất bại: %s", e)
+                failures.append(e)
+
+    return 1 if failures else 0
 
 
 def resolve_fields_cli(gateway: JiraGateway) -> None:
@@ -437,8 +508,8 @@ def resolve_fields_cli(gateway: JiraGateway) -> None:
         sys.stdout.write(f"  {logical}: {id_str}\n")
 
 
-def _build_gateway_from_env(cfg: EggsConfig) -> JiraGateway:
-    url = os.environ.get("JIRA_URL") or cfg.jira_url
+def _build_gateway_from_env(cfg: EggsConfig | None = None) -> JiraGateway:
+    url = os.environ.get("JIRA_URL") or (cfg.jira_url if cfg else None)
     token = os.environ.get("EGGS_BOT_TOKEN")
     fetcher = JiraFetcher(
         JiraConfig(url=url, auth_type="pat", personal_token=token)
@@ -454,17 +525,6 @@ def main(
     """Main CLI entrypoint for eggs-guardian."""
     if argv is None:
         argv = sys.argv[1:]
-
-    # Validate required environment variables
-    missing_env = [
-        var for var in ("JIRA_URL", "EGGS_BOT_TOKEN", "EGGS_CONFIG")
-        if not os.environ.get(var)
-    ]
-    if missing_env:
-        sys.stderr.write(
-            f"Lỗi: Thiếu biến môi trường bắt buộc: {', '.join(missing_env)}\n"
-        )
-        sys.exit(2)
 
     parser = argparse.ArgumentParser(
         prog="eggs-guardian", description="EGGS Guardian CLI"
@@ -506,6 +566,27 @@ def main(
 
     args = parser.parse_args(argv)
 
+    # Validate required environment variables after argparse so --help works
+    if args.subcommand == "resolve-fields":
+        required_env = ("JIRA_URL", "EGGS_BOT_TOKEN")
+    else:
+        required_env = ("JIRA_URL", "EGGS_BOT_TOKEN", "EGGS_CONFIG")
+
+    missing_env = [var for var in required_env if not os.environ.get(var)]
+    if missing_env:
+        sys.stderr.write(
+            f"Lỗi: Thiếu biến môi trường bắt buộc: {', '.join(missing_env)}\n"
+        )
+        sys.exit(2)
+
+    if args.subcommand == "resolve-fields":
+        cfg = None
+        if os.environ.get("EGGS_CONFIG"):
+            cfg = load_config(os.environ["EGGS_CONFIG"])
+        gw = gateway or _build_gateway_from_env(cfg)
+        resolve_fields_cli(gw)
+        return 0
+
     cfg = load_config(os.environ["EGGS_CONFIG"])
     cal = WorkCalendar(cfg.holidays)
     tz = ZoneInfo(cfg.timezone)
@@ -514,17 +595,23 @@ def main(
 
     # Every subcommand exits 0 on a non-working day without calling Jira,
     # except resolve-fields
-    if args.subcommand != "resolve-fields":
-        if not cal.is_working_day(today):
-            logger.info("Ngày nghỉ (%s), bỏ qua chạy %s.", today, args.subcommand)
-            return 0
+    if not cal.is_working_day(today):
+        logger.info("Ngày nghỉ (%s), bỏ qua chạy %s.", today, args.subcommand)
+        return 0
 
     gw = gateway or _build_gateway_from_env(cfg)
 
     if args.subcommand == "evaluate":
-        evaluate(gw, cfg, now, cal, dry_run=args.dry_run)
+        res = evaluate(gw, cfg, now, cal, dry_run=args.dry_run)
+        issue_count = getattr(res, "issue_count", len({c.split(":")[0] for c in res}))
+        field_count = getattr(res, "field_count", 0)
+        logger.info(
+            "Đã đánh giá xong: %d issues, %d fields thay đổi.",
+            issue_count,
+            field_count,
+        )
     elif args.subcommand == "report":
-        run_report(
+        return run_report(
             gw,
             cfg,
             now,
@@ -534,11 +621,10 @@ def main(
             http_post=http_post,
         )
     elif args.subcommand == "remind":
-        run_remind(gw, cfg, now, cal, dry_run=args.dry_run, http_post=http_post)
+        return run_remind(gw, cfg, now, cal, dry_run=args.dry_run, http_post=http_post)
     elif args.subcommand == "ops-epics":
-        ensure_ops_epics(gw, cfg, today, cal, dry_run=args.dry_run)
-    elif args.subcommand == "resolve-fields":
-        resolve_fields_cli(gw)
+        res = ensure_ops_epics(gw, cfg, today, cal, dry_run=args.dry_run)
+        return getattr(res, "exit_code", 0)
 
     return 0
 

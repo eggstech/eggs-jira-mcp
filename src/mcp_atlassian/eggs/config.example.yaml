@@ -56,6 +56,7 @@ fields:
   planned_start: customfield_10108
   planned_end: customfield_10109
   epic_link: customfield_10100
+  epic_name: customfield_10102
   flagged: customfield_10409
   qc_owner: customfield_10702
   part: customfield_10701

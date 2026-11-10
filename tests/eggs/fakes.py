@@ -219,3 +219,38 @@ class FakeGateway(JiraGateway):
     def get_fields(self) -> list[dict]:
         self._record("get_fields")
         return list(self.field_definitions)
+
+    def get_subtasks(self, key: str) -> list[dict]:
+        self._record("get_subtasks", key)
+        subtasks = self.issues.get(key, {}).get("fields", {}).get("subtasks", [])
+        if subtasks:
+            return list(subtasks)
+        found = []
+        for iss_key, iss_dict in self.issues.items():
+            fields = iss_dict.get("fields", {})
+            if fields.get("parent", {}).get("key") == key:
+                found.append({
+                    "id": iss_dict.get("id", ""),
+                    "key": iss_key,
+                    "fields": {
+                        "issuetype": fields.get("issuetype", {}),
+                        "status": fields.get("status", {}),
+                        "summary": fields.get("summary", ""),
+                    },
+                })
+        return found
+
+    def get_worklogs(self, key: str) -> list[dict]:
+        self._record("get_worklogs", key)
+        wls: list[dict[str, Any]] = []
+        if key in self.issues:
+            wls = list(self.issues[key].get("fields", {}).get("worklog", {}).get("worklogs", []))
+        for w in self.worklogs:
+            if w.issue_key == key:
+                if not any(wl.get("author", {}).get("name") == w.author for wl in wls):
+                    wls.append({
+                        "author": {"name": w.author},
+                        "timeSpentSeconds": w.seconds,
+                        "started": w.started.isoformat(),
+                    })
+        return wls
