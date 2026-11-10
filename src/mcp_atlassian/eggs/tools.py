@@ -85,6 +85,35 @@ WRITE_EGGS_TOOL_NAMES = frozenset(
 
 ALL_EGGS_TOOL_NAMES = READ_EGGS_TOOL_NAMES | WRITE_EGGS_TOOL_NAMES
 
+READ_ONLY_RAW_JIRA_TOOLS = frozenset(
+    {
+        "jira_search",
+        "jira_get_issue",
+        "jira_get_worklog",
+        "jira_batch_get_changelogs",
+        "jira_get_project_epic_hierarchy",
+        "jira_get_transitions",
+        "jira_search_fields",
+    }
+)
+
+DEPLOY_TOOLSETS = (
+    "eggs",
+    "jira_issues",
+    "jira_worklog",
+    "jira_transitions",
+    "jira_fields",
+    "jira_project_analysis",
+)
+
+DEPLOY_ENABLED_TOOLS = tuple(
+    sorted(
+        READ_ONLY_RAW_JIRA_TOOLS
+        | {f"jira_{name}" for name in ALL_EGGS_TOOL_NAMES}
+        | ALL_EGGS_TOOL_NAMES
+    )
+)
+
 EGGS_TOOLSET_NAME = "eggs"
 EGGS_TOOLSET_DEFINITION = ToolsetDefinition(
     name=EGGS_TOOLSET_NAME,

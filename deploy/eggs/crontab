@@ -1,0 +1,5 @@
+# Asia/Ho_Chi_Minh schedule for eggs-guardian
+0 8-19 * * 1-5 eggs-guardian evaluate
+30 8 * * 1-5 eggs-guardian report
+0 18 * * 1-5 eggs-guardian remind
+0 7 1-3 * * eggs-guardian ops-epics

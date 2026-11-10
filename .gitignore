@@ -32,6 +32,9 @@ MANIFEST
 .env
 .env.*
 !tests/e2e/docker/.env.example
+!deploy/eggs/.env.example
+deploy/eggs/.env
+deploy/eggs/config.yaml
 .venv
 env/
 venv/

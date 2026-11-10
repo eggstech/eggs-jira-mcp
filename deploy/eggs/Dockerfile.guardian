@@ -1,0 +1,37 @@
+# Guardian runner: built on top of the eggs-jira-mcp image with supercronic installed
+ARG BASE_IMAGE=eggs-jira-mcp:latest
+FROM ${BASE_IMAGE}
+
+USER root
+
+# Install supercronic (pinned release v0.2.33 with verified published SHA1 checksum)
+ARG TARGETARCH
+RUN set -eux; \
+    ARCH="${TARGETARCH:-}"; \
+    if [ -z "$ARCH" ]; then \
+        case "$(uname -m)" in \
+            x86_64) ARCH="amd64" ;; \
+            aarch64|arm64) ARCH="arm64" ;; \
+            *) echo "Unsupported architecture: $(uname -m)"; exit 1 ;; \
+        esac; \
+    fi; \
+    case "$ARCH" in \
+        amd64) \
+            SUPERCRONIC_BIN="supercronic-linux-amd64"; \
+            SUPERCRONIC_SHA1="71b0d58cc53f6bd72cf2f293e09e294b79c666d8"; \
+            ;; \
+        arm64) \
+            SUPERCRONIC_BIN="supercronic-linux-arm64"; \
+            SUPERCRONIC_SHA1="e0f0c06ebc5627e43b25475711e694450489ab00"; \
+            ;; \
+        *) \
+            echo "Unsupported architecture: $ARCH"; exit 1 ;; \
+    esac; \
+    wget -q "https://github.com/aptible/supercronic/releases/download/v0.2.33/${SUPERCRONIC_BIN}" -O "/usr/local/bin/supercronic"; \
+    echo "${SUPERCRONIC_SHA1}  /usr/local/bin/supercronic" | sha1sum -c -; \
+    chmod +x /usr/local/bin/supercronic
+
+USER app
+
+ENTRYPOINT ["supercronic"]
+CMD ["/deploy/crontab"]
