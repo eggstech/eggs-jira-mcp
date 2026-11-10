@@ -1578,3 +1578,141 @@ def test_property_every_suggested_action_in_allowed_actions(cfg, cal):
                             assert a.tool in allowed, (
                                 f"Action {a.tool} on ({itype}, {st}, {username}) not in allowed_actions: {allowed}"
                             )
+
+
+def test_agenda_story_in_testing_with_open_bug_subs_informational(cfg, cal):
+    identity = Identity(
+        username="tuan.bui",
+        display_name="Tuan Bui",
+        roles={"EGGSBOX": {"qc"}},
+        is_lead=False,
+    )
+    now = datetime(2026, 11, 10, 10, 0, tzinfo=ZoneInfo("Asia/Ho_Chi_Minh"))
+
+    story = _make_issue(
+        "EGGSBOX-10",
+        issue_type="story",
+        status="testing",
+        qc_owner="tuan.bui",
+        project="EGGSBOX",
+        summary="Story 10",
+    )
+    bug1 = _make_issue(
+        "EGGSBOX-41",
+        issue_type="bug_sub",
+        status="in_progress",
+        parent_key="EGGSBOX-10",
+        project="EGGSBOX",
+        summary="Bug 41",
+    )
+    bug2 = _make_issue(
+        "EGGSBOX-42",
+        issue_type="bug_sub",
+        status="in_progress",
+        parent_key="EGGSBOX-10",
+        project="EGGSBOX",
+        summary="Bug 42",
+    )
+    snapshot = Snapshot(
+        issues={
+            story.key: story,
+            bug1.key: bug1,
+            bug2.key: bug2,
+        },
+        flags={},
+        escalations={},
+        flows={},
+        epics={},
+        not_updated=[],
+        today=date(2026, 11, 10),
+    )
+    agenda = build_agenda(snapshot, identity, cfg, now, cal)
+    by_key = {it.key: it for it in agenda}
+    assert "EGGSBOX-10" in by_key
+    it = by_key["EGGSBOX-10"]
+    assert it.say == "EGGSBOX-10 đang test, còn 2 bug đang sửa: EGGSBOX-41, EGGSBOX-42"
+    assert it.actions == []
+
+
+def test_agenda_bug_sub_in_qc_to_do_offered_qc_start(cfg, cal):
+    identity = Identity(
+        username="tuan.bui",
+        display_name="Tuan Bui",
+        roles={"EGGSBOX": {"qc"}},
+        is_lead=False,
+    )
+    now = datetime(2026, 11, 10, 10, 0, tzinfo=ZoneInfo("Asia/Ho_Chi_Minh"))
+
+    bug_sub = _make_issue(
+        "EGGSBOX-41",
+        issue_type="bug_sub",
+        status="ready_for_qc",
+        qc_owner="tuan.bui",
+        project="EGGSBOX",
+        summary="Bug 41 ready for test",
+    )
+    snapshot = Snapshot(
+        issues={bug_sub.key: bug_sub},
+        flags={},
+        escalations={},
+        flows={},
+        epics={},
+        not_updated=[],
+        today=date(2026, 11, 10),
+    )
+    agenda = build_agenda(snapshot, identity, cfg, now, cal)
+    by_key = {it.key: it for it in agenda}
+    assert "EGGSBOX-41" in by_key
+    it = by_key["EGGSBOX-41"]
+    tools = [a.tool for a in it.actions]
+    assert "eggs_qc_start" in tools
+
+
+def test_agenda_bug_sub_in_dev_to_do_prioritized(cfg, cal):
+    identity = Identity(
+        username="cuong.huynh",
+        display_name="Cuong Huynh",
+        roles={"EGGSBOX": {"dev"}},
+        is_lead=False,
+    )
+    now = datetime(2026, 11, 10, 10, 0, tzinfo=ZoneInfo("Asia/Ho_Chi_Minh"))
+
+    # Regular Dev Task in progress
+    dev_task = _make_issue(
+        "EGGSBOX-20",
+        issue_type="dev_task",
+        parent_type="story",
+        status="in_progress",
+        assignee="cuong.huynh",
+        project="EGGSBOX",
+        summary="Dev Task in progress",
+    )
+    # Bug sub in DEV To Do
+    bug_sub = _make_issue(
+        "EGGSBOX-41",
+        issue_type="bug_sub",
+        parent_type="story",
+        status="todo",
+        assignee="cuong.huynh",
+        project="EGGSBOX",
+        summary="Bug sub needs fix",
+    )
+    snapshot = Snapshot(
+        issues={
+            dev_task.key: dev_task,
+            bug_sub.key: bug_sub,
+        },
+        flags={},
+        escalations={},
+        flows={},
+        epics={},
+        not_updated=[],
+        today=date(2026, 11, 10),
+    )
+    agenda = build_agenda(snapshot, identity, cfg, now, cal)
+    keys = [it.key for it in agenda]
+    assert keys == ["EGGSBOX-41", "EGGSBOX-20"]
+    it_bug = agenda[0]
+    assert it_bug.priority == 7
+    tools_bug = [a.tool for a in it_bug.actions]
+    assert tools_bug == ["eggs_start"]

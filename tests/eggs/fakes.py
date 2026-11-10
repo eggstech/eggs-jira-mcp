@@ -90,12 +90,20 @@ class FakeGateway(JiraGateway):
         link_match = re.search(
             r'issue in linkedIssues\("([^"]+)",\s*"is blocked by"\)', jql
         )
+        parent_match = re.search(r'^\s*parent\s*=\s*"([^"]+)"\s*$', jql)
         if link_match:
             target_key = link_match.group(1)
             results = [
                 self.issues[inward]
                 for (_l_type, inward, outward) in self.links
                 if outward == target_key and inward in self.issues
+            ]
+        elif parent_match:
+            p_key = parent_match.group(1)
+            results = [
+                iss
+                for iss in self.issues.values()
+                if iss.get("fields", {}).get("parent", {}).get("key") == p_key
             ]
         elif self.search_filter is not None:
             results = [
@@ -242,10 +250,13 @@ class FakeGateway(JiraGateway):
         project = fields.get("project", {}).get("key", "TEST")
         self._next_id += 1
         key = f"{project}-{self._next_id}"
+        fields_copy = dict(fields)
+        if "status" not in fields_copy:
+            fields_copy["status"] = {"name": "DEV To Do"}
         self.issues[key] = {
             "id": str(self._next_id),
             "key": key,
-            "fields": dict(fields),
+            "fields": fields_copy,
         }
         if "parent" in fields and fields["parent"].get("key") in self.issues:
             parent_key = fields["parent"]["key"]

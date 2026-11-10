@@ -32,6 +32,14 @@ class EndDayEntry:
     move_to: Literal["ready_for_qc", "done"] | None = None
 
 
+def _build_bug_sub_summary(parent: Issue, text: str) -> str:
+    if parent.type == "story":
+        code = parent.actor_code or "FLOW"
+    else:
+        code = parent.actor_code or "BUG"
+    return f"[{code}][BUG] {text.strip()}"
+
+
 class Actions:
     """Domain write actions for eggs toolset."""
 
@@ -52,9 +60,13 @@ class Actions:
     def _today(self) -> date:
         return self.today_fn()
 
-    def _get_issue(self, key: str) -> Issue:
+    def _get_raw_and_issue(self, key: str) -> tuple[dict, Issue]:
         raw = self.gateway.get_issue(key)
-        return issue_from_json(raw, self.cfg)
+        return raw, issue_from_json(raw, self.cfg)
+
+    def _get_issue(self, key: str) -> Issue:
+        _, issue = self._get_raw_and_issue(key)
+        return issue
 
     def _find_transition(
         self, key: str, logical_trans_name: str
@@ -122,9 +134,10 @@ class Actions:
                     return True
         return False
 
-    def _get_open_subtasks(self, key: str) -> list[str]:
-        subtasks = self.gateway.get_subtasks(key)
-        open_keys: list[str] = []
+    def _get_open_subtasks_from_list(
+        self, subtasks: list[dict]
+    ) -> list[tuple[str, str]]:
+        open_items: list[tuple[str, str]] = []
         for st in subtasks:
             st_key = st.get("key", "") or str(st.get("id", ""))
             fields = st.get("fields", {})
@@ -136,8 +149,15 @@ class Actions:
             if not is_done and status_cat == "done":
                 is_done = True
             if not is_done:
-                open_keys.append(st_key)
-        return open_keys
+                open_items.append((st_key, status_name))
+        return open_items
+
+    def _get_open_subtasks_with_status(self, key: str) -> list[tuple[str, str]]:
+        subtasks = self.gateway.get_subtasks(key)
+        return self._get_open_subtasks_from_list(subtasks)
+
+    def _get_open_subtasks(self, key: str) -> list[str]:
+        return [k for k, _ in self._get_open_subtasks_with_status(key)]
 
     # -------------------------------------------------------------------------
     # Work items
@@ -1080,11 +1100,11 @@ class Actions:
                 next_actions=[],
             )
 
-        issue = self._get_issue(key)
+        raw, issue = self._get_raw_and_issue(key)
         if issue.type == "story" and not time_spent:
             caller = self.gateway.current_user()
-            raw = self.gateway.get_issue(key)
-            worklog_field = raw.get("fields", {}).get("worklog", {})
+            raw2 = self.gateway.get_issue(key)
+            worklog_field = raw2.get("fields", {}).get("worklog", {})
             raw_worklogs = worklog_field.get("worklogs", [])
             total_worklogs = worklog_field.get("total", len(raw_worklogs))
             if total_worklogs > len(raw_worklogs):
@@ -1105,17 +1125,33 @@ class Actions:
                     next_actions=[],
                 )
 
-        if issue.type in ("adhoc", "bug"):
-            open_subtasks = self._get_open_subtasks(key)
-            if open_subtasks:
-                sub_list = ", ".join(open_subtasks)
-                type_name = (
-                    "Ad-hoc Task" if issue.type == "adhoc" else "Bug stand-alone"
-                )
+        if issue.type in ("story", "adhoc"):
+            subtasks = raw.get("fields", {}).get("subtasks")
+            if subtasks is None and issue.type == "adhoc":
+                subtasks = self.gateway.get_subtasks(key)
+            elif subtasks is None:
+                subtasks = []
+            open_subs = self._get_open_subtasks_from_list(subtasks)
+            if open_subs:
+                items_str = ", ".join(f"{k} ({s})" for k, s in open_subs)
                 return ActionResult(
                     ok=False,
                     message=(
-                        f"{type_name} {key} vẫn còn sub-task chưa hoàn thành "
+                        f"{key} còn bug chưa xong: {items_str}. "
+                        "QC Pass được khi mọi sub-task Done/Cancelled."
+                    ),
+                    changes=[],
+                    next_actions=[],
+                )
+
+        if issue.type == "bug":
+            open_subtasks = self._get_open_subtasks(key)
+            if open_subtasks:
+                sub_list = ", ".join(open_subtasks)
+                return ActionResult(
+                    ok=False,
+                    message=(
+                        f"Bug stand-alone {key} vẫn còn sub-task chưa hoàn thành "
                         f"({sub_list}). Cần hoàn thành tất cả sub-task trước khi "
                         "QC Pass."
                     ),
@@ -1185,24 +1221,25 @@ class Actions:
                     next_actions=[],
                 )
             target_story_key = issue.key
-            code = issue.actor_code or "FLOW"
+            parent_for_bugs = issue
         elif issue.type == "adhoc":
             target_story_key = issue.key
-            code = issue.actor_code or "BUG"
+            parent_for_bugs = issue
         elif issue.type == "bug":
             if actual_bugs:
                 return ActionResult(
                     ok=False,
                     message=(
-                        f"Bug stand-alone không có Bug con: chưa đạt thì QC Fail "
-                        f"để trả về Dev; lỗi khác thì tạo Bug stand-alone mới "
-                        f'bằng eggs_create_issue(issue_type="bug", related_to="{key}").'
+                        "Bug stand-alone không có Bug con: chưa đạt thì QC Fail "
+                        "để trả về Dev; lỗi khác thì tạo Bug stand-alone mới "
+                        f'bằng eggs_create_issue(issue_type="bug", '
+                        f'related_to="{key}").'
                     ),
                     changes=[],
                     next_actions=[],
                 )
             target_story_key = issue.key
-            code = issue.actor_code or "BUG"
+            parent_for_bugs = issue
         else:
             if not issue.parent_key:
                 return ActionResult(
@@ -1259,7 +1296,7 @@ class Actions:
                     next_actions=[],
                 )
             target_story_key = issue.parent_key
-            code = parent.actor_code or "BUG"
+            parent_for_bugs = parent
 
         matched, avail = self._find_transition(key, "qc_fail")
         if not matched:
@@ -1280,7 +1317,7 @@ class Actions:
         bug_type_name = self.cfg.issue_types["bug_sub"][0]
         created_bugs: list[str] = []
         for b in actual_bugs:
-            summary = f"[{code}][BUG] {b}"
+            summary = _build_bug_sub_summary(parent_for_bugs, b)
             create_payload = {
                 "project": {"key": issue.project},
                 "issuetype": {"name": bug_type_name},
@@ -2326,12 +2363,91 @@ class Actions:
                 next_actions=[],
             )
 
-        supported_types = ("bug", "story", "adhoc")
-        if issue_type not in supported_types and issue_type != "bug_sub":
+        supported_types = ("bug", "story", "adhoc", "bug_sub")
+        if issue_type not in supported_types:
             return ActionResult(
                 ok=False,
                 message=(
-                    f"Loại issue '{issue_type}' không hợp lệ. Chọn: bug, story, adhoc."
+                    f"Loại issue '{issue_type}' không hợp lệ. "
+                    "Chọn: bug, story, adhoc, bug_sub."
+                ),
+                changes=[],
+                next_actions=[],
+            )
+
+        parent_issue = None
+        if issue_type == "bug_sub":
+            if not parent:
+                return ActionResult(
+                    ok=False,
+                    message="bug_sub bắt buộc phải có parent.",
+                    changes=[],
+                    next_actions=[],
+                )
+            try:
+                parent_issue = self._get_issue(parent)
+            except Exception:  # noqa: BLE001
+                return ActionResult(
+                    ok=False,
+                    message=f"Không tìm thấy parent issue {parent}.",
+                    changes=[],
+                    next_actions=[],
+                )
+            if parent_issue.project.upper() != project.upper():
+                return ActionResult(
+                    ok=False,
+                    message=f"Parent {parent} phải thuộc cùng dự án {project}.",
+                    changes=[],
+                    next_actions=[],
+                )
+            if parent_issue.type == "bug":
+                return ActionResult(
+                    ok=False,
+                    message=(
+                        "Bug stand-alone không có Bug con: chưa đạt thì QC Fail "
+                        "để trả về Dev; lỗi khác thì tạo Bug stand-alone mới "
+                        f'bằng eggs_create_issue(issue_type="bug", '
+                        f'related_to="{parent_issue.key}").'
+                    ),
+                    changes=[],
+                    next_actions=[],
+                )
+            if parent_issue.type not in ("story", "adhoc"):
+                return ActionResult(
+                    ok=False,
+                    message=f"Parent {parent} phải là Story hoặc Ad-hoc Task.",
+                    changes=[],
+                    next_actions=[],
+                )
+
+            parent_status_logical = (
+                self.cfg.status_logical(parent_issue.status) or parent_issue.status
+            )
+            if parent_status_logical == "ready_for_qc":
+                return ActionResult(
+                    ok=False,
+                    message=f"Bắt đầu test trước (eggs_qc_start {parent}).",
+                    changes=[],
+                    next_actions=[],
+                )
+            if parent_status_logical != "testing":
+                return ActionResult(
+                    ok=False,
+                    message=(
+                        f"Không thể tạo Bug sub-task: {parent} đang ở trạng thái "
+                        f"{parent_issue.status}. Chỉ có thể tạo khi đang test "
+                        "(Test In Progress). Nếu issue chưa đạt hãy dùng QC Fail, "
+                        "hoặc tạo Bug stand-alone mới."
+                    ),
+                    changes=[],
+                    next_actions=[],
+                )
+        elif parent:
+            return ActionResult(
+                ok=False,
+                message=(
+                    f"Chỉ bug_sub mới được có parent "
+                    f"(loại {issue_type} không nhận parent)."
                 ),
                 changes=[],
                 next_actions=[],
@@ -2347,7 +2463,18 @@ class Actions:
             self.cfg.create_roles.get(issue_type, default_roles_map.get(issue_type, []))
         )
         effective_roles = set(creator_roles or [])
-        if not is_lead and not (effective_roles & allowed_roles):
+        is_parent_qc_owner = (
+            issue_type == "bug_sub"
+            and parent_issue is not None
+            and parent_issue.qc_owner is not None
+            and creator is not None
+            and parent_issue.qc_owner.lower() == creator.lower()
+        )
+        if (
+            not is_lead
+            and not is_parent_qc_owner
+            and not (effective_roles & allowed_roles)
+        ):
             role_names = ", ".join(sorted(allowed_roles))
             return ActionResult(
                 ok=False,
@@ -2389,7 +2516,72 @@ class Actions:
                 )
 
         effective_assignee = assignee
-        if not effective_assignee and related_issue:
+        if issue_type == "bug_sub":
+            if parent_issue is None:
+                return ActionResult(
+                    ok=False,
+                    message="Parent issue không hợp lệ.",
+                    changes=[],
+                    next_actions=[],
+                )
+            if not effective_assignee:
+                if parent_issue.type == "adhoc":
+                    effective_assignee = parent_issue.assignee
+                elif parent_issue.type == "story":
+                    jql = f'parent = "{parent_issue.key}"'
+                    dev_tasks = self.gateway.search(
+                        jql, fields=["summary", "assignee", "issuetype", "parent"]
+                    )
+                    candidate_devs: set[str] = set()
+                    dev_task_names = set(
+                        self.cfg.issue_types.get("dev_task", ["Dev Task"])
+                    )
+                    for raw in dev_tasks:
+                        f = raw.get("fields", {})
+                        p = f.get("parent") or {}
+                        if p.get("key") != parent_issue.key:
+                            continue
+                        itype = f.get("issuetype", {})
+                        t_name = itype.get("name", "")
+                        is_sub = bool(itype.get("subtask", True))
+                        is_dev_task = (
+                            t_name in dev_task_names
+                            or self.cfg.type_logical(t_name, is_subtask=is_sub)
+                            == "dev_task"
+                            or self.cfg.type_logical(t_name, is_subtask=True)
+                            == "dev_task"
+                        )
+                        if not is_dev_task:
+                            continue
+                        raw_a = f.get("assignee")
+                        a_name = raw_a.get("name") if isinstance(raw_a, dict) else raw_a
+                        if a_name:
+                            candidate_devs.add(a_name)
+                    sorted_candidates = sorted(candidate_devs)
+                    if len(sorted_candidates) == 1:
+                        effective_assignee = sorted_candidates[0]
+                    else:
+                        missing_candidates = sorted_candidates or ["assignee"]
+                        if len(sorted_candidates) > 1:
+                            cand_str = ", ".join(sorted_candidates)
+                            msg = (
+                                f"Story {parent_issue.key} có nhiều Dev ({cand_str}). "
+                                "Vui lòng chỉ định assignee."
+                            )
+                        else:
+                            msg = (
+                                f"Story {parent_issue.key} chưa có Dev Task hoặc "
+                                "Dev Task chưa gán người thực hiện. "
+                                "Vui lòng chỉ định assignee."
+                            )
+                        return ActionResult(
+                            ok=False,
+                            message=msg,
+                            missing=missing_candidates,
+                            changes=[],
+                            next_actions=[],
+                        )
+        elif not effective_assignee and related_issue:
             effective_assignee = related_issue.assignee
 
         if effective_assignee and hasattr(self.gateway, "user_exists"):
@@ -2402,7 +2594,12 @@ class Actions:
                 )
 
         effective_qc_owner = qc_owner
-        if issue_type == "bug":
+        if issue_type == "bug_sub":
+            if not effective_qc_owner:
+                effective_qc_owner = (
+                    parent_issue.qc_owner if parent_issue else None
+                ) or creator
+        elif issue_type == "bug":
             if not effective_qc_owner:
                 if is_lead or "qc" in effective_roles:
                     effective_qc_owner = creator
@@ -2475,13 +2672,39 @@ class Actions:
             "bug": "Bug stand-alone",
             "story": "Story",
             "adhoc": "Ad-hoc Task",
+            "bug_sub": "Bug sub-task",
         }
         type_display = type_names.get(issue_type, issue_type)
 
+        if issue_type == "bug_sub":
+            if parent_issue is None:
+                return ActionResult(
+                    ok=False,
+                    message="Parent issue không hợp lệ.",
+                    changes=[],
+                    next_actions=[],
+                )
+            effective_summary = _build_bug_sub_summary(parent_issue, summary)
+        else:
+            effective_summary = summary.strip()
+
         if dry_run:
+            if issue_type == "bug_sub":
+                changes = [
+                    f"Parent: {parent}",
+                    f"Summary: {effective_summary}",
+                    f"Assignee: {effective_assignee or 'Chưa gán'}",
+                    f"QC Owner: {effective_qc_owner or 'Không có'}",
+                ]
+                return ActionResult(
+                    ok=True,
+                    message=f"[Dry-run] Sẽ làm: tạo Bug sub-task cho {parent}",
+                    changes=changes,
+                    next_actions=[],
+                )
             changes = [
                 f"Loại: {type_display}",
-                f"Summary: {summary.strip()}",
+                f"Summary: {effective_summary}",
                 f"Assignee: {effective_assignee or 'Chưa gán'}",
                 f"QC Owner: {effective_qc_owner or 'Không có'}",
                 f"Epic: {epic or 'Không có'}",
@@ -2496,31 +2719,53 @@ class Actions:
             )
 
         existing_key = self._find_recently_created_issue(
-            project, summary.strip(), creator
+            project,
+            effective_summary,
+            creator,
+            parent_key=parent if issue_type == "bug_sub" else None,
         )
         if existing_key:
             created_key = existing_key
         else:
-            raw_type_name = self.cfg.issue_types.get(issue_type, [type_display])[0]
-            fields: dict[str, Any] = {
-                "project": {"key": project},
-                "issuetype": {"name": raw_type_name},
-                "summary": summary.strip(),
-            }
-            if description:
-                fields["description"] = description
-            if effective_assignee:
-                fields["assignee"] = {"name": effective_assignee}
-            if priority:
-                fields["priority"] = {"name": priority}
-            if component:
-                fields["components"] = [{"name": component}]
-            if epic and self.cfg.fields.get("epic_link"):
-                fields[self.cfg.fields["epic_link"]] = epic
-            if effective_qc_owner and self.cfg.fields.get("qc_owner"):
-                fields[self.cfg.fields["qc_owner"]] = {"name": effective_qc_owner}
+            if issue_type == "bug_sub":
+                raw_type_name = self.cfg.issue_types.get("bug_sub", ["Bug"])[0]
+                fields: dict[str, Any] = {
+                    "project": {"key": project},
+                    "issuetype": {"name": raw_type_name},
+                    "summary": effective_summary,
+                    "parent": {"key": parent},
+                }
+                if description:
+                    fields["description"] = description
+                if effective_assignee:
+                    fields["assignee"] = {"name": effective_assignee}
+                if priority:
+                    fields["priority"] = {"name": priority}
+                if effective_qc_owner and self.cfg.fields.get("qc_owner"):
+                    fields[self.cfg.fields["qc_owner"]] = {"name": effective_qc_owner}
 
-            created_key = self.gateway.create_issue(fields)
+                created_key = self.gateway.create_issue(fields)
+            else:
+                raw_type_name = self.cfg.issue_types.get(issue_type, [type_display])[0]
+                fields = {
+                    "project": {"key": project},
+                    "issuetype": {"name": raw_type_name},
+                    "summary": effective_summary,
+                }
+                if description:
+                    fields["description"] = description
+                if effective_assignee:
+                    fields["assignee"] = {"name": effective_assignee}
+                if priority:
+                    fields["priority"] = {"name": priority}
+                if component:
+                    fields["components"] = [{"name": component}]
+                if epic and self.cfg.fields.get("epic_link"):
+                    fields[self.cfg.fields["epic_link"]] = epic
+                if effective_qc_owner and self.cfg.fields.get("qc_owner"):
+                    fields[self.cfg.fields["qc_owner"]] = {"name": effective_qc_owner}
+
+                created_key = self.gateway.create_issue(fields)
 
         if related_to:
             relates_link_type = self.cfg.link_types.get("relates", "Relates")
@@ -2541,9 +2786,12 @@ class Actions:
                     next_actions=[],
                 )
 
-        changes = [f"Đã tạo {type_display} {created_key}"]
-        if related_to:
-            changes.append(f"Liên kết Relates tới {related_to}")
+        if issue_type == "bug_sub":
+            changes = [f"Đã tạo Bug sub-task {created_key}"]
+        else:
+            changes = [f"Đã tạo {type_display} {created_key}"]
+            if related_to:
+                changes.append(f"Liên kết Relates tới {related_to}")
 
         return ActionResult(
             ok=True,

@@ -1827,7 +1827,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         project: Annotated[str, Field(description="Mã dự án (ví dụ 'RFID')")],
         issue_type: Annotated[
             str,
-            Field(description="Loại issue: 'bug', 'story', hoặc 'adhoc'"),
+            Field(description="Loại issue: 'bug', 'story', 'adhoc', hoặc 'bug_sub'"),
         ],
         summary: Annotated[str, Field(description="Tiêu đề tóm tắt issue")],
         description: Annotated[

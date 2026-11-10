@@ -51,6 +51,7 @@ def cfg():
             "reported_by": "customfield_reported_by",
             "reported_at": "customfield_reported_at",
             "health_flags": "customfield_health_flags",
+            "qc_fail_count": "customfield_qc_fail_count",
         },
         statuses={
             "open": "Open",
@@ -4375,3 +4376,361 @@ def test_create_issue_link_failure_and_retry_idempotency(cfg, cal):
     # Link was called
     assert len(original_links) == 1
     assert original_links[0] == ("Relates", created_key, "EGGSBOX-38")
+
+
+def test_create_bug_sub_under_story_in_test_in_progress(cfg, cal):
+    cfg.projects["EGGSBOX"] = ProjectConfig(
+        key="EGGSBOX",
+        default_lead_ba="cuong.huynh",
+        triage_owner="tuan.bui",
+    )
+    raw_story = {
+        "key": "EGGSBOX-10",
+        "fields": {
+            "summary": "Order flow",
+            "project": {"key": "EGGSBOX"},
+            "issuetype": {"name": "Story", "subtask": False},
+            "status": {"name": "Test In Progress"},
+            "components": [{"name": "CH - CỬA HÀNG"}],
+            cfg.fields["qc_owner"]: {"name": "tuan.bui"},
+            cfg.fields["qc_fail_count"]: 0,
+        },
+    }
+    raw_dev_task = {
+        "key": "EGGSBOX-11",
+        "fields": {
+            "summary": "Dev task for order flow",
+            "project": {"key": "EGGSBOX"},
+            "issuetype": {"name": "Dev Task", "subtask": False},
+            "status": {"name": "Dev In Progress"},
+            "parent": {"key": "EGGSBOX-10"},
+            "assignee": {"name": "cuong.huynh"},
+        },
+    }
+    gw = FakeGateway(issues={"EGGSBOX-10": raw_story, "EGGSBOX-11": raw_dev_task})
+    actions = _make_actions(gw, cfg, cal)
+
+    # Dry run
+    res_dry = actions.create_issue(
+        project="EGGSBOX",
+        issue_type="bug_sub",
+        parent="EGGSBOX-10",
+        summary="nút Lưu không phản hồi",
+        creator="tuan.bui",
+        creator_roles={"qc"},
+        dry_run=True,
+    )
+    assert res_dry.ok is True
+    assert "[Dry-run]" in res_dry.message
+    assert any("Parent: EGGSBOX-10" in c for c in res_dry.changes)
+    assert any("[CH][BUG] nút Lưu không phản hồi" in c for c in res_dry.changes)
+    assert any("Assignee: cuong.huynh" in c for c in res_dry.changes)
+    assert any("QC Owner: tuan.bui" in c for c in res_dry.changes)
+    assert not any(c[0] == "create_issue" for c in gw.calls)
+
+    # Actual create
+    res = actions.create_issue(
+        project="EGGSBOX",
+        issue_type="bug_sub",
+        parent="EGGSBOX-10",
+        summary="nút Lưu không phản hồi",
+        creator="tuan.bui",
+        creator_roles={"qc"},
+    )
+    assert res.ok is True
+    created_calls = [c for c in gw.calls if c[0] == "create_issue"]
+    assert len(created_calls) == 1
+    created_fields = created_calls[0][1][0]
+    assert created_fields["summary"] == "[CH][BUG] nút Lưu không phản hồi"
+    assert created_fields["assignee"] == {"name": "cuong.huynh"}
+    assert created_fields[cfg.fields["qc_owner"]] == {"name": "tuan.bui"}
+    assert created_fields["parent"] == {"key": "EGGSBOX-10"}
+
+    # Parent Story is not transitioned and QC Fail Count untouched
+    story_after = gw.issues["EGGSBOX-10"]
+    assert story_after["fields"]["status"]["name"] == "Test In Progress"
+    assert story_after["fields"][cfg.fields["qc_fail_count"]] == 0
+    assert not any(c[0] == "transition" and c[1][0] == "EGGSBOX-10" for c in gw.calls)
+
+
+def test_create_bug_sub_story_with_multiple_devs_missing(cfg, cal):
+    cfg.projects["EGGSBOX"] = ProjectConfig(
+        key="EGGSBOX",
+        default_lead_ba="cuong.huynh",
+        triage_owner="tuan.bui",
+    )
+    raw_story = {
+        "key": "EGGSBOX-10",
+        "fields": {
+            "summary": "Order flow",
+            "project": {"key": "EGGSBOX"},
+            "issuetype": {"name": "Story", "subtask": False},
+            "status": {"name": "Test In Progress"},
+            "components": [{"name": "CH - CỬA HÀNG"}],
+            cfg.fields["qc_owner"]: {"name": "tuan.bui"},
+        },
+    }
+    raw_dev1 = {
+        "key": "EGGSBOX-11",
+        "fields": {
+            "summary": "Dev task 1",
+            "project": {"key": "EGGSBOX"},
+            "issuetype": {"name": "Dev Task", "subtask": False},
+            "status": {"name": "Dev In Progress"},
+            "parent": {"key": "EGGSBOX-10"},
+            "assignee": {"name": "dev_a"},
+        },
+    }
+    raw_dev2 = {
+        "key": "EGGSBOX-12",
+        "fields": {
+            "summary": "Dev task 2",
+            "project": {"key": "EGGSBOX"},
+            "issuetype": {"name": "Dev Task", "subtask": False},
+            "status": {"name": "Dev In Progress"},
+            "parent": {"key": "EGGSBOX-10"},
+            "assignee": {"name": "dev_b"},
+        },
+    }
+    gw = FakeGateway(
+        issues={
+            "EGGSBOX-10": raw_story,
+            "EGGSBOX-11": raw_dev1,
+            "EGGSBOX-12": raw_dev2,
+        }
+    )
+    actions = _make_actions(gw, cfg, cal)
+
+    res = actions.create_issue(
+        project="EGGSBOX",
+        issue_type="bug_sub",
+        parent="EGGSBOX-10",
+        summary="Lỗi thanh toán",
+        creator="tuan.bui",
+        creator_roles={"qc"},
+    )
+    assert res.ok is False
+    assert res.missing == ["dev_a", "dev_b"]
+
+
+def test_create_bug_sub_parent_qc_to_do_refused(cfg, cal):
+    cfg.projects["EGGSBOX"] = ProjectConfig(
+        key="EGGSBOX",
+        default_lead_ba="cuong.huynh",
+        triage_owner="tuan.bui",
+    )
+    raw_story = {
+        "key": "EGGSBOX-10",
+        "fields": {
+            "summary": "Order flow",
+            "project": {"key": "EGGSBOX"},
+            "issuetype": {"name": "Story", "subtask": False},
+            "status": {"name": "QC TO DO"},
+        },
+    }
+    gw = FakeGateway(issues={"EGGSBOX-10": raw_story})
+    actions = _make_actions(gw, cfg, cal)
+
+    res = actions.create_issue(
+        project="EGGSBOX",
+        issue_type="bug_sub",
+        parent="EGGSBOX-10",
+        summary="Lỗi",
+        creator="tuan.bui",
+        creator_roles={"qc"},
+    )
+    assert res.ok is False
+    assert "Bắt đầu test trước (eggs_qc_start EGGSBOX-10)" in res.message
+
+
+def test_create_bug_sub_parent_bug_standalone_refused(cfg, cal):
+    cfg.projects["EGGSBOX"] = ProjectConfig(
+        key="EGGSBOX",
+        default_lead_ba="cuong.huynh",
+        triage_owner="tuan.bui",
+    )
+    raw_bug = {
+        "key": "EGGSBOX-38",
+        "fields": {
+            "summary": "Standalone bug",
+            "project": {"key": "EGGSBOX"},
+            "issuetype": {"name": "Bug stand-alone", "subtask": False},
+            "status": {"name": "Test In Progress"},
+        },
+    }
+    gw = FakeGateway(issues={"EGGSBOX-38": raw_bug})
+    actions = _make_actions(gw, cfg, cal)
+
+    res = actions.create_issue(
+        project="EGGSBOX",
+        issue_type="bug_sub",
+        parent="EGGSBOX-38",
+        summary="Bug under bug",
+        creator="tuan.bui",
+        creator_roles={"qc"},
+    )
+    assert res.ok is False
+    assert "Bug stand-alone không có Bug con" in res.message
+
+
+def test_create_bug_sub_dev_without_role_and_not_qc_owner_refused(cfg, cal):
+    cfg.projects["EGGSBOX"] = ProjectConfig(
+        key="EGGSBOX",
+        default_lead_ba="cuong.huynh",
+        triage_owner="tuan.bui",
+    )
+    raw_story = {
+        "key": "EGGSBOX-10",
+        "fields": {
+            "summary": "Order flow",
+            "project": {"key": "EGGSBOX"},
+            "issuetype": {"name": "Story", "subtask": False},
+            "status": {"name": "Test In Progress"},
+            cfg.fields["qc_owner"]: {"name": "tuan.bui"},
+        },
+    }
+    raw_dev = {
+        "key": "EGGSBOX-11",
+        "fields": {
+            "summary": "Dev task",
+            "project": {"key": "EGGSBOX"},
+            "issuetype": {"name": "Dev Task", "subtask": False},
+            "status": {"name": "Dev In Progress"},
+            "parent": {"key": "EGGSBOX-10"},
+            "assignee": {"name": "cuong.huynh"},
+        },
+    }
+    gw = FakeGateway(issues={"EGGSBOX-10": raw_story, "EGGSBOX-11": raw_dev})
+    actions = _make_actions(gw, cfg, cal)
+
+    # Dev who is not qc_owner and lacks qc role is refused
+    res_dev = actions.create_issue(
+        project="EGGSBOX",
+        issue_type="bug_sub",
+        parent="EGGSBOX-10",
+        summary="Dev bug",
+        creator="cuong.huynh",
+        creator_roles={"dev"},
+    )
+    assert res_dev.ok is False
+    assert "Bạn không có quyền tạo bug_sub" in res_dev.message
+
+    # Parent's QC Owner without qc role is allowed
+    res_qc_owner = actions.create_issue(
+        project="EGGSBOX",
+        issue_type="bug_sub",
+        parent="EGGSBOX-10",
+        summary="Owner bug",
+        creator="tuan.bui",
+        creator_roles=set(),
+    )
+    assert res_qc_owner.ok is True
+
+
+def test_qc_pass_story_refused_while_bug_sub_open_and_allowed_once_done(cfg, cal):
+    cfg.projects["EGGSBOX"] = ProjectConfig(
+        key="EGGSBOX",
+        default_lead_ba="cuong.huynh",
+        triage_owner="tuan.bui",
+    )
+    raw_story = {
+        "key": "EGGSBOX-26",
+        "fields": {
+            "summary": "Story 26",
+            "project": {"key": "EGGSBOX"},
+            "issuetype": {"name": "Story", "subtask": False},
+            "status": {"name": "Test In Progress"},
+            cfg.fields["qc_owner"]: {"name": "tuan.bui"},
+            "subtasks": [
+                {
+                    "key": "EGGSBOX-50",
+                    "fields": {
+                        "issuetype": {"name": "Bug", "subtask": True},
+                        "status": {"name": "Dev In Progress"},
+                    },
+                }
+            ],
+            "worklog": {
+                "worklogs": [{"author": {"name": "tuan.bui"}}],
+                "total": 1,
+            },
+        },
+    }
+    gw = FakeGateway(
+        issues={"EGGSBOX-26": raw_story},
+        transitions={"EGGSBOX-26": ["QC Pass", "QC Fail"]},
+        user="tuan.bui",
+    )
+    actions = _make_actions(gw, cfg, cal)
+
+    # QC Pass refused while subtask EGGSBOX-50 is in Dev In Progress
+    res_fail = actions.qc_pass("EGGSBOX-26", note="Tested all")
+    assert res_fail.ok is False
+    assert (
+        res_fail.message
+        == "EGGSBOX-26 còn bug chưa xong: EGGSBOX-50 (Dev In Progress). QC Pass được khi mọi sub-task Done/Cancelled."
+    )
+
+    # Subtask becomes Done
+    raw_story["fields"]["subtasks"][0]["fields"]["status"] = {"name": "Done"}
+    res_pass = actions.qc_pass("EGGSBOX-26", note="Tested all")
+    assert res_pass.ok is True
+    assert "Đã xác nhận QC Pass cho EGGSBOX-26." in res_pass.message
+
+
+def test_create_bug_sub_retry_returns_same_key(cfg, cal):
+    cfg.projects["EGGSBOX"] = ProjectConfig(
+        key="EGGSBOX",
+        default_lead_ba="cuong.huynh",
+        triage_owner="tuan.bui",
+    )
+    raw_story = {
+        "key": "EGGSBOX-10",
+        "fields": {
+            "summary": "Order flow",
+            "project": {"key": "EGGSBOX"},
+            "issuetype": {"name": "Story", "subtask": False},
+            "status": {"name": "Test In Progress"},
+            "components": [{"name": "CH - CỬA HÀNG"}],
+            cfg.fields["qc_owner"]: {"name": "tuan.bui"},
+        },
+    }
+    raw_dev = {
+        "key": "EGGSBOX-11",
+        "fields": {
+            "summary": "Dev task",
+            "project": {"key": "EGGSBOX"},
+            "issuetype": {"name": "Dev Task", "subtask": False},
+            "status": {"name": "Dev In Progress"},
+            "parent": {"key": "EGGSBOX-10"},
+            "assignee": {"name": "cuong.huynh"},
+        },
+    }
+    gw = FakeGateway(issues={"EGGSBOX-10": raw_story, "EGGSBOX-11": raw_dev})
+    actions = _make_actions(gw, cfg, cal)
+
+    res1 = actions.create_issue(
+        project="EGGSBOX",
+        issue_type="bug_sub",
+        parent="EGGSBOX-10",
+        summary="nút Lưu không phản hồi",
+        creator="tuan.bui",
+        creator_roles={"qc"},
+    )
+    assert res1.ok is True
+    created_key = [k for k in gw.issues if k not in ("EGGSBOX-10", "EGGSBOX-11")][0]
+
+    # Retry with same parent and summary
+    res2 = actions.create_issue(
+        project="EGGSBOX",
+        issue_type="bug_sub",
+        parent="EGGSBOX-10",
+        summary="nút Lưu không phản hồi",
+        creator="tuan.bui",
+        creator_roles={"qc"},
+    )
+    assert res2.ok is True
+    assert f"Đã tạo thành công {created_key}." in res2.message
+    # Only 1 create_issue call recorded
+    create_calls = [c for c in gw.calls if c[0] == "create_issue"]
+    assert len(create_calls) == 1

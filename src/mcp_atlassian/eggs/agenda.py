@@ -61,6 +61,17 @@ INTENTS: list[Intent] = [
         required=["project", "issue_type", "summary"],
     ),
     Intent(
+        name="log_bug",
+        roles=frozenset({"qc", "lead_ba"}),
+        examples=[
+            "log bug EGGSBOX-10: nút Lưu không phản hồi",
+            "đang test EGGSBOX-10 thấy lỗi",
+            "thêm bug cho story đang test",
+        ],
+        tool="eggs_create_issue",
+        required=["parent", "summary"],
+    ),
+    Intent(
         name="log_work",
         roles=frozenset({"any"}),
         examples=["hôm qua làm 4h RFID-128", "ghi 2h vào RFID-10", "log work 1d"],
@@ -597,18 +608,35 @@ def build_agenda(
                                 tool="eggs_qc_start", args={"key": key}, missing=[]
                             )
                         ]
+                        say = f"{key} đang chờ bạn test (cờ {flag_str})."
                     else:
-                        filtered_actions = [
-                            SuggestedAction(
-                                tool="eggs_qc_pass", args={"key": key}, missing=[]
-                            ),
-                            SuggestedAction(
-                                tool="eggs_qc_fail",
-                                args={"key": key},
-                                missing=["reason"],
-                            ),
+                        open_bugs = [
+                            k
+                            for k, iss in snapshot.issues.items()
+                            if iss.parent_key == key
+                            and iss.type == "bug_sub"
+                            and not iss.is_resolved
+                            and iss.status not in ("done", "cancelled")
                         ]
-                    say = f"{key} đang chờ bạn test (cờ {flag_str})."
+                        open_bugs.sort(key=lambda k: _natural_key(k))
+                        if open_bugs:
+                            say = (
+                                f"{key} đang test, còn {len(open_bugs)} bug "
+                                f"đang sửa: {', '.join(open_bugs)}"
+                            )
+                            filtered_actions = []
+                        else:
+                            filtered_actions = [
+                                SuggestedAction(
+                                    tool="eggs_qc_pass", args={"key": key}, missing=[]
+                                ),
+                                SuggestedAction(
+                                    tool="eggs_qc_fail",
+                                    args={"key": key},
+                                    missing=["reason"],
+                                ),
+                            ]
+                            say = f"{key} đang chờ bạn test (cờ {flag_str})."
                 else:
                     # Informational for identity
                     if issue.assignee and issue.assignee.lower() != username:
@@ -726,11 +754,11 @@ def build_agenda(
         is_qc_target = False
         if issue.is_work_item and issue.status == "ready_for_qc":
             parent = snapshot.issues.get(issue.parent_key) if issue.parent_key else None
-            target_qc = None
-            if parent and parent.type in ("story", "adhoc"):
-                target_qc = parent.qc_owner
-            elif not parent:
-                target_qc = issue.qc_owner
+            target_qc = issue.qc_owner or (
+                parent.qc_owner
+                if parent and parent.type in ("story", "adhoc")
+                else None
+            )
             if target_qc and target_qc == identity.username:
                 is_qc_target = True
         elif (
@@ -739,6 +767,36 @@ def build_agenda(
             and issue.qc_owner == identity.username
         ):
             is_qc_target = True
+        elif (
+            issue.type in ("story", "adhoc")
+            and issue.status == "testing"
+            and issue.qc_owner == identity.username
+        ):
+            open_bugs = [
+                k
+                for k, iss in snapshot.issues.items()
+                if iss.parent_key == key
+                and iss.type == "bug_sub"
+                and not iss.is_resolved
+                and iss.status not in ("done", "cancelled")
+            ]
+            open_bugs.sort(key=lambda k: _natural_key(k))
+            if open_bugs:
+                title = f"[{key}] Đang kiểm thử: {issue.summary}"
+                open_str = ", ".join(open_bugs)
+                say = f"{key} đang test, còn {len(open_bugs)} bug đang sửa: {open_str}"
+                items.append(
+                    AgendaItem(
+                        priority=4,
+                        key=key,
+                        project=issue.project,
+                        title=title,
+                        say=say,
+                        actions=[],
+                    )
+                )
+                seen_keys.add(key)
+                continue
 
         if is_qc_target:
             title = f"[{key}] Chờ kiểm thử: {issue.summary}"
@@ -859,68 +917,84 @@ def build_agenda(
                 )
             )
 
-    # Priority 7: own items in in_progress
+    # Priority 7: own items in in_progress or todo
     for key, issue in snapshot.issues.items():
         if (
             issue.is_work_item
-            and issue.status == "in_progress"
+            and issue.status in ("in_progress", "todo")
             and issue.assignee == identity.username
             and not issue.is_resolved
             and not issue.frozen
         ):
             if key in seen_keys:
                 continue
-            title = f"[{key}] Đang làm: {issue.summary}"
-            say = f"Bạn đang thực hiện {key} ({issue.summary})."
             actions = []
-            if issue.type == "adhoc":
-                actions.append(
-                    SuggestedAction(tool="eggs_finish", args={"key": key}, missing=[])
+            if issue.status == "todo":
+                title = f"[{key}] Cần làm: {issue.summary}"
+                say = (
+                    f"{key} ({issue.summary}) đã được giao cho bạn, "
+                    "cần bắt đầu thực hiện."
                 )
                 actions.append(
-                    SuggestedAction(
-                        tool="eggs_submit_qc",
-                        args={"key": key},
-                        missing=[] if issue.qc_owner else ["qc_owner"],
-                    )
-                )
-            elif issue.type == "dev_task" and issue.parent_type in (
-                "adhoc",
-                "bug",
-            ):
-                actions.append(
-                    SuggestedAction(tool="eggs_finish", args={"key": key}, missing=[])
-                )
-            elif issue.type == "dev_task" and issue.parent_type == "story":
-                actions.append(
-                    SuggestedAction(
-                        tool="eggs_submit_qc", args={"key": key}, missing=[]
-                    )
-                )
-                actions.append(
-                    SuggestedAction(tool="eggs_finish", args={"key": key}, missing=[])
-                )
-            elif issue.type == "bug":
-                actions.append(
-                    SuggestedAction(
-                        tool="eggs_submit_qc",
-                        args={"key": key},
-                        missing=[] if issue.qc_owner else ["qc_owner"],
-                    )
+                    SuggestedAction(tool="eggs_start", args={"key": key}, missing=[])
                 )
             else:
+                title = f"[{key}] Đang làm: {issue.summary}"
+                say = f"Bạn đang thực hiện {key} ({issue.summary})."
+                if issue.type == "adhoc":
+                    actions.append(
+                        SuggestedAction(
+                            tool="eggs_finish", args={"key": key}, missing=[]
+                        )
+                    )
+                    actions.append(
+                        SuggestedAction(
+                            tool="eggs_submit_qc",
+                            args={"key": key},
+                            missing=[] if issue.qc_owner else ["qc_owner"],
+                        )
+                    )
+                elif issue.type == "dev_task" and issue.parent_type in (
+                    "adhoc",
+                    "bug",
+                ):
+                    actions.append(
+                        SuggestedAction(
+                            tool="eggs_finish", args={"key": key}, missing=[]
+                        )
+                    )
+                elif issue.type == "dev_task" and issue.parent_type == "story":
+                    actions.append(
+                        SuggestedAction(
+                            tool="eggs_submit_qc", args={"key": key}, missing=[]
+                        )
+                    )
+                    actions.append(
+                        SuggestedAction(
+                            tool="eggs_finish", args={"key": key}, missing=[]
+                        )
+                    )
+                elif issue.type == "bug":
+                    actions.append(
+                        SuggestedAction(
+                            tool="eggs_submit_qc",
+                            args={"key": key},
+                            missing=[] if issue.qc_owner else ["qc_owner"],
+                        )
+                    )
+                else:
+                    actions.append(
+                        SuggestedAction(
+                            tool="eggs_submit_qc", args={"key": key}, missing=[]
+                        )
+                    )
                 actions.append(
                     SuggestedAction(
-                        tool="eggs_submit_qc", args={"key": key}, missing=[]
+                        tool="eggs_log_work",
+                        args={"key": key},
+                        missing=["time_spent", "note"],
                     )
                 )
-            actions.append(
-                SuggestedAction(
-                    tool="eggs_log_work",
-                    args={"key": key},
-                    missing=["time_spent", "note"],
-                )
-            )
             allowed = allowed_actions(issue, identity, cfg)
             actions = [
                 a
@@ -961,6 +1035,10 @@ def build_agenda(
             esc = snapshot.escalations[it.key]
             # Higher level first (-2 before -1 before 0)
             return (1, -esc.level, proj, num)
+        if it.priority == 7 and it.key:
+            iss = snapshot.issues.get(it.key)
+            if iss and iss.type == "bug_sub" and iss.status == "todo":
+                return (7, -1, proj, num)
         return (it.priority, 0, proj, num)
 
     filtered_items.sort(key=sort_key)
