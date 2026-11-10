@@ -1246,7 +1246,7 @@ def test_backfill_qc_owner_runs_on_non_working_day(
     assert len(search_calls) == 1
 
 
-def test_backfill_qc_owner_jql_contains_cf_id_quoted_types_and_is_empty(
+def test_backfill_qc_owner_jql_contains_no_cf_and_no_is_empty(
     cfg: EggsConfig,
 ):
     from mcp_atlassian.eggs.guardian import backfill_qc_owner
@@ -1259,9 +1259,154 @@ def test_backfill_qc_owner_jql_contains_cf_id_quoted_types_and_is_empty(
     jql = search_calls[0][1][0]
     fields = search_calls[0][1][1]
 
-    assert fields == ["key", "status"]
+    assert "status" in fields
+    assert "issuetype" in fields
+    assert "customfield_10702" in fields
     assert "project = RFID" in jql
-    assert '"Bug stand-alone"' in jql
-    assert "cf[10702]" in jql
     assert "statusCategory != Done" in jql
-    assert "is EMPTY" in jql
+    assert "cf[" not in jql
+    assert "is EMPTY" not in jql
+
+
+def test_backfill_qc_owner_skips_issue_when_qc_owner_already_set(cfg: EggsConfig):
+    from mcp_atlassian.eggs.guardian import backfill_qc_owner
+
+    issues = {
+        "RFID-10": {
+            "key": "RFID-10",
+            "fields": {
+                "issuetype": {"name": "Bug stand-alone"},
+                "status": {"name": "QC TO DO"},
+                "customfield_10702": {"name": "existing.qc"},
+            },
+        },
+        "RFID-11": {
+            "key": "RFID-11",
+            "fields": {
+                "issuetype": {"name": "Bug stand-alone"},
+                "status": {"name": "QC TO DO"},
+                "customfield_10702": None,
+            },
+        },
+    }
+    gw = FakeGateway(issues=issues)
+    res = backfill_qc_owner(gw, cfg, "RFID")
+    assert res.found == 1
+    assert res.written == 1
+    update_calls = [c for c in gw.calls if c[0] == "update_fields"]
+    assert len(update_calls) == 1
+    assert update_calls[0][1][0] == "RFID-11"
+
+
+def test_backfill_qc_owner_adhoc_status_filter(cfg: EggsConfig):
+    from mcp_atlassian.eggs.guardian import backfill_qc_owner
+
+    issues = {
+        "RFID-20": {
+            "key": "RFID-20",
+            "fields": {
+                "issuetype": {"name": "Ad-hoc Task"},
+                "status": {"name": "Dev In Progress"},
+                "customfield_10702": None,
+            },
+        },
+        "RFID-21": {
+            "key": "RFID-21",
+            "fields": {
+                "issuetype": {"name": "Ad-hoc Task"},
+                "status": {"name": "QC TO DO"},
+                "customfield_10702": None,
+            },
+        },
+    }
+    gw = FakeGateway(issues=issues)
+    res = backfill_qc_owner(gw, cfg, "RFID")
+    assert res.found == 1
+    assert res.written == 1
+    update_calls = [c for c in gw.calls if c[0] == "update_fields"]
+    assert len(update_calls) == 1
+    assert update_calls[0][1][0] == "RFID-21"
+
+
+def test_backfill_qc_owner_story_filled(cfg: EggsConfig):
+    from mcp_atlassian.eggs.guardian import backfill_qc_owner
+
+    issues = {
+        "RFID-30": {
+            "key": "RFID-30",
+            "fields": {
+                "issuetype": {"name": "Story"},
+                "status": {"name": "Dev In Progress"},
+                "customfield_10702": None,
+            },
+        },
+    }
+    gw = FakeGateway(issues=issues)
+    res = backfill_qc_owner(gw, cfg, "RFID")
+    assert res.found == 1
+    assert res.written == 1
+    update_calls = [c for c in gw.calls if c[0] == "update_fields"]
+    assert len(update_calls) == 1
+    assert update_calls[0][1][0] == "RFID-30"
+
+
+def test_backfill_qc_owner_types_bug_only_touches_bug_standalone(cfg: EggsConfig):
+    from mcp_atlassian.eggs.guardian import backfill_qc_owner
+
+    issues = {
+        "RFID-10": {
+            "key": "RFID-10",
+            "fields": {
+                "issuetype": {"name": "Bug stand-alone"},
+                "status": {"name": "Open"},
+                "customfield_10702": None,
+            },
+        },
+        "RFID-20": {
+            "key": "RFID-20",
+            "fields": {
+                "issuetype": {"name": "Story"},
+                "status": {"name": "Open"},
+                "customfield_10702": None,
+            },
+        },
+        "RFID-30": {
+            "key": "RFID-30",
+            "fields": {
+                "issuetype": {"name": "Ad-hoc Task"},
+                "status": {"name": "QC TO DO"},
+                "customfield_10702": None,
+            },
+        },
+    }
+    gw = FakeGateway(issues=issues)
+    res = backfill_qc_owner(gw, cfg, "RFID", types=["bug"])
+    assert res.found == 1
+    assert res.written == 1
+    update_calls = [c for c in gw.calls if c[0] == "update_fields"]
+    assert len(update_calls) == 1
+    assert update_calls[0][1][0] == "RFID-10"
+
+
+def test_backfill_qc_owner_search_error_reported_separately(
+    cfg: EggsConfig, monkeypatch: pytest.MonkeyPatch, tmp_path, capsys
+):
+    config_file = tmp_path / "eggs.yaml"
+    config_file.write_text(yaml.safe_dump(dataclasses.asdict(cfg), allow_unicode=True))
+
+    monkeypatch.setenv("JIRA_URL", cfg.jira_url)
+    monkeypatch.setenv("EGGS_BOT_TOKEN", "dummy_token")
+    monkeypatch.setenv("EGGS_CONFIG", str(config_file))
+
+    gw = FakeGateway()
+
+    def fail_search(jql, fields, expand_changelog: bool = False):  # noqa: FBT001, FBT002
+        raise JiraError("JQL syntax error or Jira down")
+
+    gw.search = fail_search
+
+    code = main(["backfill-qc-owner", "--project", "RFID"], gateway=gw)
+    assert code == 1
+    captured = capsys.readouterr()
+    assert "Lỗi khi tìm kiếm issues" in captured.err
+    assert "Lỗi khi cập nhật issue đầu tiên" not in captured.err

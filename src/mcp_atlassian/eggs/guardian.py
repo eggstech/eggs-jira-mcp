@@ -15,7 +15,6 @@ import argparse
 import calendar
 import logging
 import os
-import re
 import sys
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
@@ -529,13 +528,19 @@ def run_remind(
     return 1 if failures else 0
 
 
+class BackfillSearchError(Exception):
+    """Exception raised when searching for issues in backfill fails."""
+
+
 @dataclass
 class BackfillResult:
     found: int
     written: int
     failed: list[tuple[str, str]]
     user: str
-    issues: list[tuple[str, str]] = field(default_factory=list)
+    issues: list[tuple[str, str, str]] = field(default_factory=list)
+    found_by_type: dict[str, int] = field(default_factory=dict)
+    written_by_type: dict[str, int] = field(default_factory=dict)
 
 
 def backfill_qc_owner(
@@ -543,6 +548,7 @@ def backfill_qc_owner(
     cfg: EggsConfig,
     project: str,
     qc_owner: str | None = None,
+    types: list[str] | tuple[str, ...] | str | None = None,
     *,
     dry_run: bool = False,
 ) -> BackfillResult:
@@ -559,24 +565,133 @@ def backfill_qc_owner(
         )
         raise ValueError(msg)
 
-    cf_match = re.search(r"\d+", qc_field_id)
-    cf_id = cf_match.group(0) if cf_match else qc_field_id
+    if types is None:
+        type_keys = ["bug", "story", "adhoc"]
+    elif isinstance(types, str):
+        type_keys = [t.strip().lower() for t in types.split(",") if t.strip()]
+    else:
+        type_keys = [t.strip().lower() for t in types if t.strip()]
 
-    bug_types = ", ".join(f'"{t}"' for t in cfg.issue_types["bug"])
-    jql = (
-        f"project = {project} AND issuetype in ({bug_types}) "
-        f"AND statusCategory != Done AND cf[{cf_id}] is EMPTY"
-    )
+    valid_keys = {"bug", "story", "adhoc"}
+    for tk in type_keys:
+        if tk not in valid_keys:
+            msg = f"Loại issue '{tk}' không hợp lệ. Chỉ chấp nhận: bug, story, adhoc."
+            raise ValueError(msg)
 
-    raw_issues = gateway.search(jql, fields=["key", "status"])
-    issue_tuples = [
-        (
-            raw.get("key") or str(raw.get("id")),
-            raw.get("fields", {}).get("status", {}).get("name", "Unknown"),
-        )
-        for raw in raw_issues
+    non_adhoc_jira_types: list[str] = []
+    if "bug" in type_keys:
+        non_adhoc_jira_types.extend(cfg.issue_types.get("bug", []))
+    if "story" in type_keys:
+        non_adhoc_jira_types.extend(cfg.issue_types.get("story", []))
+
+    adhoc_jira_types: list[str] = []
+    if "adhoc" in type_keys:
+        adhoc_jira_types.extend(cfg.issue_types.get("adhoc", []))
+
+    adhoc_status_names = [
+        name
+        for logical, name in cfg.statuses.items()
+        if logical in {"ready_for_qc", "testing"} and name
     ]
-    found = len(raw_issues)
+    if not adhoc_status_names:
+        adhoc_status_names = [
+            cfg.statuses.get("ready_for_qc", "QC TO DO"),
+            cfg.statuses.get("testing", "Testing"),
+        ]
+
+    if adhoc_jira_types and non_adhoc_jira_types:
+        non_adhoc_str = ", ".join(f'"{t}"' for t in non_adhoc_jira_types)
+        adhoc_str = ", ".join(f'"{t}"' for t in adhoc_jira_types)
+        status_str = ", ".join(f'"{s}"' for s in adhoc_status_names)
+        jql = (
+            f"project = {project} AND statusCategory != Done AND "
+            f"((issuetype in ({non_adhoc_str})) OR "
+            f"(issuetype in ({adhoc_str}) AND status in ({status_str})))"
+        )
+    elif adhoc_jira_types:
+        adhoc_str = ", ".join(f'"{t}"' for t in adhoc_jira_types)
+        status_str = ", ".join(f'"{s}"' for s in adhoc_status_names)
+        jql = (
+            f"project = {project} AND issuetype in ({adhoc_str}) "
+            f"AND statusCategory != Done AND status in ({status_str})"
+        )
+    else:
+        types_str = ", ".join(f'"{t}"' for t in non_adhoc_jira_types)
+        jql = (
+            f"project = {project} AND issuetype in ({types_str}) "
+            f"AND statusCategory != Done"
+        )
+
+    try:
+        raw_issues = gateway.search(
+            jql,
+            fields=["key", "status", "issuetype", qc_field_id],
+        )
+    except Exception as exc:
+        msg = f"Tìm kiếm issues thất bại: {exc}"
+        raise BackfillSearchError(msg) from exc
+
+    candidate_issues: list[dict[str, Any]] = []
+    bug_set = set(cfg.issue_types.get("bug", []))
+    story_set = set(cfg.issue_types.get("story", []))
+    adhoc_set = set(cfg.issue_types.get("adhoc", []))
+
+    for raw in raw_issues:
+        f_dict = raw.get("fields", {})
+        key = raw.get("key") or str(raw.get("id"))
+
+        if f_dict.get(qc_field_id):
+            continue
+
+        itype_obj = f_dict.get("issuetype")
+        itype_name = itype_obj.get("name") if isinstance(itype_obj, dict) else None
+
+        logical_type: str | None = None
+        if itype_name:
+            if "bug" in type_keys and itype_name in bug_set:
+                logical_type = "bug"
+            elif "story" in type_keys and itype_name in story_set:
+                logical_type = "story"
+            elif "adhoc" in type_keys and itype_name in adhoc_set:
+                logical_type = "adhoc"
+        else:
+            if "bug" in type_keys:
+                logical_type = "bug"
+                itype_name = cfg.issue_types.get("bug", ["Bug stand-alone"])[0]
+
+        if not logical_type:
+            continue
+
+        status_obj = f_dict.get("status", {})
+        status_name = (
+            status_obj.get("name", "Unknown")
+            if isinstance(status_obj, dict)
+            else "Unknown"
+        )
+
+        if logical_type == "adhoc":
+            st_logical = cfg.status_logical(status_name)
+            if st_logical not in {"ready_for_qc", "testing"}:
+                continue
+
+        candidate_issues.append(
+            {
+                "key": key,
+                "type": itype_name or logical_type,
+                "logical_type": logical_type,
+                "status": status_name,
+            }
+        )
+
+    found_by_type: dict[str, int] = {}
+    for item in candidate_issues:
+        t_name = item["type"]
+        found_by_type[t_name] = found_by_type.get(t_name, 0) + 1
+
+    issue_tuples = [
+        (item["key"], item["type"], item["status"]) for item in candidate_issues
+    ]
+    found = len(candidate_issues)
 
     if dry_run:
         return BackfillResult(
@@ -585,13 +700,17 @@ def backfill_qc_owner(
             failed=[],
             user=user,
             issues=issue_tuples,
+            found_by_type=found_by_type,
+            written_by_type={},
         )
 
     written = 0
     failed: list[tuple[str, str]] = []
+    written_by_type: dict[str, int] = {}
 
-    for i, raw in enumerate(raw_issues):
-        key = raw.get("key") or str(raw.get("id"))
+    for i, item in enumerate(candidate_issues):
+        key = item["key"]
+        t_name = item["type"]
         try:
             gateway.update_fields(
                 key,
@@ -599,6 +718,7 @@ def backfill_qc_owner(
                 notify_users=False,
             )
             written += 1
+            written_by_type[t_name] = written_by_type.get(t_name, 0) + 1
         except Exception as exc:
             if i == 0:
                 raise
@@ -610,6 +730,8 @@ def backfill_qc_owner(
         failed=failed,
         user=user,
         issues=issue_tuples,
+        found_by_type=found_by_type,
+        written_by_type=written_by_type,
     )
 
 
@@ -682,12 +804,17 @@ def main(
     # backfill-qc-owner
     p_backfill = subparsers.add_parser(
         "backfill-qc-owner",
-        help="Back-fill trường QC Owner cho các Bug stand-alone chưa có",
+        help="Back-fill trường QC Owner cho các Bug stand-alone, Story và Ad-hoc Task",
     )
     p_backfill.add_argument("--project", required=True, help="Mã dự án (project key)")
     p_backfill.add_argument(
         "--qc-owner",
         help="Jira username của QC Owner (mặc định lấy triage_owner của project)",
+    )
+    p_backfill.add_argument(
+        "--types",
+        default="bug,story,adhoc",
+        help="Danh sách loại issue cần backfill (bug,story,adhoc; mặc định tất cả)",
     )
     p_backfill.add_argument("--dry-run", action="store_true", help="Không ghi vào Jira")
 
@@ -741,6 +868,16 @@ def main(
                 "trong cấu hình và không cung cấp --qc-owner.\n"
             )
             sys.exit(2)
+        raw_types = [t.strip().lower() for t in args.types.split(",") if t.strip()]
+        valid_types = {"bug", "story", "adhoc"}
+        invalid = [t for t in raw_types if t not in valid_types]
+        if invalid or not raw_types:
+            invalid_str = ", ".join(invalid) if invalid else "trống"
+            sys.stderr.write(
+                f"Lỗi: Loại issue '--types' không hợp lệ: {invalid_str}. "
+                "Chỉ chấp nhận: bug, story, adhoc.\n"
+            )
+            sys.exit(2)
 
     gw = gateway or _build_gateway_from_env(cfg)
 
@@ -776,27 +913,38 @@ def main(
                 cfg,
                 args.project,
                 qc_owner=args.qc_owner,
+                types=raw_types,
                 dry_run=args.dry_run,
             )
+        except BackfillSearchError as e:
+            sys.stderr.write(f"Lỗi khi tìm kiếm issues: {e}\n")
+            return 1
         except Exception as e:  # noqa: BLE001
             sys.stderr.write(f"Lỗi khi cập nhật issue đầu tiên: {e}\n")
             return 1
 
         if args.dry_run:
             sys.stdout.write(
-                f"[Dry-run] Tìm thấy {res.found} Bug stand-alone "
+                f"[Dry-run] Tìm thấy {res.found} issue(s) "
                 f"cần gán QC Owner '{res.user}':\n"
             )
-            for k, st in res.issues:
-                sys.stdout.write(f"- {k}: {st}\n")
+            for t_name, count in sorted(res.found_by_type.items()):
+                sys.stdout.write(f"- {t_name}: {count}\n")
+            sys.stdout.write("Danh sách issues:\n")
+            for k, t, st in res.issues:
+                sys.stdout.write(f"- {k} [{t}]: {st}\n")
             return 0
 
         sys.stdout.write(
             f"Hoàn thành backfill QC Owner '{res.user}' cho dự án {args.project}:\n"
             f"- Tìm thấy: {res.found}\n"
-            f"- Đã ghi: {res.written}\n"
-            f"- Thất bại: {len(res.failed)}\n"
         )
+        for t_name, count in sorted(res.found_by_type.items()):
+            sys.stdout.write(f"  * {t_name}: {count}\n")
+        sys.stdout.write(f"- Đã ghi: {res.written}\n")
+        for t_name, count in sorted(res.written_by_type.items()):
+            sys.stdout.write(f"  * {t_name}: {count}\n")
+        sys.stdout.write(f"- Thất bại: {len(res.failed)}\n")
         if res.failed:
             for k, err in res.failed:
                 sys.stdout.write(f"  * {k}: {err}\n")
