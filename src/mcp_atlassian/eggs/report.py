@@ -39,9 +39,11 @@ def build_snapshot(
     active_projects = [k for k, p in cfg.projects.items() if not p.frozen]
     if active_projects:
         proj_list = ", ".join(sorted(active_projects))
-        jql = f"project in ({proj_list}) AND (resolution is EMPTY OR resolved >= -7d)"
+        jql = (
+            f"project in ({proj_list}) AND (statusCategory != Done OR resolved >= -7d)"
+        )
     else:
-        jql = "resolution is EMPTY OR resolved >= -7d"
+        jql = "statusCategory != Done OR resolved >= -7d"
 
     fields = list(
         dict.fromkeys(

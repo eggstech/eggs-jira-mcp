@@ -1,3 +1,4 @@
+import dataclasses
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
@@ -1022,3 +1023,23 @@ def test_bot_user_excluded_from_not_updated_section(cfg, cal):
     text = render_report(snapshot, cfg)
     assert "@alice" in text
     assert f"@{cfg.bot_user}" not in text
+
+
+def test_build_snapshot_jql_skips_old_done_issues(cfg, cal):
+    fake = FakeGateway()
+    since = datetime(2026, 11, 18, 0, 0, tzinfo=TZ)
+    build_snapshot(fake, cfg, TODAY, cal, since)
+
+    search_calls = [c for c in fake.calls if c[0] == "search"]
+    assert len(search_calls) == 1
+    jql = search_calls[0][1][0]
+    assert "statusCategory != Done OR resolved >= -7d" in jql
+    assert "resolution is EMPTY" not in jql
+
+    # When no active projects
+    cfg_empty = dataclasses.replace(cfg, projects={})
+    fake2 = FakeGateway()
+    build_snapshot(fake2, cfg_empty, TODAY, cal, since)
+    search_calls2 = [c for c in fake2.calls if c[0] == "search"]
+    jql2 = search_calls2[0][1][0]
+    assert jql2 == "statusCategory != Done OR resolved >= -7d"
