@@ -1106,6 +1106,25 @@ class Actions:
             )
 
         raw, issue = self._get_raw_and_issue(key)
+        if issue.type in ("story", "adhoc"):
+            subtasks = raw.get("fields", {}).get("subtasks")
+            if subtasks is None and issue.type == "adhoc":
+                subtasks = self.gateway.get_subtasks(key)
+            elif subtasks is None:
+                subtasks = []
+            open_subs = self._get_open_subtasks_from_list(subtasks)
+            if open_subs:
+                items_str = ", ".join(f"{k} ({s})" for k, s in open_subs)
+                return ActionResult(
+                    ok=False,
+                    message=(
+                        f"{key} còn bug chưa xong: {items_str}. "
+                        "QC Pass được khi mọi sub-task Done/Cancelled."
+                    ),
+                    changes=[],
+                    next_actions=[],
+                )
+
         if issue.type == "story" and not time_spent:
             caller = self.gateway.current_user()
             raw2 = self.gateway.get_issue(key)
@@ -1125,25 +1144,6 @@ class Actions:
                     message=(
                         f"QC Pass cho Story ({key}) yêu cầu người thực hiện ({caller}) "
                         "phải có worklog trên Story. Vui lòng cung cấp time_spent."
-                    ),
-                    changes=[],
-                    next_actions=[],
-                )
-
-        if issue.type in ("story", "adhoc"):
-            subtasks = raw.get("fields", {}).get("subtasks")
-            if subtasks is None and issue.type == "adhoc":
-                subtasks = self.gateway.get_subtasks(key)
-            elif subtasks is None:
-                subtasks = []
-            open_subs = self._get_open_subtasks_from_list(subtasks)
-            if open_subs:
-                items_str = ", ".join(f"{k} ({s})" for k, s in open_subs)
-                return ActionResult(
-                    ok=False,
-                    message=(
-                        f"{key} còn bug chưa xong: {items_str}. "
-                        "QC Pass được khi mọi sub-task Done/Cancelled."
                     ),
                     changes=[],
                     next_actions=[],
@@ -2532,6 +2532,17 @@ class Actions:
             if not effective_assignee:
                 if parent_issue.type == "adhoc":
                     effective_assignee = parent_issue.assignee
+                    if not effective_assignee:
+                        return ActionResult(
+                            ok=False,
+                            message=(
+                                f"{parent_issue.key} chưa có người thực hiện. "
+                                "Cho biết ai sửa bug này (assignee)."
+                            ),
+                            missing=["assignee"],
+                            changes=[],
+                            next_actions=[],
+                        )
                 elif parent_issue.type == "story":
                     jql = f'parent = "{parent_issue.key}"'
                     dev_tasks = self.gateway.search(
@@ -2606,7 +2617,7 @@ class Actions:
                 ) or creator
         elif issue_type == "bug":
             if not effective_qc_owner:
-                if is_lead or "qc" in effective_roles:
+                if "qc" in effective_roles:
                     effective_qc_owner = creator
                 else:
                     return ActionResult(
@@ -2936,7 +2947,19 @@ class Actions:
             else creator_tag
         )
 
-        gw = bot_gateway or self.bot_gateway or self.gateway
+        # Components are created by the bot only (Administrators role); never fall
+        # back to the caller's own PAT.
+        gw = bot_gateway or self.bot_gateway
+        if gw is None:
+            return ActionResult(
+                ok=False,
+                message=(
+                    "Không tạo được Component: server chưa có tài khoản bot "
+                    "(EGGS_BOT_TOKEN). Báo Lead kiểm tra cấu hình server."
+                ),
+                changes=[],
+                next_actions=[],
+            )
         try:
             res = gw.create_component(
                 project=project,

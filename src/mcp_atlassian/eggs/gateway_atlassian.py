@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from datetime import datetime
 from typing import Any
 
@@ -326,23 +325,6 @@ class AtlassianGateway(JiraGateway):
 
         return result
 
-    def _get_bot_client(self) -> Any:
-        token = os.getenv("EGGS_BOT_TOKEN")
-        if token:
-            url = os.getenv("JIRA_URL", self.cfg.jira_url if self.cfg else None)
-            if url:
-                try:
-                    from mcp_atlassian.jira.config import JiraConfig
-                    from mcp_atlassian.servers.dependencies import JiraFetcher
-
-                    fetcher = JiraFetcher(
-                        JiraConfig(url=url, auth_type="pat", personal_token=token)
-                    )
-                    return fetcher.jira
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("Không thể khởi tạo bot client: %s", exc)
-        return self.client
-
     def components(self, project: str) -> list[str]:
         """Get component names for a project."""
         res = self.client.get(f"rest/api/2/project/{project}/components")
@@ -353,8 +335,11 @@ class AtlassianGateway(JiraGateway):
     def create_component(
         self, project: str, name: str, description: str | None = None
     ) -> dict[str, Any]:
-        """Create a component via POST rest/api/2/component using bot client."""
-        client = self._get_bot_client()
+        """Create a component via POST rest/api/2/component.
+
+        Call this on the bot gateway only (its client uses EGGS_BOT_TOKEN).
+        """
+        client = self.client
         payload: dict[str, Any] = {
             "name": name,
             "project": project,

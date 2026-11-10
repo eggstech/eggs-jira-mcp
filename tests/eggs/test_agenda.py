@@ -702,6 +702,35 @@ def test_agenda_priority_1_orders_l2_before_l0(cfg, cal):
     assert [it.key for it in agenda] == ["RFID-2", "RFID-1"]
 
 
+def test_agenda_escalated_item_without_mapped_action_stays_informational(cfg, cal):
+    """Review U: an escalated flag with no action mapping must still reach the owner."""
+    identity = Identity(
+        username="bob",
+        display_name="Bob",
+        roles={"RFID": {"lead_ba"}},
+        is_lead=False,
+    )
+    now = datetime(2026, 11, 9, 10, 0, tzinfo=ZoneInfo("Asia/Ho_Chi_Minh"))
+    iss = _make_issue(
+        "RFID-11", summary="At risk task", status="in_progress", assignee="alice"
+    )
+    snapshot = Snapshot(
+        issues={iss.key: iss},
+        flags={"RFID-11": frozenset({"AT_RISK"})},
+        escalations={
+            "RFID-11": Escalation(level=1, owner="bob", since=date(2026, 11, 8))
+        },
+        flows={},
+        epics={},
+        not_updated=[],
+        today=date(2026, 11, 9),
+    )
+    agenda = build_agenda(snapshot, identity, cfg, now, cal)
+    assert [it.key for it in agenda] == ["RFID-11"]
+    assert agenda[0].priority == 1
+    assert agenda[0].actions == []
+
+
 def test_agenda_l1_owner_sees_escalated_item(cfg, cal):
     identity = Identity(
         username="bob",

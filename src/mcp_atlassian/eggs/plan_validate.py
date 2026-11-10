@@ -375,7 +375,7 @@ def validate_plan(plan: Plan, ctx: PlanContext, cfg: EggsConfig) -> ValidationRe
             if ac_item.strip().startswith("TBD"):
                 msg = (
                     f"Luồng '{label}': AC có mục TBD ('{ac_item}'), "
-                    "Story sẽ ở trạng thái Analyzed"
+                    "Story sẽ chưa sang Ready For Dev"
                 )
                 findings.append(Finding("warning", f"flows[{i}].ac", msg))
                 q_text = f"[{label}]: {ac_item}"
@@ -384,10 +384,7 @@ def validate_plan(plan: Plan, ctx: PlanContext, cfg: EggsConfig) -> ValidationRe
 
         # QC missing
         if not flow.qc:
-            msg = (
-                f"Luồng '{label}': Chưa gán QC Owner, Story sẽ ở lại "
-                "trạng thái Analyzed"
-            )
+            msg = f"Luồng '{label}': Chưa gán QC Owner, Story sẽ ở lại trạng thái Open"
             findings.append(Finding("warning", f"flows[{i}].qc", msg))
 
         # Flow due after Epic due

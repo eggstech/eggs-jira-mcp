@@ -92,6 +92,7 @@ def apply_plan(
 
         # 4. Flows creation and update
         newly_created_story_keys: set[str] = set()
+        stayed_open_keys: set[str] = set()
         part_field_id = cfg.fields.get("part", "customfield_10701")
         dev_task_types = set(cfg.issue_types.get("dev_task", ["Dev Task"]))
 
@@ -268,6 +269,7 @@ def apply_plan(
                         changes.append(
                             f"{story_key} giữ nguyên Open: thiếu {missing_str}"
                         )
+                        stayed_open_keys.add(story_key)
                     else:
                         analysis_trans = cfg.transitions.get(
                             "analysis_done", "Analysis Done"
@@ -275,17 +277,16 @@ def apply_plan(
                         gateway.transition(story_key, analysis_trans)
                         changes.append(f"{story_key} chuyển trạng thái -> Analyzed")
 
-                        if flow.due:
-                            set_due_trans = cfg.transitions.get(
-                                "set_due", "Set Due Date"
-                            )
-                            gateway.transition(
-                                story_key,
-                                set_due_trans,
-                                fields={"duedate": str(flow.due)},
-                                comment=f"Đặt Due Date: {flow.due}",
-                            )
-                            changes.append(f"Đặt Due Date cho {story_key} = {flow.due}")
+                    # Set Due Date works in Open and Analyzed, so set it either way.
+                    if flow.due:
+                        set_due_trans = cfg.transitions.get("set_due", "Set Due Date")
+                        gateway.transition(
+                            story_key,
+                            set_due_trans,
+                            fields={"duedate": str(flow.due)},
+                            comment=f"Đặt Due Date: {flow.due}",
+                        )
+                        changes.append(f"Đặt Due Date cho {story_key} = {flow.due}")
 
             # 5. Parts under this Story
             existing_dev_tasks: list[dict[str, Any]] = []
@@ -501,10 +502,13 @@ def apply_plan(
                         reasons.append("AC chưa đầy đủ hoặc có TBD")
                     if not parts_complete:
                         reasons.append("phần việc chưa đủ Part/Estimate")
+                    if not has_comp:
+                        reasons.insert(0, "thiếu Component")
                     reason_str = ", ".join(reasons)
+                    state = "Open" if story_key in stayed_open_keys else "Analyzed"
                     msg = (
                         f"Luồng '{flow.code or flow.summary}' ({story_key}) "
-                        f"ở lại trạng thái Analyzed vì {reason_str}"
+                        f"ở lại trạng thái {state} vì {reason_str}"
                     )
                     warnings.append(msg)
 

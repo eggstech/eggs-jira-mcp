@@ -672,8 +672,8 @@ def build_agenda(
                         filtered_actions = []
                     else:
                         continue
-            elif not actions and not filtered_actions:
-                continue
+            # No action mapped for this flag: keep the escalation as informational
+            # so its owner still sees it (only fully filtered-out items are dropped).
 
             actions = filtered_actions
 

@@ -604,3 +604,47 @@ def test_story_missing_ac_stays_open_with_message():
     # Analysis Done must NOT be called
     assert "Analysis Done" not in trans_calls
     assert any(f"{story_key} giữ nguyên Open: thiếu AC" in c for c in res.changes)
+
+
+def test_story_without_qc_stays_open_but_gets_due_date_and_open_warning():
+    """Review U: Due Date is set even when Analysis Done is skipped; message says Open."""
+    cfg = make_cfg()
+    gateway = FakeGateway(
+        components_map={"HMK": ["CH - CỬA HÀNG"]},
+        default_transitions=DEFAULT_FLOW_TRANSITIONS,
+    )
+    gateway.allowed_field_values = {("HMK", "Dev Task", "customfield_10701"): ["BE"]}
+    plan = Plan(
+        project="HMK",
+        epic=PlanEpic(summary="Workstream", due=date(2026, 11, 30), owner="ba.user"),
+        flows=[
+            PlanFlow(
+                code="CH-03",
+                actor="CH",
+                summary="Flow without QC",
+                ac=["AC 1 valid"],
+                ba="ba.user",
+                due=date(2026, 11, 25),
+            )
+        ],
+    )
+    ctx = load_plan_context(gateway, cfg, plan, today=date(2026, 11, 10))
+    res = apply_plan(gateway, cfg, plan, ctx, dry_run=False)
+
+    assert res.ok
+    story_key = res.plan.flows[0].key
+    trans = [
+        (args[1], kwargs)
+        for name, args, kwargs in gateway.calls
+        if name == "transition" and args[0] == story_key
+    ]
+    names = [t[0] for t in trans]
+    assert "Analysis Done" not in names
+    assert "Set Due Date" in names
+    due_kwargs = next(k for n, k in trans if n == "Set Due Date")
+    assert due_kwargs["fields"] == {"duedate": "2026-11-25"}
+    warn = [w for w in res.warnings if story_key in w]
+    assert warn, res.warnings
+    assert "ở lại trạng thái Open" in warn[0]
+    assert "Analyzed" not in warn[0]
+    assert "thiếu QC Owner" in warn[0]

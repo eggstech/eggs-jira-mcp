@@ -5058,3 +5058,123 @@ def test_update_description(cfg, cal):
     fields_payload = args[1]
     assert list(fields_payload.keys()) == ["description"]
     assert fields_payload["description"] == "Final text check"
+
+
+def test_create_component_without_bot_gateway_refused_and_never_uses_user_pat(cfg, cal):
+    """Review U: never fall back to the caller's PAT for creating a Component."""
+    from mcp_atlassian.eggs.config import ProjectConfig
+
+    cfg.projects["EGGSBOX"] = ProjectConfig(
+        key="EGGSBOX",
+        default_lead_ba="cuong.huynh",
+        triage_owner="tuan.bui",
+    )
+    user_gw = FakeGateway(components_map={"EGGSBOX": ["CH - CỬA HÀNG"]})
+    actions = _make_actions(user_gw, cfg, cal, bot_gateway=None)
+    res = actions.create_component(
+        project="EGGSBOX",
+        code="KT",
+        name="Kế toán",
+        creator="tuan.bui",
+        creator_roles={"qc"},
+    )
+    assert res.ok is False
+    assert "bot" in res.message.lower()
+    assert not [c for c in user_gw.calls if c[0] == "create_component"]
+
+
+def test_atlassian_gateway_create_component_posts_with_its_own_client():
+    """The bot gateway's own client (EGGS_BOT_TOKEN) is the only writer; no env lookup."""
+    from unittest.mock import MagicMock
+
+    from mcp_atlassian.eggs.gateway_atlassian import AtlassianGateway
+
+    client = MagicMock()
+    client.post.return_value = {"id": "1", "name": "KT - KẾ TOÁN"}
+    gw = AtlassianGateway(client)
+    res = gw.create_component("EGGSBOX", "KT - KẾ TOÁN", "x")
+    assert res["name"] == "KT - KẾ TOÁN"
+    client.post.assert_called_once()
+    assert client.post.call_args.args[0] == "rest/api/2/component"
+
+
+def test_qc_pass_open_bug_message_comes_before_worklog_message(cfg, cal):
+    """Review U: QC with no worklog on a Story with open bugs is told about the bugs."""
+    cfg.projects["EGGSBOX"] = ProjectConfig(
+        key="EGGSBOX", default_lead_ba="cuong.huynh", triage_owner="tuan.bui"
+    )
+    raw_story = {
+        "key": "EGGSBOX-26",
+        "fields": {
+            "summary": "Story 26",
+            "project": {"key": "EGGSBOX"},
+            "issuetype": {"name": "Story", "subtask": False},
+            "status": {"name": "Test In Progress"},
+            cfg.fields["qc_owner"]: {"name": "tuan.bui"},
+            "subtasks": [
+                {
+                    "key": "EGGSBOX-50",
+                    "fields": {
+                        "issuetype": {"name": "Bug", "subtask": True},
+                        "status": {"name": "Dev In Progress"},
+                    },
+                }
+            ],
+            "worklog": {"worklogs": [], "total": 0},
+        },
+    }
+    gw = FakeGateway(
+        issues={"EGGSBOX-26": raw_story},
+        transitions={"EGGSBOX-26": ["QC Pass", "QC Fail"]},
+        user="tuan.bui",
+    )
+    res = _make_actions(gw, cfg, cal).qc_pass("EGGSBOX-26", note="Tested")
+    assert res.ok is False
+    assert res.message.startswith("EGGSBOX-26 còn bug chưa xong: EGGSBOX-50")
+
+
+def test_create_bug_sub_under_unassigned_adhoc_asks_for_assignee(cfg, cal):
+    """Review U: an Ad-hoc parent with no assignee returns missing assignee."""
+    cfg.projects["EGGSBOX"] = ProjectConfig(
+        key="EGGSBOX", default_lead_ba="cuong.huynh", triage_owner="tuan.bui"
+    )
+    raw_adhoc = {
+        "key": "EGGSBOX-60",
+        "fields": {
+            "summary": "Ad-hoc job",
+            "project": {"key": "EGGSBOX"},
+            "issuetype": {"name": "Ad-hoc Task", "subtask": False},
+            "status": {"name": "Test In Progress"},
+            cfg.fields["qc_owner"]: {"name": "tuan.bui"},
+        },
+    }
+    gw = FakeGateway(issues={"EGGSBOX-60": raw_adhoc})
+    res = _make_actions(gw, cfg, cal).create_issue(
+        project="EGGSBOX",
+        issue_type="bug_sub",
+        parent="EGGSBOX-60",
+        summary="Lỗi nhỏ",
+        creator="tuan.bui",
+        creator_roles={"qc"},
+    )
+    assert res.ok is False
+    assert "assignee" in res.missing
+    assert not [c for c in gw.calls if c[0] == "create_issue"]
+
+
+def test_create_bug_lead_without_qc_role_must_name_qc_owner(cfg, cal):
+    """Review U: the creator is the default QC Owner only with the qc role."""
+    cfg.projects["EGGSBOX"] = ProjectConfig(
+        key="EGGSBOX", default_lead_ba="cuong.huynh", triage_owner="tuan.bui"
+    )
+    gw = FakeGateway(issues={})
+    res = _make_actions(gw, cfg, cal).create_issue(
+        project="EGGSBOX",
+        issue_type="bug",
+        summary="Lỗi in hóa đơn",
+        creator="cuong.huynh",
+        creator_roles={"lead_ba"},
+        is_lead=True,
+    )
+    assert res.ok is False
+    assert "qc_owner" in res.missing
