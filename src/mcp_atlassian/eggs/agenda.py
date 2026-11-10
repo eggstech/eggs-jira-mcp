@@ -86,6 +86,17 @@ INTENTS: list[Intent] = [
         required=["project"],
     ),
     Intent(
+        name="update_description",
+        roles=frozenset({"any"}),
+        examples=[
+            "sửa mô tả EGGSBOX-38",
+            "thêm AC cho story",
+            "ghi description",
+        ],
+        tool="eggs_update_description",
+        required=["key", "text"],
+    ),
+    Intent(
         name="log_work",
         roles=frozenset({"any"}),
         examples=["hôm qua làm 4h RFID-128", "ghi 2h vào RFID-10", "log work 1d"],

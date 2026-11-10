@@ -10,7 +10,7 @@ import os
 import threading
 from datetime import date, datetime
 from functools import wraps
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from zoneinfo import ZoneInfo
 
 from fastmcp import Context, FastMCP
@@ -94,6 +94,7 @@ WRITE_EGGS_TOOL_NAMES = frozenset(
         "eggs_plan_apply",
         "eggs_create_issue",
         "eggs_create_component",
+        "eggs_update_description",
     }
 )
 
@@ -1992,6 +1993,60 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
             creator_roles=creator_roles,
             is_lead=ident.is_lead,
             bot_gateway=roles_gw,
+            dry_run=dry_run,
+        )
+        if res.ok and not dry_run:
+            now = datetime.now(ZoneInfo(cfg.timezone))
+            res = await asyncio.to_thread(
+                _attach_next_agenda_item, res, user_gw, ident, cfg, cal, now
+            )
+        return json.dumps(action_result_to_dict(res), indent=2, ensure_ascii=False)
+
+    @server.tool(tags=write_tags, annotations={"title": "EGGS Update Description"})
+    @eggs_check_write_access
+    async def eggs_update_description(
+        ctx: Context,
+        key: Annotated[
+            str,
+            Field(description="Mã issue cần cập nhật mô tả (ví dụ EGGSBOX-38)"),
+        ],
+        text: Annotated[str, Field(description="Nội dung mô tả mới")],
+        mode: Annotated[
+            Literal["replace", "append", "ac"],
+            Field(
+                description=(
+                    "Chế độ cập nhật: replace (thay thế toàn bộ), "
+                    "append (nối thêm vào cuối), "
+                    "ac (chỉ sửa section Acceptance Criteria)"
+                ),
+                default="replace",
+            ),
+        ] = "replace",
+        *,
+        dry_run: Annotated[
+            bool, Field(description="Chạy thử nghiệm không ghi", default=False)
+        ] = False,
+    ) -> str:
+        """Cập nhật phần mô tả (description) của issue."""
+        cfg = await asyncio.to_thread(load_config)
+        user_gw = await get_user_gateway(ctx, write=True)
+        roles_gw = await asyncio.to_thread(get_roles_reader, cfg)
+        ident = await asyncio.to_thread(
+            resolve_identity, user_gw, roles_gw, cfg, _identity_cache
+        )
+
+        cal = WorkCalendar(cfg.holidays)
+        actions = Actions(user_gw, cfg, cal)
+        proj = key.split("-")[0].upper()
+        user_roles = ident.roles.get(proj, set())
+        res = await asyncio.to_thread(
+            actions.update_description,
+            key=key,
+            text=text,
+            mode=mode,
+            caller=ident.username,
+            caller_roles=user_roles,
+            is_lead=ident.is_lead,
             dry_run=dry_run,
         )
         if res.ok and not dry_run:

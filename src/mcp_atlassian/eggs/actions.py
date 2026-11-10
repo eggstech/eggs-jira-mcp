@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import difflib
 import re
 import unicodedata
 from collections.abc import Callable
@@ -2968,6 +2969,186 @@ class Actions:
     def components(self, project: str) -> str:
         """Liệt kê các Component trong dự án kèm số lượng Story đang mở."""
         return get_components_summary(self.gateway, project)
+
+    def update_description(
+        self,
+        key: str,
+        text: str,
+        mode: str = "replace",
+        *,
+        caller: str | None = None,
+        caller_roles: set[str] | None = None,
+        is_lead: bool = False,
+        dry_run: bool = False,
+    ) -> ActionResult:
+        """Cập nhật phần description của issue theo các chế độ replace, append, ac."""
+        try:
+            raw, issue = self._get_raw_and_issue(key)
+        except Exception as exc:  # noqa: BLE001
+            return ActionResult(
+                ok=False,
+                message=f"Không tìm thấy issue {key}: {exc}",
+                changes=[],
+                next_actions=[],
+            )
+
+        mode_clean = mode.lower().strip()
+        if mode_clean not in ("replace", "append", "ac"):
+            return ActionResult(
+                ok=False,
+                message=(
+                    f"Chế độ mode '{mode}' không hợp lệ. "
+                    "Chọn một trong: replace, append, ac."
+                ),
+                changes=[],
+                next_actions=[],
+            )
+
+        proj = issue.project.upper()
+        roles = set(caller_roles or [])
+        user = (caller or "").lower()
+
+        if issue.type in ("story", "epic"):
+            allowed = is_lead or bool(roles & {"lead_ba", "qc"})
+            if not allowed:
+                return ActionResult(
+                    ok=False,
+                    message=(
+                        f"Bạn không có quyền sửa mô tả {issue.type} {key} "
+                        f"trong dự án {proj}. Cần vai trò: lead_ba hoặc qc."
+                    ),
+                    changes=[],
+                    next_actions=[],
+                )
+        else:
+            fields = raw.get("fields", {}) if isinstance(raw, dict) else {}
+            reporter_raw = fields.get("reporter")
+            reporter_name = (
+                reporter_raw.get("name")
+                if isinstance(reporter_raw, dict)
+                else str(reporter_raw or "")
+            )
+            is_assignee = bool(
+                user and issue.assignee and user == issue.assignee.lower()
+            )
+            is_reporter = bool(
+                user
+                and (
+                    (reporter_name and user == reporter_name.lower())
+                    or (issue.reported_by and user == issue.reported_by.lower())
+                )
+            )
+            is_qc_owner = bool(
+                user and issue.qc_owner and user == issue.qc_owner.lower()
+            )
+            is_lead_ba = "lead_ba" in roles
+            allowed = is_lead or is_assignee or is_reporter or is_qc_owner or is_lead_ba
+            if not allowed:
+                return ActionResult(
+                    ok=False,
+                    message=(
+                        f"Bạn không có quyền sửa mô tả {key}. "
+                        "Chỉ assignee, reporter, QC Owner hoặc "
+                        "lead_ba mới có quyền sửa."
+                    ),
+                    changes=[],
+                    next_actions=[],
+                )
+
+        curr_desc = raw.get("fields", {}).get("description") or ""
+        curr_norm = curr_desc.replace("\r\n", "\n")
+
+        if mode_clean == "replace":
+            new_norm = text.replace("\r\n", "\n")
+        elif mode_clean == "append":
+            clean_text = text.strip()
+            if curr_norm.strip():
+                new_norm = f"{curr_norm.rstrip()}\n\n{clean_text}"
+            else:
+                new_norm = clean_text
+        elif mode_clean == "ac":
+            new_norm = update_ac_section(curr_norm, text)
+
+        if curr_norm == new_norm:
+            return ActionResult(
+                ok=True,
+                message="Mô tả không đổi.",
+                changes=[],
+                next_actions=[],
+            )
+
+        if dry_run:
+            diff_str = _make_diff_preview(curr_norm, new_norm)
+            msg = f"Sẽ làm: cập nhật mô tả {key} ({mode_clean})"
+            if diff_str:
+                msg = f"{msg}\n{diff_str}"
+            return ActionResult(
+                ok=True,
+                message=msg,
+                changes=[],
+                next_actions=[],
+            )
+
+        try:
+            if hasattr(self.gateway, "update_fields"):
+                self.gateway.update_fields(key, {"description": new_norm})
+            elif hasattr(self.gateway, "update_issue"):
+                self.gateway.update_issue(key, {"description": new_norm})
+        except Exception as exc:  # noqa: BLE001
+            return ActionResult(
+                ok=False,
+                message=f"Lỗi khi cập nhật mô tả cho {key}: {exc}",
+                changes=[],
+                next_actions=[],
+            )
+
+        return ActionResult(
+            ok=True,
+            message=f"Đã cập nhật mô tả cho {key}.",
+            changes=[f"Cập nhật mô tả {key} ({mode_clean})"],
+            next_actions=[],
+        )
+
+
+def _make_diff_preview(old_text: str, new_text: str, max_lines: int = 10) -> str:
+    old_lines = old_text.splitlines(keepends=True)
+    new_lines = new_text.splitlines(keepends=True)
+    diff = difflib.unified_diff(old_lines, new_lines, lineterm="")
+    changed_lines = [
+        line.rstrip("\r\n")
+        for line in diff
+        if (line.startswith("+") or line.startswith("-"))
+        and not line.startswith("+++")
+        and not line.startswith("---")
+    ]
+    return "\n".join(changed_lines[:max_lines])
+
+
+def update_ac_section(description: str, new_ac: str) -> str:
+    """Replace or append the ## Acceptance Criteria section in markdown description."""
+    norm_desc = description.replace("\r\n", "\n") if description else ""
+    clean_ac = new_ac.strip()
+    if clean_ac.lower().startswith("## acceptance criteria"):
+        ac_block = clean_ac
+    else:
+        ac_block = f"## Acceptance Criteria\n{clean_ac}"
+
+    pattern = re.compile(
+        r"(^##\s+Acceptance Criteria[^\n]*\n?)(.*?)(?=(?:^#{1,2}\s+|\Z))",
+        re.MULTILINE | re.DOTALL | re.IGNORECASE,
+    )
+    m = pattern.search(norm_desc)
+    if m:
+        before = norm_desc[: m.start()]
+        after = norm_desc[m.end() :]
+        after_clean = after.lstrip("\n")
+        if after:
+            return f"{before}{ac_block}\n\n{after_clean}"
+        return f"{before}{ac_block}\n"
+
+    if not norm_desc.strip():
+        return f"{ac_block}\n"
+    return f"{norm_desc.rstrip()}\n\n{ac_block}\n"
 
 
 def _normalize_name(text: str) -> str:

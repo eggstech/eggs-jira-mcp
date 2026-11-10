@@ -4898,3 +4898,163 @@ def test_create_component_and_components_summary(cfg, cal):
     summary_text = actions_comp.components("EGGSBOX")
     assert "CH - CỬA HÀNG: 2 open Stories" in summary_text
     assert "KH - KHÁCH HÀNG: 1 open Stories" in summary_text
+
+
+def test_update_description(cfg, cal):
+    from mcp_atlassian.eggs.config import ProjectConfig
+
+    cfg.projects["EGGSBOX"] = ProjectConfig(
+        key="EGGSBOX",
+        default_lead_ba="ba.user",
+        triage_owner="qc.user",
+    )
+
+    story_desc_orig = (
+        "Title line\n\n"
+        "## Acceptance Criteria\n"
+        "- Old AC 1\n"
+        "- Old AC 2\n\n"
+        "## Technical Notes\n"
+        "Keep this exactly."
+    )
+    issues = {
+        "EGGSBOX-1": {
+            "key": "EGGSBOX-1",
+            "fields": {
+                "project": {"key": "EGGSBOX"},
+                "issuetype": {"name": "Story"},
+                "status": {"name": "Open"},
+                "description": "Old Story description",
+            },
+        },
+        "EGGSBOX-2": {
+            "key": "EGGSBOX-2",
+            "fields": {
+                "project": {"key": "EGGSBOX"},
+                "issuetype": {"name": "Story"},
+                "status": {"name": "Open"},
+                "description": story_desc_orig,
+            },
+        },
+        "EGGSBOX-11": {
+            "key": "EGGSBOX-11",
+            "fields": {
+                "project": {"key": "EGGSBOX"},
+                "issuetype": {"name": "Dev Task"},
+                "status": {"name": "Dev In Progress"},
+                "assignee": {"name": "cuong.huynh"},
+                "description": "Initial dev task note.",
+            },
+        },
+    }
+    gw = FakeGateway(issues=issues)
+    actions = _make_actions(gw, cfg, cal)
+
+    # 1. BA replaces a Story description
+    res_ba = actions.update_description(
+        key="EGGSBOX-1",
+        text="New Story description",
+        mode="replace",
+        caller="ba.user",
+        caller_roles={"lead_ba"},
+    )
+    assert res_ba.ok is True
+    assert "Đã cập nhật mô tả cho EGGSBOX-1." in res_ba.message
+    assert gw.issues["EGGSBOX-1"]["fields"]["description"] == "New Story description"
+
+    # 2. QC updates only the AC section of a Story and the rest is byte-identical
+    res_qc = actions.update_description(
+        key="EGGSBOX-2",
+        text="- New AC 1\n- New AC 2",
+        mode="ac",
+        caller="qc.user",
+        caller_roles={"qc"},
+    )
+    assert res_qc.ok is True
+    new_desc = gw.issues["EGGSBOX-2"]["fields"]["description"]
+    assert (
+        new_desc.split("## Acceptance Criteria")[0]
+        == story_desc_orig.split("## Acceptance Criteria")[0]
+    )
+    assert (
+        new_desc.split("## Technical Notes")[1]
+        == story_desc_orig.split("## Technical Notes")[1]
+    )
+    assert "- New AC 1\n- New AC 2" in new_desc
+
+    # 3. dev who is assignee appends to a Dev Task
+    res_dev = actions.update_description(
+        key="EGGSBOX-11",
+        text="Additional implementation detail.",
+        mode="append",
+        caller="cuong.huynh",
+        caller_roles={"dev"},
+    )
+    assert res_dev.ok is True
+    assert (
+        gw.issues["EGGSBOX-11"]["fields"]["description"]
+        == "Initial dev task note.\n\nAdditional implementation detail."
+    )
+
+    # 4. dev not related to a Story is refused
+    res_refused = actions.update_description(
+        key="EGGSBOX-1",
+        text="Dev trying to edit story",
+        mode="replace",
+        caller="cuong.huynh",
+        caller_roles={"dev"},
+    )
+    assert res_refused.ok is False
+    assert "Bạn không có quyền sửa mô tả" in res_refused.message
+
+    # 5. same text -> no write
+    write_calls_before = [
+        c for c in gw.calls if c[0] in ("update_fields", "update_issue")
+    ]
+    res_same = actions.update_description(
+        key="EGGSBOX-11",
+        text="Initial dev task note.\n\nAdditional implementation detail.",
+        mode="replace",
+        caller="cuong.huynh",
+        caller_roles={"dev"},
+    )
+    assert res_same.ok is True
+    assert res_same.message == "Mô tả không đổi."
+    assert [
+        c for c in gw.calls if c[0] in ("update_fields", "update_issue")
+    ] == write_calls_before
+
+    # 6. dry run writes nothing
+    res_dry = actions.update_description(
+        key="EGGSBOX-11",
+        text="Dry run new text",
+        mode="replace",
+        caller="cuong.huynh",
+        caller_roles={"dev"},
+        dry_run=True,
+    )
+    assert res_dry.ok is True
+    assert "Sẽ làm: cập nhật mô tả EGGSBOX-11 (replace)" in res_dry.message
+    assert "-Initial dev task note." in res_dry.message
+    assert "+Dry run new text" in res_dry.message
+    assert [
+        c for c in gw.calls if c[0] in ("update_fields", "update_issue")
+    ] == write_calls_before
+
+    # 7. the gateway call carries only description
+    res_field = actions.update_description(
+        key="EGGSBOX-11",
+        text="Final text check",
+        mode="replace",
+        caller="cuong.huynh",
+        caller_roles={"dev"},
+    )
+    assert res_field.ok is True
+    update_calls = [c for c in gw.calls if c[0] == "update_fields"]
+    assert len(update_calls) > 0
+    last_call = update_calls[-1]
+    args = last_call[1]
+    assert args[0] == "EGGSBOX-11"
+    fields_payload = args[1]
+    assert list(fields_payload.keys()) == ["description"]
+    assert fields_payload["description"] == "Final text check"
