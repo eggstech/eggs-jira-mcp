@@ -130,6 +130,22 @@ class FakeGateway(JiraGateway):
             issue_fields = self.issues[key].setdefault("fields", {})
             issue_fields.update(fields)
 
+    def add_label(self, key: str, label: str, *, notify_users: bool = False) -> None:
+        self._record("add_label", key, label, notify_users=notify_users)
+        issue = self.issues.get(key)
+        if issue:
+            labels = issue.setdefault("fields", {}).setdefault("labels", [])
+            if label not in labels:
+                labels.append(label)
+
+    def remove_label(self, key: str, label: str, *, notify_users: bool = False) -> None:
+        self._record("remove_label", key, label, notify_users=notify_users)
+        issue = self.issues.get(key)
+        if issue:
+            labels = issue.setdefault("fields", {}).setdefault("labels", [])
+            if label in labels:
+                labels.remove(label)
+
     def add_comment(self, key: str, body: str) -> None:
         self._record("add_comment", key, body)
         if key in self.issues:

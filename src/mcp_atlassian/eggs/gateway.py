@@ -65,6 +65,26 @@ class JiraGateway(Protocol):
         """
         ...
 
+    def add_label(
+        self,
+        key: str,
+        label: str,
+        *,
+        notify_users: bool = False,
+    ) -> None:
+        """Add a label to an issue using Jira update syntax."""
+        ...
+
+    def remove_label(
+        self,
+        key: str,
+        label: str,
+        *,
+        notify_users: bool = False,
+    ) -> None:
+        """Remove a label from an issue using Jira update syntax."""
+        ...
+
     def add_comment(self, key: str, body: str) -> None:
         """Add a comment to an issue."""
         ...

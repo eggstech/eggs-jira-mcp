@@ -1410,3 +1410,501 @@ def test_backfill_qc_owner_search_error_reported_separately(
     captured = capsys.readouterr()
     assert "Lỗi khi tìm kiếm issues" in captured.err
     assert "Lỗi khi cập nhật issue đầu tiên" not in captured.err
+
+
+def test_freeze_legacy_skips_story_with_recently_updated_subtask(cfg: EggsConfig):
+    from mcp_atlassian.eggs.guardian import freeze_legacy
+
+    now = datetime(2026, 11, 10, 10, 0, tzinfo=TZ)
+    issues = {
+        "RFID-10": {
+            "key": "RFID-10",
+            "fields": {
+                "issuetype": {"name": "Story"},
+                "status": {"name": "Open", "statusCategory": {"name": "To Do"}},
+                "updated": "2026-09-01T10:00:00.000+0700",
+                "labels": [],
+            },
+        },
+        "RFID-11": {
+            "key": "RFID-11",
+            "fields": {
+                "issuetype": {"name": "Sub-task"},
+                "parent": {"key": "RFID-10"},
+                "status": {"name": "Dev In Progress"},
+                "updated": "2026-11-05T10:00:00.000+0700",
+            },
+        },
+    }
+    gw = FakeGateway(issues=issues)
+    res = freeze_legacy(gw, cfg, "RFID", days=30, now=now)
+    assert res.found == 0
+    assert res.written == 0
+    add_calls = [c for c in gw.calls if c[0] == "add_label"]
+    assert len(add_calls) == 0
+
+
+def test_freeze_legacy_skips_epic_with_recently_updated_child(cfg: EggsConfig):
+    from mcp_atlassian.eggs.guardian import freeze_legacy
+
+    now = datetime(2026, 11, 10, 10, 0, tzinfo=TZ)
+    issues = {
+        "RFID-1": {
+            "key": "RFID-1",
+            "fields": {
+                "issuetype": {"name": "Epic"},
+                "status": {"name": "Open", "statusCategory": {"name": "To Do"}},
+                "updated": "2026-09-01T10:00:00.000+0700",
+                "labels": [],
+            },
+        },
+        "RFID-2": {
+            "key": "RFID-2",
+            "fields": {
+                "issuetype": {"name": "Story"},
+                "customfield_10100": "RFID-1",
+                "status": {"name": "Dev In Progress"},
+                "updated": "2026-11-05T10:00:00.000+0700",
+            },
+        },
+    }
+    gw = FakeGateway(issues=issues)
+    res = freeze_legacy(gw, cfg, "RFID", days=30, now=now)
+    assert res.found == 0
+    assert res.written == 0
+    add_calls = [c for c in gw.calls if c[0] == "add_label"]
+    assert len(add_calls) == 0
+
+
+def test_freeze_legacy_dry_run_writes_nothing(cfg: EggsConfig):
+    from mcp_atlassian.eggs.guardian import freeze_legacy
+
+    now = datetime(2026, 11, 10, 10, 0, tzinfo=TZ)
+    issues = {
+        "RFID-10": {
+            "key": "RFID-10",
+            "fields": {
+                "issuetype": {"name": "Story"},
+                "status": {"name": "Open", "statusCategory": {"name": "To Do"}},
+                "updated": "2026-09-01T10:00:00.000+0700",
+                "labels": [],
+            },
+        },
+    }
+    gw = FakeGateway(issues=issues)
+    res = freeze_legacy(gw, cfg, "RFID", days=30, now=now, dry_run=True)
+    assert res.found == 1
+    assert res.written == 0
+    add_calls = [c for c in gw.calls if c[0] == "add_label"]
+    assert len(add_calls) == 0
+
+
+def test_freeze_legacy_real_run_adds_label(cfg: EggsConfig):
+    from mcp_atlassian.eggs.guardian import freeze_legacy
+
+    now = datetime(2026, 11, 10, 10, 0, tzinfo=TZ)
+    issues = {
+        "RFID-10": {
+            "key": "RFID-10",
+            "fields": {
+                "issuetype": {"name": "Bug stand-alone"},
+                "status": {"name": "Open", "statusCategory": {"name": "To Do"}},
+                "updated": "2026-09-01T10:00:00.000+0700",
+                "labels": [],
+            },
+        },
+    }
+    gw = FakeGateway(issues=issues)
+    res = freeze_legacy(gw, cfg, "RFID", days=30, now=now)
+    assert res.found == 1
+    assert res.written == 1
+    add_calls = [c for c in gw.calls if c[0] == "add_label"]
+    assert len(add_calls) == 1
+    assert add_calls[0][1] == ("RFID-10", "legacy-frozen")
+    assert add_calls[0][2] == {"notify_users": False}
+    assert "legacy-frozen" in gw.issues["RFID-10"]["fields"]["labels"]
+
+
+def test_unfreeze_on_human_worklog(cfg: EggsConfig):
+    from mcp_atlassian.eggs.guardian import evaluate
+
+    cal = WorkCalendar(cfg.holidays)
+    now = datetime(2026, 11, 10, 10, 0, tzinfo=TZ)
+    issues = {
+        "RFID-10": {
+            "key": "RFID-10",
+            "fields": {
+                "summary": "Stale story",
+                "issuetype": {"name": "Story"},
+                "status": {"name": "DEV To Do"},
+                "labels": ["legacy-frozen"],
+                "updated": "2026-11-10T09:30:00.000+0700",
+                "worklog": {
+                    "worklogs": [
+                        {
+                            "author": {"name": "alice"},
+                            "created": "2026-11-10T09:25:00.000+0700",
+                            "started": "2026-11-10T09:00:00.000+0700",
+                            "timeSpentSeconds": 1800,
+                        }
+                    ]
+                },
+            },
+            "changelog": {
+                "histories": [
+                    {
+                        "created": "2026-11-09T08:00:00.000+0700",
+                        "author": {"name": "bot"},
+                        "items": [
+                            {
+                                "field": "labels",
+                                "fromString": "",
+                                "toString": "legacy-frozen",
+                            }
+                        ],
+                    }
+                ]
+            },
+        }
+    }
+    gw = FakeGateway(issues=issues, user="bot")
+    evaluate(gw, cfg, now, cal)
+    remove_calls = [c for c in gw.calls if c[0] == "remove_label"]
+    assert len(remove_calls) == 1
+    assert remove_calls[0][1] == ("RFID-10", "legacy-frozen")
+    assert remove_calls[0][2] == {"notify_users": False}
+
+
+def test_unfreeze_on_human_comment(cfg: EggsConfig):
+    from mcp_atlassian.eggs.guardian import evaluate
+
+    cal = WorkCalendar(cfg.holidays)
+    now = datetime(2026, 11, 10, 10, 0, tzinfo=TZ)
+    issues = {
+        "RFID-10": {
+            "key": "RFID-10",
+            "fields": {
+                "summary": "Stale story",
+                "issuetype": {"name": "Story"},
+                "status": {"name": "DEV To Do"},
+                "labels": ["legacy-frozen"],
+                "updated": "2026-11-10T09:30:00.000+0700",
+                "comment": {
+                    "comments": [
+                        {
+                            "author": {"name": "bob"},
+                            "created": "2026-11-10T09:20:00.000+0700",
+                            "body": "Resuming work on this issue.",
+                        }
+                    ]
+                },
+            },
+            "changelog": {
+                "histories": [
+                    {
+                        "created": "2026-11-09T08:00:00.000+0700",
+                        "author": {"name": "bot"},
+                        "items": [
+                            {
+                                "field": "labels",
+                                "fromString": "",
+                                "toString": "legacy-frozen",
+                            }
+                        ],
+                    }
+                ]
+            },
+        }
+    }
+    gw = FakeGateway(issues=issues, user="bot")
+    evaluate(gw, cfg, now, cal)
+    remove_calls = [c for c in gw.calls if c[0] == "remove_label"]
+    assert len(remove_calls) == 1
+    assert remove_calls[0][1] == ("RFID-10", "legacy-frozen")
+
+
+def test_unfreeze_on_human_transition(cfg: EggsConfig):
+    from mcp_atlassian.eggs.guardian import evaluate
+
+    cal = WorkCalendar(cfg.holidays)
+    now = datetime(2026, 11, 10, 10, 0, tzinfo=TZ)
+    issues = {
+        "RFID-10": {
+            "key": "RFID-10",
+            "fields": {
+                "summary": "Stale story",
+                "issuetype": {"name": "Story"},
+                "status": {"name": "Dev In Progress"},
+                "labels": ["legacy-frozen"],
+                "updated": "2026-11-10T09:30:00.000+0700",
+            },
+            "changelog": {
+                "histories": [
+                    {
+                        "created": "2026-11-09T08:00:00.000+0700",
+                        "author": {"name": "bot"},
+                        "items": [
+                            {
+                                "field": "labels",
+                                "fromString": "",
+                                "toString": "legacy-frozen",
+                            }
+                        ],
+                    },
+                    {
+                        "created": "2026-11-10T09:15:00.000+0700",
+                        "author": {"name": "charlie"},
+                        "items": [
+                            {
+                                "field": "status",
+                                "fromString": "DEV To Do",
+                                "toString": "Dev In Progress",
+                            }
+                        ],
+                    },
+                ]
+            },
+        }
+    }
+    gw = FakeGateway(issues=issues, user="bot")
+    evaluate(gw, cfg, now, cal)
+    remove_calls = [c for c in gw.calls if c[0] == "remove_label"]
+    assert len(remove_calls) == 1
+    assert remove_calls[0][1] == ("RFID-10", "legacy-frozen")
+
+
+def test_no_unfreeze_on_bot_entry(cfg: EggsConfig):
+    from mcp_atlassian.eggs.guardian import evaluate
+
+    cal = WorkCalendar(cfg.holidays)
+    now = datetime(2026, 11, 10, 10, 0, tzinfo=TZ)
+    issues = {
+        "RFID-10": {
+            "key": "RFID-10",
+            "fields": {
+                "summary": "Stale story",
+                "issuetype": {"name": "Story"},
+                "status": {"name": "DEV To Do"},
+                "labels": ["legacy-frozen"],
+                "updated": "2026-11-10T09:30:00.000+0700",
+                "comment": {
+                    "comments": [
+                        {
+                            "author": {"name": "bot"},
+                            "created": "2026-11-10T09:20:00.000+0700",
+                            "body": "Automated evaluation note.",
+                        }
+                    ]
+                },
+            },
+            "changelog": {
+                "histories": [
+                    {
+                        "created": "2026-11-09T08:00:00.000+0700",
+                        "author": {"name": "bot"},
+                        "items": [
+                            {
+                                "field": "labels",
+                                "fromString": "",
+                                "toString": "legacy-frozen",
+                            }
+                        ],
+                    }
+                ]
+            },
+        }
+    }
+    gw = FakeGateway(issues=issues, user="bot")
+    evaluate(gw, cfg, now, cal)
+    remove_calls = [c for c in gw.calls if c[0] == "remove_label"]
+    assert len(remove_calls) == 0
+
+
+def test_no_unfreeze_on_workflow_history_item(cfg: EggsConfig):
+    from mcp_atlassian.eggs.guardian import evaluate
+
+    cal = WorkCalendar(cfg.holidays)
+    now = datetime(2026, 11, 10, 10, 0, tzinfo=TZ)
+    issues = {
+        "RFID-10": {
+            "key": "RFID-10",
+            "fields": {
+                "summary": "Stale story",
+                "issuetype": {"name": "Story"},
+                "status": {"name": "DEV To Do"},
+                "labels": ["legacy-frozen"],
+                "updated": "2026-11-10T09:30:00.000+0700",
+            },
+            "changelog": {
+                "histories": [
+                    {
+                        "created": "2026-11-09T08:00:00.000+0700",
+                        "author": {"name": "bot"},
+                        "items": [
+                            {
+                                "field": "labels",
+                                "fromString": "",
+                                "toString": "legacy-frozen",
+                            }
+                        ],
+                    },
+                    {
+                        "created": "2026-11-10T09:15:00.000+0700",
+                        "author": {"name": "migration_admin"},
+                        "items": [
+                            {
+                                "field": "Workflow",
+                                "fromString": "Old WF",
+                                "toString": "EGGS WF",
+                            }
+                        ],
+                    },
+                ]
+            },
+        }
+    }
+    gw = FakeGateway(issues=issues, user="bot")
+    evaluate(gw, cfg, now, cal)
+    remove_calls = [c for c in gw.calls if c[0] == "remove_label"]
+    assert len(remove_calls) == 0
+
+
+def test_no_unfreeze_for_activity_before_freeze_entry(cfg: EggsConfig):
+    from mcp_atlassian.eggs.guardian import evaluate
+
+    cal = WorkCalendar(cfg.holidays)
+    now = datetime(2026, 11, 10, 10, 0, tzinfo=TZ)
+    issues = {
+        "RFID-10": {
+            "key": "RFID-10",
+            "fields": {
+                "summary": "Stale story",
+                "issuetype": {"name": "Story"},
+                "status": {"name": "DEV To Do"},
+                "labels": ["legacy-frozen"],
+                "updated": "2026-11-10T09:30:00.000+0700",
+                "comment": {
+                    "comments": [
+                        {
+                            "author": {"name": "human"},
+                            "created": "2026-11-08T09:00:00.000+0700",
+                            "body": "Comment before freeze.",
+                        }
+                    ]
+                },
+            },
+            "changelog": {
+                "histories": [
+                    {
+                        "created": "2026-11-09T08:00:00.000+0700",
+                        "author": {"name": "bot"},
+                        "items": [
+                            {
+                                "field": "labels",
+                                "fromString": "",
+                                "toString": "legacy-frozen",
+                            }
+                        ],
+                    }
+                ]
+            },
+        }
+    }
+    gw = FakeGateway(issues=issues, user="bot")
+    evaluate(gw, cfg, now, cal)
+    remove_calls = [c for c in gw.calls if c[0] == "remove_label"]
+    assert len(remove_calls) == 0
+
+
+def test_freeze_legacy_runs_on_non_working_day(
+    cfg: EggsConfig, monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    config_file = tmp_path / "eggs.yaml"
+    config_file.write_text(yaml.safe_dump(dataclasses.asdict(cfg), allow_unicode=True))
+
+    monkeypatch.setenv("JIRA_URL", cfg.jira_url)
+    monkeypatch.setenv("EGGS_BOT_TOKEN", "dummy_token")
+    monkeypatch.setenv("EGGS_CONFIG", str(config_file))
+
+    saturday = datetime(2026, 11, 21, 10, 0, tzinfo=TZ)
+    monkeypatch.setattr(
+        "mcp_atlassian.eggs.guardian.datetime",
+        type(
+            "MockDT",
+            (),
+            {
+                "now": lambda tz=None: saturday,
+                "combine": datetime.combine,
+                "fromisoformat": datetime.fromisoformat,
+            },
+        ),
+    )
+
+    gw = FakeGateway(
+        issues={
+            "RFID-10": {
+                "key": "RFID-10",
+                "fields": {
+                    "issuetype": {"name": "Bug stand-alone"},
+                    "status": {"name": "Open"},
+                    "updated": "2026-09-01T10:00:00.000+0700",
+                    "labels": [],
+                },
+            }
+        }
+    )
+
+    code = main(["freeze-legacy", "--project", "RFID", "--dry-run"], gateway=gw)
+    assert code == 0
+    search_calls = [c for c in gw.calls if c[0] == "search"]
+    assert len(search_calls) >= 1
+
+
+def test_unfreeze_evaluates_health_normally(cfg: EggsConfig):
+    from mcp_atlassian.eggs.guardian import evaluate
+
+    cal = WorkCalendar(cfg.holidays)
+    now = datetime(2026, 11, 10, 10, 0, tzinfo=TZ)
+    issues = {
+        "RFID-10": {
+            "key": "RFID-10",
+            "fields": {
+                "summary": "Stale story",
+                "issuetype": {"name": "Story"},
+                "status": {"name": "Dev In Progress"},
+                "assignee": None,
+                "labels": ["legacy-frozen"],
+                "updated": "2026-11-10T09:30:00.000+0700",
+                "comment": {
+                    "comments": [
+                        {
+                            "author": {"name": "human"},
+                            "created": "2026-11-10T09:20:00.000+0700",
+                            "body": "Starting work on this.",
+                        }
+                    ]
+                },
+            },
+            "changelog": {
+                "histories": [
+                    {
+                        "created": "2026-11-09T08:00:00.000+0700",
+                        "author": {"name": "bot"},
+                        "items": [
+                            {
+                                "field": "labels",
+                                "fromString": "",
+                                "toString": "legacy-frozen",
+                            }
+                        ],
+                    }
+                ]
+            },
+        }
+    }
+    gw = FakeGateway(issues=issues, user="bot")
+    evaluate(gw, cfg, now, cal)
+    remove_calls = [c for c in gw.calls if c[0] == "remove_label"]
+    assert len(remove_calls) == 1
+    update_calls = [c for c in gw.calls if c[0] == "update_fields"]
+    assert len(update_calls) >= 1

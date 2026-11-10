@@ -15,6 +15,7 @@ import argparse
 import calendar
 import logging
 import os
+import re
 import sys
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
@@ -115,10 +116,19 @@ def evaluate(
     - Idempotent: writes only on change.
     - Never transitions issues.
     """
+    # Auto-unfreeze runs before health evaluation so the issue is
+    # evaluated normally in the same run
+    unfrozen_keys = unfreeze_stale_issues(gateway, cfg, now, dry_run=dry_run)
+
     tz = ZoneInfo(cfg.timezone)
     today = now.astimezone(tz).date()
     since = now - timedelta(minutes=70)
     snapshot = build_snapshot(gateway, cfg, today, cal, since=since)
+
+    if dry_run and unfrozen_keys:
+        for k in unfrozen_keys:
+            if k in snapshot.issues:
+                snapshot.issues[k].frozen = False
 
     allowed_guardian_field_ids = {
         cfg.fields[f] for f in GUARDIAN_LOGICAL_FIELDS if f in cfg.fields
@@ -735,6 +745,375 @@ def backfill_qc_owner(
     )
 
 
+class FreezeSearchError(Exception):
+    """Exception raised when searching for issues in freeze fails."""
+
+
+@dataclass
+class FreezeResult:
+    found: int
+    written: int
+    failed: list[tuple[str, str]]
+    issues: list[tuple[str, str, str]] = field(default_factory=list)
+    found_by_type: dict[str, int] = field(default_factory=dict)
+    written_by_type: dict[str, int] = field(default_factory=dict)
+
+
+def freeze_legacy(
+    gateway: JiraGateway,
+    cfg: EggsConfig,
+    project: str,
+    days: int = 30,
+    now: datetime | None = None,
+    *,
+    dry_run: bool = False,
+) -> FreezeResult:
+    frozen_label = cfg.frozen_label
+    jql = (
+        f"project = {project} AND statusCategory != Done AND "
+        f'updated < -{days}d AND (labels is EMPTY OR labels != "{frozen_label}")'
+    )
+
+    if now is None:
+        tz = ZoneInfo(cfg.timezone)
+        now = datetime.now(tz)
+
+    cutoff = now - timedelta(days=days)
+
+    try:
+        raw_candidates = gateway.search(
+            jql,
+            fields=["key", "status", "issuetype", "labels", "updated"],
+        )
+    except Exception as exc:
+        msg = f"Tìm kiếm candidates đóng băng thất bại: {exc}"
+        raise FreezeSearchError(msg) from exc
+
+    valid_candidates: list[dict[str, Any]] = []
+    epic_types = set(cfg.issue_types.get("epic", []))
+
+    for raw in raw_candidates:
+        f_dict = raw.get("fields", {})
+        key = raw.get("key") or str(raw.get("id"))
+
+        labels = f_dict.get("labels", [])
+        if frozen_label in labels:
+            continue
+
+        st_cat = f_dict.get("status", {}).get("statusCategory", {}).get("name")
+        if st_cat == "Done":
+            continue
+        st_name = f_dict.get("status", {}).get("name", "Unknown")
+        if cfg.status_logical(st_name) == "done":
+            continue
+
+        updated_str = f_dict.get("updated")
+        if updated_str:
+            try:
+                up_dt = datetime.fromisoformat(updated_str.replace("Z", "+00:00"))
+                if up_dt >= cutoff:
+                    continue
+            except (ValueError, TypeError):
+                pass
+
+        itype_obj = f_dict.get("issuetype", {})
+        itype_name = (
+            itype_obj.get("name", "Unknown")
+            if isinstance(itype_obj, dict)
+            else "Unknown"
+        )
+        is_epic = itype_name in epic_types
+
+        valid_candidates.append(
+            {
+                "key": key,
+                "type": itype_name,
+                "status": st_name,
+                "is_epic": is_epic,
+            }
+        )
+
+    if not valid_candidates:
+        return FreezeResult(found=0, written=0, failed=[])
+
+    epic_keys = [c["key"] for c in valid_candidates if c["is_epic"]]
+    non_epic_keys = [c["key"] for c in valid_candidates if not c["is_epic"]]
+
+    keys_to_skip: set[str] = set()
+
+    if non_epic_keys:
+        batch_size = 50
+        for i in range(0, len(non_epic_keys), batch_size):
+            chunk = non_epic_keys[i : i + batch_size]
+            chunk_str = ", ".join(chunk)
+            sub_jql = f"parent in ({chunk_str}) AND updated >= -{days}d"
+            try:
+                sub_issues = gateway.search(
+                    sub_jql,
+                    fields=["key", "parent", "updated"],
+                )
+            except Exception as exc:
+                msg = f"Tìm kiếm subtasks cho candidates thất bại: {exc}"
+                raise FreezeSearchError(msg) from exc
+
+            for raw in sub_issues:
+                f = raw.get("fields", {})
+                parent_key = f.get("parent", {}).get("key")
+                if parent_key in chunk:
+                    u_str = f.get("updated")
+                    if u_str:
+                        try:
+                            u_dt = datetime.fromisoformat(u_str.replace("Z", "+00:00"))
+                            if u_dt < cutoff:
+                                continue
+                        except (ValueError, TypeError):
+                            pass
+                    keys_to_skip.add(parent_key)
+
+    if epic_keys:
+        epic_link_id = cfg.fields.get("epic_link")
+        if epic_link_id:
+            cf_match = re.search(r"\d+", epic_link_id)
+            cf_id = cf_match.group(0) if cf_match else epic_link_id
+            batch_size = 50
+            for i in range(0, len(epic_keys), batch_size):
+                chunk = epic_keys[i : i + batch_size]
+                chunk_str = ", ".join(chunk)
+                epic_child_jql = f"cf[{cf_id}] in ({chunk_str}) AND updated >= -{days}d"
+                try:
+                    child_issues = gateway.search(
+                        epic_child_jql,
+                        fields=["key", epic_link_id, "updated"],
+                    )
+                except Exception as exc:
+                    msg = f"Tìm kiếm issues trong Epic thất bại: {exc}"
+                    raise FreezeSearchError(msg) from exc
+
+                for raw in child_issues:
+                    f = raw.get("fields", {})
+                    e_val = f.get(epic_link_id)
+                    parent_epic = (
+                        e_val
+                        if isinstance(e_val, str)
+                        else (e_val.get("key") if isinstance(e_val, dict) else None)
+                    )
+                    if parent_epic in chunk:
+                        u_str = f.get("updated")
+                        if u_str:
+                            try:
+                                u_dt = datetime.fromisoformat(
+                                    u_str.replace("Z", "+00:00")
+                                )
+                                if u_dt < cutoff:
+                                    continue
+                            except (ValueError, TypeError):
+                                pass
+                        keys_to_skip.add(parent_epic)
+
+    final_candidates = [c for c in valid_candidates if c["key"] not in keys_to_skip]
+
+    found_by_type: dict[str, int] = {}
+    for c in final_candidates:
+        t_name = c["type"]
+        found_by_type[t_name] = found_by_type.get(t_name, 0) + 1
+
+    issue_tuples = [(c["key"], c["type"], c["status"]) for c in final_candidates]
+    found = len(final_candidates)
+
+    if dry_run:
+        return FreezeResult(
+            found=found,
+            written=0,
+            failed=[],
+            issues=issue_tuples,
+            found_by_type=found_by_type,
+            written_by_type={},
+        )
+
+    written = 0
+    failed: list[tuple[str, str]] = []
+    written_by_type: dict[str, int] = {}
+
+    for i, c in enumerate(final_candidates):
+        key = c["key"]
+        t_name = c["type"]
+        try:
+            gateway.add_label(key, frozen_label, notify_users=False)
+            written += 1
+            written_by_type[t_name] = written_by_type.get(t_name, 0) + 1
+        except Exception as exc:
+            if i == 0:
+                raise
+            failed.append((key, str(exc)))
+
+    return FreezeResult(
+        found=found,
+        written=written,
+        failed=failed,
+        issues=issue_tuples,
+        found_by_type=found_by_type,
+        written_by_type=written_by_type,
+    )
+
+
+def unfreeze_stale_issues(
+    gateway: JiraGateway,
+    cfg: EggsConfig,
+    now: datetime,
+    *,
+    dry_run: bool = False,
+) -> list[str]:
+    """Auto-unfreeze issues carrying legacy-frozen label if active after freeze."""
+    frozen_label = cfg.frozen_label
+    jql = f'labels = "{frozen_label}" AND updated >= -2h'
+
+    try:
+        raw_issues = gateway.search(
+            jql,
+            fields=["key", "labels", "updated", "comment", "worklog"],
+            expand_changelog=True,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Tìm kiếm issues để unfreeze thất bại: %s", exc)
+        return []
+
+    bot_info = gateway.myself() if hasattr(gateway, "myself") else {}
+    bot_user = (
+        (bot_info.get("name") if isinstance(bot_info, dict) else None)
+        or (bot_info.get("key") if isinstance(bot_info, dict) else None)
+        or (gateway.current_user() if hasattr(gateway, "current_user") else None)
+        or cfg.bot_user
+    )
+    bot_user_lower = bot_user.strip().lower() if bot_user else ""
+
+    unfrozen_keys: list[str] = []
+
+    for raw in raw_issues:
+        f_dict = raw.get("fields", {})
+        key = raw.get("key") or str(raw.get("id"))
+
+        labels = f_dict.get("labels", [])
+        if frozen_label not in labels:
+            continue
+
+        changelog = raw.get("changelog", {}).get("histories", [])
+        comments = f_dict.get("comment", {}).get("comments", [])
+        worklogs = f_dict.get("worklog", {}).get("worklogs", [])
+        if not worklogs and hasattr(gateway, "get_worklogs"):
+            try:
+                worklogs = gateway.get_worklogs(key)
+            except Exception:  # noqa: BLE001
+                worklogs = []
+
+        freeze_dt: datetime | None = None
+        for h in changelog:
+            h_time_str = h.get("created")
+            if not h_time_str:
+                continue
+            try:
+                h_dt = datetime.fromisoformat(h_time_str.replace("Z", "+00:00"))
+            except (ValueError, TypeError):
+                continue
+
+            for item in h.get("items", []):
+                if item.get("field") == "labels":
+                    from_labels = set((item.get("fromString") or "").split())
+                    to_labels = set((item.get("toString") or "").split())
+                    if frozen_label in to_labels and frozen_label not in from_labels:
+                        if freeze_dt is None or h_dt > freeze_dt:
+                            freeze_dt = h_dt
+
+        if freeze_dt is None:
+            continue
+
+        should_unfreeze = False
+
+        # (a) Worklog or comment by someone other than bot user after freeze_dt
+        for c in comments:
+            c_time_str = c.get("created")
+            if not c_time_str:
+                continue
+            try:
+                c_dt = datetime.fromisoformat(c_time_str.replace("Z", "+00:00"))
+            except (ValueError, TypeError):
+                continue
+            if c_dt > freeze_dt:
+                author = c.get("author", {})
+                author_name = (
+                    author.get("name") if isinstance(author, dict) else str(author)
+                ) or (author.get("key") if isinstance(author, dict) else "")
+                if author_name and author_name.strip().lower() != bot_user_lower:
+                    should_unfreeze = True
+                    break
+
+        if not should_unfreeze:
+            for w in worklogs:
+                w_time_str = w.get("created") or w.get("started")
+                if not w_time_str:
+                    continue
+                try:
+                    w_dt = datetime.fromisoformat(w_time_str.replace("Z", "+00:00"))
+                except (ValueError, TypeError):
+                    continue
+                if w_dt > freeze_dt:
+                    author = w.get("author", {})
+                    author_name = (
+                        (
+                            author.get("name")
+                            if isinstance(author, dict)
+                            else str(author)
+                        )
+                        or (author.get("key") if isinstance(author, dict) else "")
+                        or (
+                            w.get("updateAuthor", {}).get("name")
+                            if isinstance(w.get("updateAuthor"), dict)
+                            else ""
+                        )
+                    )
+                    if author_name and author_name.strip().lower() != bot_user_lower:
+                        should_unfreeze = True
+                        break
+
+        # (b) History entry by someone other than bot user without field "Workflow"
+        if not should_unfreeze:
+            for h in changelog:
+                h_time_str = h.get("created")
+                if not h_time_str:
+                    continue
+                try:
+                    h_dt = datetime.fromisoformat(h_time_str.replace("Z", "+00:00"))
+                except (ValueError, TypeError):
+                    continue
+                if h_dt > freeze_dt:
+                    author = h.get("author", {})
+                    author_name = (
+                        author.get("name") if isinstance(author, dict) else str(author)
+                    ) or (author.get("key") if isinstance(author, dict) else "")
+                    if author_name and author_name.strip().lower() != bot_user_lower:
+                        items = h.get("items", [])
+                        has_workflow = any(
+                            item.get("field") == "Workflow" for item in items
+                        )
+                        if not has_workflow and items:
+                            should_unfreeze = True
+                            break
+
+        if should_unfreeze:
+            if not dry_run:
+                try:
+                    gateway.remove_label(key, frozen_label, notify_users=False)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "Gỡ nhãn %s cho issue %s thất bại: %s",
+                        frozen_label,
+                        key,
+                        exc,
+                    )
+            unfrozen_keys.append(key)
+
+    return unfrozen_keys
+
+
 def resolve_fields_cli(gateway: JiraGateway) -> None:
     """Print logical field -> id by matching Jira field names."""
     fields = gateway.get_fields()
@@ -818,6 +1197,20 @@ def main(
     )
     p_backfill.add_argument("--dry-run", action="store_true", help="Không ghi vào Jira")
 
+    # freeze-legacy
+    p_freeze = subparsers.add_parser(
+        "freeze-legacy",
+        help="Gán nhãn legacy-frozen cho các issue cũ không còn cập nhật",
+    )
+    p_freeze.add_argument("--project", required=True, help="Mã dự án (project key)")
+    p_freeze.add_argument(
+        "--days",
+        type=int,
+        default=30,
+        help="Số ngày không cập nhật để coi là stale (mặc định: 30)",
+    )
+    p_freeze.add_argument("--dry-run", action="store_true", help="Không ghi vào Jira")
+
     args = parser.parse_args(argv)
 
     # Validate required environment variables after argparse so --help works
@@ -848,10 +1241,11 @@ def main(
     today = now.date()
 
     # Every subcommand exits 0 on a non-working day without calling Jira,
-    # except resolve-fields and backfill-qc-owner
+    # except resolve-fields, backfill-qc-owner, and freeze-legacy
     if args.subcommand not in (
         "resolve-fields",
         "backfill-qc-owner",
+        "freeze-legacy",
     ) and not cal.is_working_day(today):
         logger.info("Ngày nghỉ (%s), bỏ qua chạy %s.", today, args.subcommand)
         return 0
@@ -937,6 +1331,50 @@ def main(
 
         sys.stdout.write(
             f"Hoàn thành backfill QC Owner '{res.user}' cho dự án {args.project}:\n"
+            f"- Tìm thấy: {res.found}\n"
+        )
+        for t_name, count in sorted(res.found_by_type.items()):
+            sys.stdout.write(f"  * {t_name}: {count}\n")
+        sys.stdout.write(f"- Đã ghi: {res.written}\n")
+        for t_name, count in sorted(res.written_by_type.items()):
+            sys.stdout.write(f"  * {t_name}: {count}\n")
+        sys.stdout.write(f"- Thất bại: {len(res.failed)}\n")
+        if res.failed:
+            for k, err in res.failed:
+                sys.stdout.write(f"  * {k}: {err}\n")
+            return 1
+        return 0
+    elif args.subcommand == "freeze-legacy":
+        try:
+            res = freeze_legacy(
+                gw,
+                cfg,
+                args.project,
+                days=args.days,
+                now=now,
+                dry_run=args.dry_run,
+            )
+        except FreezeSearchError as e:
+            sys.stderr.write(f"Lỗi khi tìm kiếm issues: {e}\n")
+            return 1
+        except Exception as e:  # noqa: BLE001
+            sys.stderr.write(f"Lỗi khi cập nhật issue đầu tiên: {e}\n")
+            return 1
+
+        label = cfg.frozen_label
+        if args.dry_run:
+            sys.stdout.write(
+                f"[Dry-run] Tìm thấy {res.found} issue(s) cần gán nhãn '{label}':\n"
+            )
+            for t_name, count in sorted(res.found_by_type.items()):
+                sys.stdout.write(f"- {t_name}: {count}\n")
+            sys.stdout.write("Danh sách issues:\n")
+            for k, t, st in res.issues:
+                sys.stdout.write(f"- {k} [{t}]: {st}\n")
+            return 0
+
+        sys.stdout.write(
+            f"Hoàn thành gắn nhãn '{label}' cho dự án {args.project}:\n"
             f"- Tìm thấy: {res.found}\n"
         )
         for t_name, count in sorted(res.found_by_type.items()):

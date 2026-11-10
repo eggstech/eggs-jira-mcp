@@ -41,6 +41,7 @@ class AtlassianGateway(JiraGateway):
     def __init__(self, client: Any, cfg: Any = None) -> None:
         self.client = client
         self.cfg = cfg
+        self._myself_cache: dict | None = None
 
     def search(
         self, jql: str, fields: list[str], *, expand_changelog: bool = False
@@ -129,6 +130,42 @@ class AtlassianGateway(JiraGateway):
             self.client.put(
                 f"rest/api/2/issue/{key}",
                 data={"fields": fields},
+                params=params,
+            )
+        except HTTPError as e:
+            raise _handle_http_error(e) from e
+
+    def add_label(
+        self,
+        key: str,
+        label: str,
+        *,
+        notify_users: bool = False,
+    ) -> None:
+        """Add a label to an issue using Jira update syntax."""
+        params = {"notifyUsers": "false"} if not notify_users else None
+        try:
+            self.client.put(
+                f"rest/api/2/issue/{key}",
+                data={"update": {"labels": [{"add": label}]}},
+                params=params,
+            )
+        except HTTPError as e:
+            raise _handle_http_error(e) from e
+
+    def remove_label(
+        self,
+        key: str,
+        label: str,
+        *,
+        notify_users: bool = False,
+    ) -> None:
+        """Remove a label from an issue using Jira update syntax."""
+        params = {"notifyUsers": "false"} if not notify_users else None
+        try:
+            self.client.put(
+                f"rest/api/2/issue/{key}",
+                data={"update": {"labels": [{"remove": label}]}},
                 params=params,
             )
         except HTTPError as e:
@@ -304,12 +341,12 @@ class AtlassianGateway(JiraGateway):
 
     def myself(self) -> dict:
         """Fetch info about the current authenticated user:
-        {'name': ..., 'displayName': ...}.
+        {'name': ..., 'displayName': ...}. Cached.
         """
-        res = self.client.get("rest/api/2/myself")
-        if isinstance(res, dict):
-            return res
-        return {}
+        if self._myself_cache is None:
+            res = self.client.get("rest/api/2/myself")
+            self._myself_cache = res if isinstance(res, dict) else {}
+        return self._myself_cache
 
     def project_role_members(
         self, project: str, role_names: list[str] | None = None
