@@ -54,6 +54,7 @@ def _make_issue(
     blocked_since=None,
     reschedule_status=None,
     reschedule_requester=None,
+    parent_type="story",
 ) -> Issue:
     return Issue(
         key=key,
@@ -64,7 +65,7 @@ def _make_issue(
         assignee=assignee,
         components=(),
         part="BE",
-        parent_type="story",
+        parent_type=parent_type,
         qc_owner=qc_owner,
         parent_key="PROJ-STORY",
         epic_key="PROJ-EPIC",
@@ -142,6 +143,55 @@ def test_dev_task_in_qc_owned_by_story_qc_owner(cal, cfg):
     assert esc2 is not None
     assert esc2.level == 0
     assert esc2.owner == "qc.specialist"
+
+
+def test_adhoc_task_in_qc_owned_by_own_qc_owner(cal, cfg):
+    # Ad-hoc task in ready_for_qc or testing -> L0 owner is adhoc's own qc_owner
+    epic = _make_issue(key="PROJ-EPIC", issue_type="epic", assignee="epic.owner")
+    adhoc_ready = _make_issue(
+        key="PROJ-10",
+        issue_type="adhoc",
+        status="ready_for_qc",
+        assignee="dev.worker",
+        qc_owner="qc.adhoc",
+        parent_type=None,
+    )
+    adhoc_testing = _make_issue(
+        key="PROJ-11",
+        issue_type="adhoc",
+        status="testing",
+        assignee="dev.worker",
+        qc_owner="qc.adhoc",
+        parent_type=None,
+    )
+
+    flags = frozenset({"STALE"})
+    esc1 = escalate(adhoc_ready, flags, story=None, epic=epic, today=TODAY, cal=cal, cfg=cfg)
+    assert esc1 is not None
+    assert esc1.level == 0
+    assert esc1.owner == "qc.adhoc"
+
+    esc2 = escalate(adhoc_testing, flags, story=None, epic=epic, today=TODAY, cal=cal, cfg=cfg)
+    assert esc2 is not None
+    assert esc2.level == 0
+    assert esc2.owner == "qc.adhoc"
+
+
+def test_adhoc_task_in_qc_without_qc_owner_falls_back(cal, cfg):
+    epic = _make_issue(key="PROJ-EPIC", issue_type="epic", assignee="epic.owner")
+    adhoc_ready = _make_issue(
+        key="PROJ-12",
+        issue_type="adhoc",
+        status="ready_for_qc",
+        assignee="dev.worker",
+        qc_owner=None,
+        parent_type=None,
+    )
+    flags = frozenset({"STALE"})
+    esc = escalate(adhoc_ready, flags, story=None, epic=epic, today=TODAY, cal=cal, cfg=cfg)
+    assert esc is not None
+    assert esc.level == 0
+    assert esc.owner == "epic.owner"
 
 
 def test_story_flag_owned_by_story_assignee(cal, cfg):

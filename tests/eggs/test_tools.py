@@ -995,11 +995,15 @@ class TestEggsToolBehavior:
         assert "qc_owner" in tool_submit.parameters["properties"]
         assert "eggs_finish" in tool_submit.description
         assert "qc_owner" in tool_submit.description
+        assert "Dev Task" in tool_submit.description
+        assert "Bug" in tool_submit.description
 
         tool_finish = await server.get_tool("eggs_finish")
         assert "eggs_finish" in tool_finish.description
         assert "eggs_submit_qc" in tool_finish.description
         assert "qc_owner" in tool_finish.description
+        assert "Dev Task" in tool_finish.description
+        assert "Bug" in tool_finish.description
 
         user_gw = FakeGateway(user="dev1")
         bot_gw = FakeGateway(role_members={"RFID": {"Developers": ["dev1"]}})

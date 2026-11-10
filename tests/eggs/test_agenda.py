@@ -132,7 +132,7 @@ def test_suggested_actions_by_flag_kind(cfg, cal):
     assert agenda_st[0].actions[0].args == {"key": "RFID-2"}
     assert agenda_st[0].actions[0].missing == ["proposed_due", "reason"]
 
-    # 3. Work item OVERDUE (dev_task under story) -> eggs_submit_qc + eggs_request_reschedule (missing ["proposed_end", "reason"])
+    # 3. Work item OVERDUE (dev_task under story) -> eggs_submit_qc + eggs_finish + eggs_request_reschedule (missing ["proposed_end", "reason"])
     iss_wi_od = _make_issue("RFID-3", issue_type="dev_task", summary="Overdue task", status="in_progress", parent_type="story")
     snap_wi_od = Snapshot(
         issues={"RFID-3": iss_wi_od},
@@ -142,13 +142,38 @@ def test_suggested_actions_by_flag_kind(cfg, cal):
     )
     agenda_od = build_agenda(snap_wi_od, identity, cfg, now, cal)
     assert len(agenda_od) == 1
-    assert len(agenda_od[0].actions) == 2
+    assert len(agenda_od[0].actions) == 3
     assert agenda_od[0].actions[0].tool == "eggs_submit_qc"
     assert agenda_od[0].actions[0].args == {"key": "RFID-3"}
     assert agenda_od[0].actions[0].missing == []
-    assert agenda_od[0].actions[1].tool == "eggs_request_reschedule"
+    assert agenda_od[0].actions[1].tool == "eggs_finish"
     assert agenda_od[0].actions[1].args == {"key": "RFID-3"}
-    assert agenda_od[0].actions[1].missing == ["proposed_end", "reason"]
+    assert agenda_od[0].actions[1].missing == []
+    assert agenda_od[0].actions[2].tool == "eggs_request_reschedule"
+    assert agenda_od[0].actions[2].args == {"key": "RFID-3"}
+    assert agenda_od[0].actions[2].missing == ["proposed_end", "reason"]
+
+    # Bug sub under story OVERDUE -> eggs_submit_qc only + eggs_request_reschedule
+    iss_bug_sub = _make_issue("RFID-3B", issue_type="bug_sub", parent_type="story", summary="Bug sub", status="in_progress")
+    snap_bug_sub = Snapshot(
+        issues={"RFID-3B": iss_bug_sub},
+        flags={"RFID-3B": frozenset({"OVERDUE"})},
+        escalations={"RFID-3B": Escalation(level=0, owner="alice", since=date(2026, 11, 8))},
+        flows={}, epics={}, not_updated=[], today=date(2026, 11, 9),
+    )
+    agenda_bug_sub = build_agenda(snap_bug_sub, identity, cfg, now, cal)
+    assert [a.tool for a in agenda_bug_sub[0].actions] == ["eggs_submit_qc", "eggs_request_reschedule"]
+
+    # Bug stand-alone OVERDUE -> eggs_submit_qc only + eggs_request_reschedule
+    iss_bug_sa = _make_issue("RFID-3SA", issue_type="bug", parent_type=None, summary="Bug standalone", status="in_progress")
+    snap_bug_sa = Snapshot(
+        issues={"RFID-3SA": iss_bug_sa},
+        flags={"RFID-3SA": frozenset({"OVERDUE"})},
+        escalations={"RFID-3SA": Escalation(level=0, owner="alice", since=date(2026, 11, 8))},
+        flows={}, epics={}, not_updated=[], today=date(2026, 11, 9),
+    )
+    agenda_bug_sa = build_agenda(snap_bug_sa, identity, cfg, now, cal)
+    assert [a.tool for a in agenda_bug_sa[0].actions] == ["eggs_submit_qc", "eggs_request_reschedule"]
 
     # Work item NEED_RESCHEDULE on adhoc item -> eggs_finish + eggs_submit_qc (missing qc_owner) + eggs_request_reschedule
     iss_adhoc = _make_issue("RFID-4", issue_type="adhoc", summary="Adhoc task", status="in_progress")
@@ -705,14 +730,20 @@ def test_agenda_priority_7_adhoc_suggests_both_finish_and_submit_qc(cfg, cal):
     adhoc_with_qc = _make_issue("RFID-2", issue_type="adhoc", status="in_progress", assignee="alice", qc_owner="bob")
     # 3. Dev task under adhoc: finish, log_work (keeps eggs_finish only)
     sub_under_adhoc = _make_issue("RFID-3", issue_type="dev_task", parent_type="adhoc", status="in_progress", assignee="alice")
-    # 4. Standard dev task under story: submit_qc, log_work (keeps eggs_submit_qc only)
+    # 4. Dev task under story: submit_qc, finish, log_work (suggests BOTH submit_qc and finish)
     dev_under_story = _make_issue("RFID-4", issue_type="dev_task", parent_type="story", status="in_progress", assignee="alice")
+    # 5. Bug sub under story: submit_qc, log_work (keeps eggs_submit_qc only)
+    bug_sub = _make_issue("RFID-5", issue_type="bug_sub", parent_type="story", status="in_progress", assignee="alice")
+    # 6. Bug stand-alone: submit_qc, log_work (keeps eggs_submit_qc only)
+    bug_sa = _make_issue("RFID-6", issue_type="bug", parent_type=None, status="in_progress", assignee="alice")
 
     issues = {
         adhoc_no_qc.key: adhoc_no_qc,
         adhoc_with_qc.key: adhoc_with_qc,
         sub_under_adhoc.key: sub_under_adhoc,
         dev_under_story.key: dev_under_story,
+        bug_sub.key: bug_sub,
+        bug_sa.key: bug_sa,
     }
     snapshot = Snapshot(
         issues=issues, flags={}, escalations={}, flows={}, epics={}, not_updated=[], today=date(2026, 11, 9)
@@ -751,8 +782,31 @@ def test_agenda_priority_7_adhoc_suggests_both_finish_and_submit_qc(cfg, cal):
     tools4 = [(a.tool, a.missing) for a in it4.actions]
     assert tools4 == [
         ("eggs_submit_qc", []),
+        ("eggs_finish", []),
         ("eggs_log_work", ["time_spent", "note"]),
     ]
+
+    # Bug sub under story
+    it5 = by_key["RFID-5"]
+    tools5 = [(a.tool, a.missing) for a in it5.actions]
+    assert tools5 == [
+        ("eggs_submit_qc", []),
+        ("eggs_log_work", ["time_spent", "note"]),
+    ]
+
+    # Bug stand-alone
+    it6 = by_key["RFID-6"]
+    tools6 = [(a.tool, a.missing) for a in it6.actions]
+    assert tools6 == [
+        ("eggs_submit_qc", []),
+        ("eggs_log_work", ["time_spent", "note"]),
+    ]
+
+
+def test_finish_intent_example():
+    from mcp_atlassian.eggs.agenda import INTENTS
+    intent = next(i for i in INTENTS if i.name == "finish")
+    assert "xong RFID-130, phần này không cần QC riêng" in intent.examples
 
 
 def test_agenda_qc_queue_adhoc_task(cfg, cal):

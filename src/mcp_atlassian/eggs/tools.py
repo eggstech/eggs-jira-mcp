@@ -727,8 +727,11 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
     ) -> str:
         """Hoàn thành phần việc và chuyển sang hàng đợi kiểm thử (QC TO DO).
 
-        Đối với Ad-hoc Task, Dev lựa chọn: dùng eggs_finish nếu không cần QC,
-        hoặc eggs_submit_qc kèm qc_owner nếu cần QC.
+        Đối với Dev Task: Dev lựa chọn dùng eggs_finish (không cần QC riêng, QC
+        kiểm thử ở cấp Story) hoặc eggs_submit_qc. Đối với Ad-hoc Task: Dev lựa
+        chọn dùng eggs_finish nếu không cần QC, hoặc eggs_submit_qc kèm qc_owner
+        nếu cần QC. Bug (sub và stand-alone) luôn dùng eggs_submit_qc (không có
+        eggs_finish).
         """
         cfg = await asyncio.to_thread(load_config)
         user_gw = await get_user_gateway(ctx, write=True)
@@ -775,10 +778,13 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
             bool, Field(description="Chạy thử nghiệm", default=False)
         ] = False,
     ) -> str:
-        """Hoàn thành trực tiếp cho Ad-hoc Task hoặc Bug.
+        """Hoàn thành trực tiếp việc đang làm (Dev In Progress -> Done).
 
-        Đối với Ad-hoc Task, Dev lựa chọn: dùng eggs_finish nếu không cần QC,
-        hoặc eggs_submit_qc kèm qc_owner nếu cần QC.
+        Đối với Dev Task: Dev lựa chọn dùng eggs_finish (không cần QC riêng, QC
+        kiểm thử ở cấp Story) hoặc eggs_submit_qc. Đối với Ad-hoc Task: Dev lựa
+        chọn dùng eggs_finish nếu không cần QC, hoặc eggs_submit_qc kèm qc_owner
+        nếu cần QC. Bug (sub và stand-alone) không có finish, luôn qua QC
+        (eggs_submit_qc).
         """
         cfg = await asyncio.to_thread(load_config)
         user_gw = await get_user_gateway(ctx, write=True)

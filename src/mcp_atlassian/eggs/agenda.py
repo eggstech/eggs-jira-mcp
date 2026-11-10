@@ -114,6 +114,7 @@ INTENTS: list[Intent] = [
             "xong task adhoc",
             "finish",
             "xong ADHOC-5, không cần QC",
+            "xong RFID-130, phần này không cần QC riêng",
         ],
         tool="eggs_finish",
         required=["key"],
@@ -350,6 +351,17 @@ def build_agenda(
                         )
                     )
                 elif issue.parent_type == "adhoc":
+                    actions.append(
+                        SuggestedAction(
+                            tool="eggs_finish", args={"key": key}, missing=[]
+                        )
+                    )
+                elif issue.type == "dev_task" and issue.parent_type == "story":
+                    actions.append(
+                        SuggestedAction(
+                            tool="eggs_submit_qc", args={"key": key}, missing=[]
+                        )
+                    )
                     actions.append(
                         SuggestedAction(
                             tool="eggs_finish", args={"key": key}, missing=[]
@@ -617,6 +629,15 @@ def build_agenda(
                     )
                 )
             elif issue.parent_type == "adhoc":
+                actions.append(
+                    SuggestedAction(tool="eggs_finish", args={"key": key}, missing=[])
+                )
+            elif issue.type == "dev_task" and issue.parent_type == "story":
+                actions.append(
+                    SuggestedAction(
+                        tool="eggs_submit_qc", args={"key": key}, missing=[]
+                    )
+                )
                 actions.append(
                     SuggestedAction(tool="eggs_finish", args={"key": key}, missing=[])
                 )
