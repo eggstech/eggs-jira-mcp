@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+import yaml
 
 from mcp_atlassian.eggs.tools import (
     ALL_EGGS_TOOL_NAMES,
@@ -145,3 +147,22 @@ class TestDeployToolFiltering:
                 tags = tools_by_name[raw_tool].tags
                 assert "write" not in tags, f"Tool {raw_tool} has write tag!"
                 assert "read" in tags, f"Tool {raw_tool} missing read tag!"
+
+    def test_docker_compose_environment_matches_deploy_constants(self):
+        compose_path = (
+            Path(__file__).resolve().parent.parent.parent
+            / "deploy"
+            / "eggs"
+            / "docker-compose.yml"
+        )
+        with compose_path.open() as f:
+            data = yaml.safe_load(f)
+
+        mcp_env = data["services"]["mcp"]["environment"]
+        toolsets_env = [t.strip() for t in mcp_env["TOOLSETS"].split(",") if t.strip()]
+        enabled_tools_env = [
+            t.strip() for t in mcp_env["ENABLED_TOOLS"].split(",") if t.strip()
+        ]
+
+        assert tuple(enabled_tools_env) == DEPLOY_ENABLED_TOOLS
+        assert tuple(toolsets_env) == DEPLOY_TOOLSETS

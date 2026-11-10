@@ -6,7 +6,7 @@ services:
     image: eggs-jira-mcp:latest
     command: ["--transport", "streamable-http", "--stateless", "--port", "9000"]
     ports:
-      - "9000:9000"
+      - "127.0.0.1:9000:9000"
     environment:
       JIRA_URL: https://jira.eggstech.io.vn
       JIRA_PERSONAL_TOKEN: placeholder
@@ -17,7 +17,7 @@ services:
       EGGS_BOT_TOKEN: ${EGGS_BOT_TOKEN}
       TOOLSETS: eggs,jira_issues,jira_worklog,jira_transitions,jira_fields,jira_project_analysis
       ENABLED_TOOLS: >-
-        jira_search,jira_get_issue,jira_get_worklog,jira_batch_get_changelogs,jira_get_project_epic_hierarchy,jira_get_transitions,jira_search_fields,jira_eggs_version,jira_eggs_rules,jira_eggs_whoami,jira_eggs_next,jira_eggs_workstream_status,jira_eggs_daily_report,jira_eggs_pending_approvals,jira_eggs_schedule,jira_eggs_start,jira_eggs_log_work,jira_eggs_submit_qc,jira_eggs_finish,jira_eggs_qc_start,jira_eggs_qc_pass,jira_eggs_qc_fail,jira_eggs_block,jira_eggs_unblock,jira_eggs_request_reschedule,jira_eggs_flow_reschedule,jira_eggs_uat,jira_eggs_decide_reschedule,jira_eggs_cancel,jira_eggs_end_day,jira_eggs_triage_open,jira_eggs_triage_close,eggs_version,eggs_rules,eggs_whoami,eggs_next,eggs_workstream_status,eggs_daily_report,eggs_pending_approvals,eggs_schedule,eggs_start,eggs_log_work,eggs_submit_qc,eggs_finish,eggs_qc_start,eggs_qc_pass,eggs_qc_fail,eggs_block,eggs_unblock,eggs_request_reschedule,eggs_flow_reschedule,eggs_uat,eggs_decide_reschedule,eggs_cancel,eggs_end_day,eggs_triage_open,eggs_triage_close
+        eggs_block,eggs_cancel,eggs_daily_report,eggs_decide_reschedule,eggs_end_day,eggs_finish,eggs_flow_reschedule,eggs_log_work,eggs_next,eggs_pending_approvals,eggs_qc_fail,eggs_qc_pass,eggs_qc_start,eggs_request_reschedule,eggs_rules,eggs_schedule,eggs_start,eggs_submit_qc,eggs_triage_close,eggs_triage_open,eggs_uat,eggs_unblock,eggs_version,eggs_whoami,eggs_workstream_status,jira_batch_get_changelogs,jira_eggs_block,jira_eggs_cancel,jira_eggs_daily_report,jira_eggs_decide_reschedule,jira_eggs_end_day,jira_eggs_finish,jira_eggs_flow_reschedule,jira_eggs_log_work,jira_eggs_next,jira_eggs_pending_approvals,jira_eggs_qc_fail,jira_eggs_qc_pass,jira_eggs_qc_start,jira_eggs_request_reschedule,jira_eggs_rules,jira_eggs_schedule,jira_eggs_start,jira_eggs_submit_qc,jira_eggs_triage_close,jira_eggs_triage_open,jira_eggs_uat,jira_eggs_unblock,jira_eggs_version,jira_eggs_whoami,jira_eggs_workstream_status,jira_get_issue,jira_get_project_epic_hierarchy,jira_get_transitions,jira_get_worklog,jira_search,jira_search_fields
     volumes:
       - ./config.yaml:/config/config.yaml:ro
     restart: unless-stopped

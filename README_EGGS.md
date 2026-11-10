@@ -29,11 +29,34 @@ Hệ thống triển khai bằng Docker Compose gồm hai service chạy song so
 Máy chủ cần chuẩn bị các điều kiện sau:
 
 - Đã cài đặt Docker Engine và Docker Compose (plugin `docker compose`).
-- Có hostname nội bộ kèm chứng chỉ TLS hợp lệ (HTTPS) qua reverse proxy (Nginx, Traefik, Caddy hoặc Cloudflare Tunnel).
+- Có hostname nội bộ kèm chứng chỉ TLS hợp lệ (HTTPS) qua reverse proxy (Nginx, Traefik, Caddy hoặc Cloudflare Tunnel). Server chạy trên cùng host với Jira phía sau reverse proxy hiện có, publish cổng tới loopback `127.0.0.1:9000`.
 - Máy tính của các thành viên trong công ty kết nối được tới hostname này qua HTTPS.
 - Kết nối mạng chiều đi (outbound) từ máy chủ tới:
   - `https://jira.eggstech.io.vn` (Jira Data Center).
   - `https://chat.googleapis.com` (Google Chat Webhook).
+
+### Cấu hình Reverse Proxy mẫu (Nginx)
+
+Ví dụ cấu hình khối `location` trong Nginx proxy HTTPS hostname nội bộ tới `http://127.0.0.1:9000` (bắt buộc `proxy_buffering off` cho giao thức streaming MCP):
+
+```nginx
+server {
+    server_name mcp-jira.internal.eggstech.io.vn;
+
+    location / {
+        proxy_pass http://127.0.0.1:9000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Bắt buộc tắt buffering cho MCP Streamable HTTP:
+        proxy_buffering off;
+        proxy_read_timeout 300s;
+    }
+}
+```
 
 ---
 
@@ -84,15 +107,19 @@ Mở file `.env` và điền token của user bot:
 EGGS_BOT_TOKEN=your_jira_bot_personal_access_token_here
 ```
 
-> **Lưu ý:** User bot (`eggs-bot`) cần thuộc nhóm `jira-administrators` trên Jira để có quyền đọc Project Role và cập nhật các trường sức khỏe với tham số tắt thông báo `notifyUsers=false`.
+> **Lưu ý:**
+> - User bot (`eggsbot`) cần thuộc nhóm `jira-administrators` trên Jira để có quyền đọc Project Role và cập nhật các trường sức khỏe với tham số tắt thông báo `notifyUsers=false`.
+> - Giá trị SHA1 của supercronic trong `deploy/eggs/Dockerfile.guardian` cần được kiểm tra đối chiếu với trang release v0.2.33 trước lần build đầu tiên.
 
 ---
 
 ## 4. Khởi chạy hệ thống
 
-Tại thư mục `deploy/eggs`, khởi chạy hai service bằng lệnh:
+Tại thư mục `deploy/eggs`, thứ tự build container image là build `mcp` trước, sau đó build `guardian` (vì image guardian kế thừa `FROM eggs-jira-mcp:latest`):
 
 ```bash
+docker compose build mcp
+docker compose build guardian
 docker compose up -d
 ```
 
@@ -161,19 +188,39 @@ docker compose exec guardian eggs-guardian ops-epics
 
 Lệnh này tạo Epic `[OPS] Vận hành & Hotfix MM/YYYY` cho từng dự án đang hoạt động nếu chưa có.
 
-### 2. Gán QC Owner hàng loạt cho các Bug stand-alone
+### 2. Gán QC Owner hàng loạt (backfill-qc-owner)
 
-Chạy thử nghiệm (dry-run) để xem trước các thay đổi:
+Tự động gán QC Owner cho các issue chưa có theo quyết định Lead (không phụ thuộc vào search index của Jira):
+- **Bug stand-alone**: Tất cả issue chưa Done.
+- **Story**: Tất cả issue chưa Done.
+- **Ad-hoc Task**: Chỉ những issue đang ở trạng thái sẵn sàng kiểm thử (`QC TO DO` hoặc `Test In Progress`).
+
+Tham số `--types` cho phép Lead chạy từng loại riêng biệt (`bug`, `story`, `adhoc`, mặc định cả ba):
 
 ```bash
+# Chạy thử nghiệm xem danh sách và số lượng
 docker compose exec guardian eggs-guardian backfill-qc-owner --project <PROJECT_KEY> --dry-run
-```
 
-Chạy thật để cập nhật QC Owner vào Jira:
+# Chạy cho từng loại cụ thể (ví dụ chỉ Bug)
+docker compose exec guardian eggs-guardian backfill-qc-owner --project <PROJECT_KEY> --types bug
 
-```bash
+# Chạy thật cập nhật Jira
 docker compose exec guardian eggs-guardian backfill-qc-owner --project <PROJECT_KEY>
 ```
+
+### 3. Đóng băng các issue cũ không hoạt động (freeze-legacy)
+
+Gán nhãn `legacy-frozen` cho các issue mở đã không cập nhật hơn 30 ngày (bỏ qua nếu có sub-task hoặc issue con trong Epic cập nhật trong 30 ngày qua):
+
+```bash
+# Chạy thử nghiệm xem trước danh sách issue stale
+docker compose exec guardian eggs-guardian freeze-legacy --project <PROJECT_KEY> [--days 30] --dry-run
+
+# Chạy thật để gán nhãn legacy-frozen
+docker compose exec guardian eggs-guardian freeze-legacy --project <PROJECT_KEY> [--days 30]
+```
+
+Guardian sẽ bỏ qua việc tính cờ sức khỏe cho các issue có nhãn `legacy-frozen`. Khi có người làm việc lại trên issue (có worklog, comment hoặc chuyển trạng thái phát sinh sau thời điểm gắn nhãn), hệ thống sẽ **tự động gỡ nhãn `legacy-frozen`** trong lần đánh giá kế tiếp mà không cần thao tác thủ công.
 
 ---
 
@@ -199,8 +246,9 @@ Khi có phiên bản mới từ repository:
 # Kéo mã nguồn mới nhất
 git pull origin eggs/mvp
 
-# Build lại container image
-docker compose build
+# Build lại container image theo đúng thứ tự (mcp trước, sau đó guardian)
+docker compose build mcp
+docker compose build guardian
 
 # Khởi động lại dịch vụ
 docker compose up -d
