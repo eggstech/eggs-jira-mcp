@@ -437,6 +437,17 @@ class Actions:
                     next_actions=[],
                 )
 
+        if qc_owner and issue.type != "adhoc":
+            return ActionResult(
+                ok=False,
+                message=(
+                    "QC Owner của Dev Task/Bug được kế thừa từ Story "
+                    "hoặc Ad-hoc Task cha."
+                ),
+                changes=[],
+                next_actions=[],
+            )
+
         fields: dict[str, Any] | None = None
         effective_qc_owner: str | None = None
         if issue.type == "adhoc":
@@ -453,7 +464,14 @@ class Actions:
                     next_actions=["submit_qc", "finish"],
                 )
             if qc_owner:
-                qc_field_id = self.cfg.fields.get("qc_owner", "qc_owner")
+                qc_field_id = self.cfg.fields.get("qc_owner")
+                if not qc_field_id:
+                    return ActionResult(
+                        ok=False,
+                        message="Thiếu cấu hình fields.qc_owner",
+                        changes=[],
+                        next_actions=[],
+                    )
                 fields = {qc_field_id: {"name": qc_owner}}
 
         matched, avail = self._find_transition(key, "submit_qc")
@@ -462,7 +480,10 @@ class Actions:
 
         changes = ["Chuyển trạng thái sang QC TO DO"]
         if issue.type == "adhoc" and effective_qc_owner:
-            changes.append(f"QC Owner: {effective_qc_owner}")
+            if issue.qc_owner and qc_owner and issue.qc_owner != qc_owner:
+                changes.append(f"Đổi QC Owner: {issue.qc_owner} → {qc_owner}")
+            else:
+                changes.append(f"QC Owner: {effective_qc_owner}")
         if time_spent:
             changes.append(f"Log work {time_spent}: {note}")
 
@@ -496,7 +517,25 @@ class Actions:
         *,
         dry_run: bool = False,
     ) -> ActionResult:
-        self._get_issue(key)
+        issue = self._get_issue(key)
+        if issue.type in ("adhoc", "bug"):
+            open_subtasks = self._get_open_subtasks(key)
+            if open_subtasks:
+                sub_list = ", ".join(open_subtasks)
+                type_name = (
+                    "Ad-hoc Task" if issue.type == "adhoc" else "Bug stand-alone"
+                )
+                return ActionResult(
+                    ok=False,
+                    message=(
+                        f"{type_name} {key} vẫn còn sub-task chưa hoàn thành "
+                        f"({sub_list}). Cần hoàn thành tất cả sub-task trước khi "
+                        "hoàn thành."
+                    ),
+                    changes=[],
+                    next_actions=[],
+                )
+
         matched, avail = self._find_transition(key, "finish")
         if not matched:
             return self._unavailable_result(key, "finish", avail)
@@ -865,36 +904,65 @@ class Actions:
                 )
             sub_results.append((e.key, sub_res))
 
-        failed = []
+        adhoc_missing_qc_keys: set[str] = set()
+        fatal_failures: list[str] = []
+
         for e, (k, r) in zip(entries, sub_results, strict=True):
             if not r.ok:
-                # An Ad-hoc Task with move_to="ready_for_qc" lacking a QC Owner
-                # does not abort pre-validation: that entry fails during execution
-                # with the item-2 message while other entries still run.
+                is_adhoc_no_qc = False
                 if e.move_to == "ready_for_qc":
                     try:
                         iss = self._get_issue(e.key)
                     except (JiraError, KeyError, ValueError):
                         iss = None
                     if iss and iss.type == "adhoc" and not iss.qc_owner:
-                        continue
-                failed.append(f"{k}: {r.message}")
+                        is_adhoc_no_qc = True
+                if is_adhoc_no_qc:
+                    adhoc_missing_qc_keys.add(k)
+                else:
+                    fatal_failures.append(f"{k}: {r.message}")
 
-        if failed:
+        if fatal_failures:
             return ActionResult(
                 ok=False,
-                message="Một số công việc không hợp lệ: " + "; ".join(failed),
+                message="Một số công việc không hợp lệ: " + "; ".join(fatal_failures),
                 changes=[],
                 next_actions=[],
             )
 
-        changes: list[str] = []
-        for e in entries:
-            changes.append(f"Log {e.time_spent} trên {e.key}: {e.note}")
-            if e.move_to:
-                changes.append(f"Chuyển {e.key} sang {e.move_to}")
+        def _adhoc_no_qc_message(k: str) -> str:
+            return (
+                f"Chưa log time cho {k}: Ad-hoc Task cần có QC Owner để chuyển sang "
+                "QC TO DO. Ai sẽ kiểm thử task này? Vui lòng cung cấp qc_owner "
+                "hoặc dùng finish() nếu không cần QC."
+            )
 
         if dry_run:
+            if adhoc_missing_qc_keys:
+                dry_results = []
+                for _e, (k, r) in zip(entries, sub_results, strict=True):
+                    if k in adhoc_missing_qc_keys:
+                        dry_results.append((k, False, _adhoc_no_qc_message(k)))
+                    else:
+                        dry_results.append((k, True, r.message))
+                per_key_lines = [
+                    f"- {k}: {'Thành công' if ok else 'Thất bại'} - {msg}"
+                    for k, ok, msg in dry_results
+                ]
+                return ActionResult(
+                    ok=False,
+                    message=(
+                        "Một số công việc ghi nhận thất bại:\n"
+                        + "\n".join(per_key_lines)
+                    ),
+                    changes=[],
+                    next_actions=[],
+                )
+            changes: list[str] = []
+            for e in entries:
+                changes.append(f"Log {e.time_spent} trên {e.key}: {e.note}")
+                if e.move_to:
+                    changes.append(f"Chuyển {e.key} sang {e.move_to}")
             return ActionResult(
                 ok=True,
                 message="[Dry-run] Sẽ ghi nhận công việc cuối ngày",
@@ -906,6 +974,10 @@ class Actions:
         write_changes: list[str] = []
         any_failed = False
         for e in entries:
+            if e.key in adhoc_missing_qc_keys:
+                any_failed = True
+                write_results.append((e.key, False, _adhoc_no_qc_message(e.key)))
+                continue
             try:
                 if e.move_to == "ready_for_qc":
                     sub_res = self.submit_qc(
@@ -1196,6 +1268,7 @@ class Actions:
             )
 
         bug_type_name = self.cfg.issue_types["bug_sub"][0]
+        created_bugs: list[str] = []
         for b in actual_bugs:
             summary = f"[{code}][BUG] {b}"
             create_payload = {
@@ -1204,13 +1277,35 @@ class Actions:
                 "summary": summary,
                 "parent": {"key": target_story_key},
             }
-            self.gateway.create_issue(create_payload)
+            new_key = self.gateway.create_issue(create_payload)
+            created_bugs.append(new_key)
 
         if time_spent:
             self.gateway.add_worklog(key, time_spent, comment=reason)
 
-        err = self._do_transition(key, matched, comment=reason)
+        try:
+            err = self._do_transition(key, matched, comment=reason)
+        except JiraError as exc:
+            err = ActionResult(
+                ok=False,
+                message=str(exc) or "Lỗi từ Jira",
+                changes=[],
+                next_actions=[],
+            )
+
         if err:
+            if created_bugs:
+                bug_list = ", ".join(created_bugs)
+                return ActionResult(
+                    ok=False,
+                    message=(
+                        f"{err.message}\n"
+                        f"Lưu ý: Các Bug sub-task sau đã được tạo: {bug_list}. "
+                        "Bạn có thể huỷ hoặc tái sử dụng chúng."
+                    ),
+                    changes=err.changes,
+                    next_actions=err.next_actions,
+                )
             return err
 
         return ActionResult(
@@ -2080,7 +2175,8 @@ class Actions:
 
         if verdict == "bug":
             if bug_story_key and bug_story:
-                actor_code = bug_story.actor_code or "FLOW"
+                default_code = "BUG" if bug_story.type == "adhoc" else "FLOW"
+                actor_code = bug_story.actor_code or default_code
                 summary = bug_summary or f"[{actor_code}][BUG] {note}"
                 bug_type_name = self.cfg.issue_types["bug_sub"][0]
                 bug_key = self.gateway.create_issue(
