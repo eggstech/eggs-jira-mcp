@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import copy
+import re
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Any
 
 from .config import EggsConfig
 from .gateway import JiraError, JiraGateway
-from .plan import Plan, format_summary, split_codes
+from .plan import Plan, PlanEpic, PlanFlow, PlanPart, format_summary, split_codes
 from .plan_validate import PlanContext, validate_plan
 
 
@@ -268,11 +270,14 @@ def apply_plan(
 
             # 5. Parts under this Story
             existing_dev_tasks: list[dict[str, Any]] = []
-            if not dry_run and story_key and not story_key.startswith("DRYRUN-"):
-                try:
-                    existing_dev_tasks = gateway.get_subtasks(story_key)
-                except Exception:  # noqa: BLE001
-                    existing_dev_tasks = []
+            if story_key and not story_key.startswith("DRYRUN-"):
+                if matched_story and matched_story.get("fields", {}).get("subtasks"):
+                    existing_dev_tasks = matched_story["fields"]["subtasks"]
+                else:
+                    try:
+                        existing_dev_tasks = gateway.get_subtasks(story_key)
+                    except Exception:  # noqa: BLE001
+                        existing_dev_tasks = []
 
             for part in flow.parts:
                 matched_dt: dict[str, Any] | None = None
@@ -508,4 +513,195 @@ def apply_plan(
         created=created,
         updated=updated,
         warnings=warnings,
+    )
+
+
+def export_epic(gateway: JiraGateway, cfg: EggsConfig, epic_key: str) -> Plan:
+    """Export an existing Epic and its children to an eggs-plan/v2 Plan."""
+    epic_issue = gateway.get_issue(epic_key)
+    project = (
+        epic_issue.get("fields", {}).get("project", {}).get("key")
+        or epic_key.split("-")[0]
+    )
+
+    epic_link_id = cfg.fields.get("epic_link")
+    if epic_link_id:
+        cf_match = re.search(r"\d+", epic_link_id)
+        cf_id = cf_match.group(0) if cf_match else epic_link_id
+        jql_epic = f'cf[{cf_id}] = "{epic_key}"'
+    else:
+        jql_epic = f'"Epic Link" = "{epic_key}"'
+
+    search_fields = [
+        "summary",
+        "components",
+        "duedate",
+        "subtasks",
+        "issuetype",
+        "status",
+        "description",
+        "assignee",
+    ]
+    if cfg.fields.get("qc_owner"):
+        search_fields.append(cfg.fields["qc_owner"])
+    if epic_link_id:
+        search_fields.append(epic_link_id)
+
+    children = gateway.search(jql_epic, fields=search_fields)
+
+    story_types = set(cfg.issue_types.get("story", ["Story"]))
+    dev_task_types = set(cfg.issue_types.get("dev_task", ["Dev Task"]))
+    bug_sub_types = set(cfg.issue_types.get("bug_sub", ["Bug"]))
+    qc_fid = cfg.fields.get("qc_owner")
+    part_field_id = cfg.fields.get("part", "customfield_10701")
+
+    flows: list[PlanFlow] = []
+    other_issues: list[dict[str, Any]] = []
+    open_questions: list[str] = []
+
+    for child in children:
+        if child.get("key") == epic_key:
+            continue
+        c_fields = child.get("fields", {})
+        it_name = c_fields.get("issuetype", {}).get("name")
+
+        if not it_name or it_name in story_types:
+            key = child.get("key", "")
+            summary_raw = c_fields.get("summary", "")
+            codes, title = split_codes(summary_raw)
+            code = codes[0] if codes else None
+
+            # Actor = code part of the single Component (else null)
+            components = c_fields.get("components") or []
+            actor = None
+            if len(components) == 1:
+                comp_raw = components[0]
+                comp_name = (
+                    comp_raw.get("name", "")
+                    if isinstance(comp_raw, dict)
+                    else str(comp_raw)
+                )
+                if " - " in comp_name:
+                    actor = comp_name.split(" - ", 1)[0].strip()
+                else:
+                    actor = comp_name.strip()
+
+            # Due Date
+            raw_due = c_fields.get("duedate")
+            due = None
+            if raw_due:
+                try:
+                    due = date.fromisoformat(str(raw_due)[:10])
+                except ValueError:
+                    due = None
+
+            # Assignee (BA)
+            raw_assignee = c_fields.get("assignee")
+            ba = (
+                raw_assignee.get("name")
+                if isinstance(raw_assignee, dict)
+                else raw_assignee
+            )
+
+            # QC Owner
+            raw_qc = c_fields.get(qc_fid) if qc_fid else None
+            qc = raw_qc.get("name") if isinstance(raw_qc, dict) else raw_qc
+
+            # Parts (Dev Task sub-tasks; Bug sub-tasks ignored)
+            parts: list[PlanPart] = []
+            for st in c_fields.get("subtasks", []):
+                st_fields = st.get("fields", {})
+                st_type = st_fields.get("issuetype", {}).get("name")
+                if st_type in bug_sub_types:
+                    continue
+                if dev_task_types and st_type and st_type not in dev_task_types:
+                    continue
+
+                raw_part = st_fields.get(part_field_id)
+                part_val = (
+                    raw_part.get("value") if isinstance(raw_part, dict) else raw_part
+                )
+
+                raw_st_assignee = st_fields.get("assignee")
+                st_assignee = (
+                    raw_st_assignee.get("name")
+                    if isinstance(raw_st_assignee, dict)
+                    else raw_st_assignee
+                )
+
+                # Estimate as Jira duration
+                est_val = None
+                tt = st_fields.get("timetracking")
+                if isinstance(tt, dict) and tt.get("originalEstimate"):
+                    est_val = str(tt["originalEstimate"])
+                elif st_fields.get("timeoriginalestimate") is not None:
+                    secs = int(st_fields["timeoriginalestimate"])
+                    days = secs // 28800
+                    rem = secs % 28800
+                    hours = rem // 3600
+                    mins = (rem % 3600) // 60
+                    dur_parts = []
+                    if days > 0:
+                        dur_parts.append(f"{days}d")
+                    if hours > 0:
+                        dur_parts.append(f"{hours}h")
+                    if mins > 0:
+                        dur_parts.append(f"{mins}m")
+                    est_val = " ".join(dur_parts) if dur_parts else "0m"
+
+                parts.append(
+                    PlanPart(
+                        part=part_val,
+                        assignee=st_assignee,
+                        estimate=est_val,
+                        key=st.get("key"),
+                    )
+                )
+
+            flows.append(
+                PlanFlow(
+                    code=code,
+                    actor=actor,
+                    summary=title,
+                    ac=[],
+                    due=due,
+                    ba=ba,
+                    qc=qc,
+                    depends_on=[],
+                    parts=parts,
+                    key=key,
+                    keep_description=True,
+                )
+            )
+
+            # Check missing actor / due / qc for open_questions
+            missing: list[str] = []
+            if not actor:
+                missing.append("Actor")
+            if not due:
+                missing.append("Due Date")
+            if not qc:
+                missing.append("QC Owner")
+            if missing:
+                missing_str = ", ".join(missing)
+                open_questions.append(f"Story {key} ({title}): thiếu {missing_str}")
+
+        else:
+            # Other issue under Epic
+            other_issues.append(
+                {
+                    "key": child.get("key"),
+                    "type": it_name,
+                    "status": c_fields.get("status", {}).get("name"),
+                    "summary": c_fields.get("summary", ""),
+                }
+            )
+
+    return Plan(
+        project=project,
+        epic=PlanEpic(existing=epic_key),
+        flows=flows,
+        tech_tasks=[],
+        open_questions=open_questions,
+        other_issues=other_issues,
     )
