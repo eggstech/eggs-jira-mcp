@@ -27,10 +27,11 @@ def cfg():
         hotfix_prefix="[HOTFIX]",
         reschedule_interrupt_value="Chen ngang",
         link_types={
-            "interrupts": "is interrupted by",
-            "causes": "causes",
-            "relates": "relates to",
-            "duplicates": "duplicates",
+            "interrupts": "Interrupts",
+            "causes": "Causes",
+            "relates": "Relates",
+            "duplicates": "Duplicate",
+            "blocks": "Blocks",
         },
         fields={
             "planned_start": "customfield_10108",
@@ -3504,10 +3505,11 @@ def test_block_allowed_values_from_config(cal):
         jira_url="https://jira.eggstech.io.vn",
         blocked_by_values=["Internal", "Client", "Third-party"],
         link_types={
-            "interrupts": "is interrupted by",
-            "causes": "causes",
-            "relates": "relates to",
-            "duplicates": "duplicates",
+            "interrupts": "Interrupts",
+            "causes": "Causes",
+            "relates": "Relates",
+            "duplicates": "Duplicate",
+            "blocks": "Blocks",
         },
         projects={
             "HMKPOS": ProjectConfig(
@@ -3962,3 +3964,183 @@ def test_qc_fail_transition_fails_after_worklog_reports_time_logged(cfg, cal):
     assert wl_calls[0][1][:2] == ("HMKPOS-100", "1h")
     assert "Đã log 1h trên HMKPOS-100" in res.message
     assert "HMKPOS-1001" in res.message
+
+
+def test_link_types_defaults_in_eggs_config():
+    c = EggsConfig(lead_user="alice", jira_url="http://jira")
+    assert c.link_types == {
+        "interrupts": "Interrupts",
+        "causes": "Causes",
+        "relates": "Relates",
+        "duplicates": "Duplicate",
+        "blocks": "Blocks",
+    }
+
+
+def test_request_reschedule_interrupted_by_link_direction_and_name(cfg, cal):
+    data = _base_fixtures(cfg)
+    gw = FakeGateway(issues=data["issues"], transitions=data["transitions"])
+    actions = _make_actions(gw, cfg, cal)
+    res = actions.request_reschedule(
+        "HMKPOS-101",
+        new_end=date(2026, 11, 25),
+        reason=cfg.reschedule_interrupt_value,
+        interrupted_by="HMKPOS-102",
+    )
+    assert res.ok is True
+    link_calls = [c for c in gw.calls if c[0] == "link"]
+    assert len(link_calls) == 1
+    # <interrupter> interrupts <delayed issue> -> inward_key=interrupted_by, outward_key=key
+    assert link_calls[0][1] == ("Interrupts", "HMKPOS-102", "HMKPOS-101")
+
+
+def test_triage_close_bug_sub_link_direction_and_name(cfg, cal):
+    raw_report = {
+        "key": "HMKPOS-REP1",
+        "fields": {
+            "summary": "Login issue",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "User Report", "subtask": False},
+            "status": {"name": "Analyzing"},
+        },
+    }
+    raw_story = {
+        "key": "HMKPOS-100",
+        "fields": {
+            "summary": "Login Story",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Story", "subtask": False},
+            "status": {"name": "Ready For Dev"},
+            "components": [{"name": "CH - CỬA HÀNG"}],
+        },
+    }
+    gw = FakeGateway(
+        issues={"HMKPOS-REP1": raw_report, "HMKPOS-100": raw_story},
+        transitions={"HMKPOS-REP1": ["Close Report"]},
+    )
+    actions = _make_actions(gw, cfg, cal)
+    res = actions.triage_close(
+        "HMKPOS-REP1",
+        verdict="bug",
+        bug_story_key="HMKPOS-100",
+        note="Bug in story",
+        time_spent="30m",
+    )
+    assert res.ok is True
+    link_calls = [c for c in gw.calls if c[0] == "link"]
+    assert len(link_calls) == 1
+    # <bug> causes <User Report> -> inward_key=bug_key, outward_key=report key
+    assert link_calls[0][1] == ("Causes", "HMKPOS-1001", "HMKPOS-REP1")
+
+
+def test_triage_close_bug_standalone_link_direction_and_name(cfg, cal):
+    raw_report = {
+        "key": "HMKPOS-REP1",
+        "fields": {
+            "summary": "Standalone bug report",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "User Report", "subtask": False},
+            "status": {"name": "Analyzing"},
+        },
+    }
+    raw_ops = {
+        "key": "HMKPOS-OPS",
+        "fields": {
+            "summary": "[OPS] Vận hành & Hotfix 11/2026",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Epic", "subtask": False},
+            "status": {"name": "Open"},
+        },
+    }
+    gw = FakeGateway(
+        issues={"HMKPOS-REP1": raw_report, "HMKPOS-OPS": raw_ops},
+        transitions={"HMKPOS-REP1": ["Close Report"]},
+    )
+    actions = _make_actions(gw, cfg, cal)
+    res = actions.triage_close(
+        "HMKPOS-REP1",
+        verdict="bug",
+        note="Stand-alone hotfix bug",
+        time_spent="30m",
+    )
+    assert res.ok is True
+    link_calls = [c for c in gw.calls if c[0] == "link"]
+    assert len(link_calls) == 1
+    # <bug> causes <User Report> -> inward_key=bug_key, outward_key=report key
+    assert link_calls[0][1] == ("Causes", "HMKPOS-1001", "HMKPOS-REP1")
+
+
+def test_triage_close_duplicate_link_direction_and_name(cfg, cal):
+    raw_report = {
+        "key": "HMKPOS-REP1",
+        "fields": {
+            "summary": "Duplicate report",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "User Report", "subtask": False},
+            "status": {"name": "Analyzing"},
+        },
+    }
+    raw_rep2 = {
+        "key": "HMKPOS-REP2",
+        "fields": {
+            "summary": "Original report",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "User Report", "subtask": False},
+            "status": {"name": "Analyzing"},
+        },
+    }
+    gw = FakeGateway(
+        issues={"HMKPOS-REP1": raw_report, "HMKPOS-REP2": raw_rep2},
+        transitions={"HMKPOS-REP1": ["Close Report"]},
+    )
+    actions = _make_actions(gw, cfg, cal)
+    res = actions.triage_close(
+        "HMKPOS-REP1",
+        verdict="duplicate",
+        link_key="HMKPOS-REP2",
+        note="Duplicate of REP2",
+        time_spent="30m",
+    )
+    assert res.ok is True
+    link_calls = [c for c in gw.calls if c[0] == "link"]
+    assert len(link_calls) == 1
+    # <report> duplicates <other report> -> inward_key=key, outward_key=link_key
+    assert link_calls[0][1] == ("Duplicate", "HMKPOS-REP1", "HMKPOS-REP2")
+
+
+def test_triage_close_relates_link_direction_and_name(cfg, cal):
+    raw_report = {
+        "key": "HMKPOS-REP1",
+        "fields": {
+            "summary": "Feature request report",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "User Report", "subtask": False},
+            "status": {"name": "Analyzing"},
+        },
+    }
+    raw_story = {
+        "key": "HMKPOS-100",
+        "fields": {
+            "summary": "Login Story",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Story", "subtask": False},
+            "status": {"name": "Ready For Dev"},
+            "components": [{"name": "CH - CỬA HÀNG"}],
+        },
+    }
+    gw = FakeGateway(
+        issues={"HMKPOS-REP1": raw_report, "HMKPOS-100": raw_story},
+        transitions={"HMKPOS-REP1": ["Close Report"]},
+    )
+    actions = _make_actions(gw, cfg, cal)
+    res = actions.triage_close(
+        "HMKPOS-REP1",
+        verdict="feature",
+        link_key="HMKPOS-100",
+        note="Related feature story",
+        time_spent="30m",
+    )
+    assert res.ok is True
+    link_calls = [c for c in gw.calls if c[0] == "link"]
+    assert len(link_calls) == 1
+    assert link_calls[0][1] == ("Relates", "HMKPOS-REP1", "HMKPOS-100")

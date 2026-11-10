@@ -786,8 +786,8 @@ class Actions:
         if interrupted_by:
             self.gateway.link(
                 self.cfg.link_types["interrupts"],
-                inward_key=key,
-                outward_key=interrupted_by,
+                inward_key=interrupted_by,
+                outward_key=key,
             )
 
         payload = issue_fields_for_write(
@@ -2209,7 +2209,7 @@ class Actions:
                     }
                 )
                 self.gateway.link(
-                    self.cfg.link_types["causes"], inward_key=key, outward_key=bug_key
+                    self.cfg.link_types["causes"], inward_key=bug_key, outward_key=key
                 )
             elif ops_epic:
                 bug_type_name = self.cfg.issue_types["bug"][0]
@@ -2230,7 +2230,7 @@ class Actions:
                     create_payload[qc_field_id] = {"name": qc_owner_user}
                 bug_key = self.gateway.create_issue(create_payload)
                 self.gateway.link(
-                    self.cfg.link_types["causes"], inward_key=key, outward_key=bug_key
+                    self.cfg.link_types["causes"], inward_key=bug_key, outward_key=key
                 )
 
         elif verdict in ("feature", "data_fix"):

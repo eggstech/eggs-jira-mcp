@@ -60,10 +60,11 @@ class EggsConfig:
     report_resolutions: dict[str, str] = field(default_factory=dict)
     link_types: dict[str, str] = field(
         default_factory=lambda: {
-            "interrupts": "is interrupted by",
-            "causes": "causes",
-            "relates": "relates to",
-            "duplicates": "duplicates",
+            "interrupts": "Interrupts",
+            "causes": "Causes",
+            "relates": "Relates",
+            "duplicates": "Duplicate",
+            "blocks": "Blocks",
         }
     )
     thresholds: Thresholds = field(default_factory=Thresholds)
@@ -205,6 +206,7 @@ def load_config(path: str | None = None) -> EggsConfig:
     if missing_links:
         msg = f"Missing required link types in 'link_types': {sorted(missing_links)}"
         raise ValueError(msg)
+    link_types_data.setdefault("blocks", "Blocks")
 
     # Parse projects
     projects_data = data.get("projects", {})

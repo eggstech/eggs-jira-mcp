@@ -56,10 +56,11 @@ def cfg() -> EggsConfig:
         hotfix_prefix="[HOTFIX]",
         reschedule_interrupt_value="Chen ngang",
         link_types={
-            "interrupts": "is interrupted by",
-            "causes": "causes",
-            "relates": "relates to",
-            "duplicates": "duplicates",
+            "interrupts": "Interrupts",
+            "causes": "Causes",
+            "relates": "Relates",
+            "duplicates": "Duplicate",
+            "blocks": "Blocks",
         },
         fields={
             "planned_start": "customfield_10108",
@@ -678,10 +679,11 @@ class TestEggsToolBehavior:
             lead_user="cuong.huynh",
             jira_url="",
             link_types={
-                "interrupts": "is interrupted by",
-                "causes": "causes",
-                "relates": "relates to",
-                "duplicates": "duplicates",
+                "interrupts": "Interrupts",
+                "causes": "Causes",
+                "relates": "Relates",
+                "duplicates": "Duplicate",
+                "blocks": "Blocks",
             },
             projects={
                 "RFID": ProjectConfig(

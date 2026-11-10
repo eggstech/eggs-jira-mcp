@@ -41,6 +41,7 @@ link_types:
   causes: "Causes"
   relates: "Relates"
   duplicates: "Duplicate"
+  blocks: "Blocks"
 
 # Fixed-date Vietnam public holidays for 2026.
 # NOTE: Lunar New Year (Tết Âm Lịch) and Hung Kings Commemoration (Giỗ Tổ Hùng Vương)
