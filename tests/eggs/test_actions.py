@@ -44,6 +44,7 @@ def cfg():
             "blocked_since": "customfield_blocked_since",
             "flagged": "customfield_flagged",
             "epic_link": "customfield_epic_link",
+            "qc_owner": "customfield_qc_owner",
             "report_source": "customfield_report_source",
             "reported_by": "customfield_reported_by",
             "reported_at": "customfield_reported_at",
@@ -182,6 +183,97 @@ def test_submit_qc_refused_under_adhoc(cfg, cal):
     res = actions.submit_qc("HMKPOS-102")
     assert res.ok is False
     assert "ad-hoc" in res.message.lower() or "adhoc" in res.message.lower() or "finish" in res.message.lower()
+
+
+def test_submit_qc_adhoc_without_owner_refused(cfg, cal):
+    raw_adhoc = {
+        "key": "HMKPOS-50",
+        "fields": {
+            "summary": "Tech adhoc",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Ad-hoc Task", "subtask": False},
+            "status": {"name": "Dev In Progress"},
+            "assignee": {"name": "dev.user"},
+        },
+    }
+    gateway = FakeGateway(
+        issues={"HMKPOS-50": raw_adhoc},
+        transitions={"HMKPOS-50": ["Submit QC", "Done"]},
+    )
+    actions = _make_actions(gateway, cfg, cal)
+    res = actions.submit_qc("HMKPOS-50")
+    assert res.ok is False
+    assert "finish" in res.message.lower()
+    assert ("ai" in res.message.lower() or "qc_owner" in res.message.lower() or "test" in res.message.lower())
+    assert res.next_actions == ["submit_qc", "finish"]
+    # No transition or write calls to Jira
+    write_methods = {"transition", "update_fields", "add_comment", "add_worklog", "create_issue", "link"}
+    actual_writes = [c for c in gateway.calls if c[0] in write_methods]
+    assert actual_writes == []
+    # No get_transitions call either
+    trans_lookup = [c for c in gateway.calls if c[0] == "get_transitions"]
+    assert trans_lookup == []
+
+
+def test_submit_qc_adhoc_with_owner_sends_field(cfg, cal):
+    raw_adhoc = {
+        "key": "HMKPOS-50",
+        "fields": {
+            "summary": "Tech adhoc",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Ad-hoc Task", "subtask": False},
+            "status": {"name": "Dev In Progress"},
+            "assignee": {"name": "dev.user"},
+        },
+    }
+    gateway = FakeGateway(
+        issues={"HMKPOS-50": raw_adhoc},
+        transitions={"HMKPOS-50": ["Submit QC", "Done"]},
+    )
+    actions = _make_actions(gateway, cfg, cal)
+
+    # Dry-run lists QC Owner in changes
+    res_dry = actions.submit_qc("HMKPOS-50", qc_owner="tuan.bui", dry_run=True)
+    assert res_dry.ok is True
+    assert any("tuan.bui" in c for c in res_dry.changes)
+    assert any("QC Owner" in c for c in res_dry.changes)
+    write_methods = {"transition", "update_fields", "add_comment", "add_worklog", "create_issue", "link"}
+    assert [c for c in gateway.calls if c[0] in write_methods] == []
+
+    # Real call sends {<qc_owner field id>: {"name": qc_owner}}
+    res = actions.submit_qc("HMKPOS-50", qc_owner="tuan.bui")
+    assert res.ok is True
+    trans_calls = [c for c in gateway.calls if c[0] == "transition"]
+    assert len(trans_calls) == 1
+    assert trans_calls[0][1] == ("HMKPOS-50", "Submit QC")
+    assert trans_calls[0][2]["fields"] == {"customfield_qc_owner": {"name": "tuan.bui"}}
+
+
+def test_submit_qc_adhoc_existing_owner_needs_no_param(cfg, cal):
+    raw_adhoc = {
+        "key": "HMKPOS-50",
+        "fields": {
+            "summary": "Tech adhoc with owner",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Ad-hoc Task", "subtask": False},
+            "status": {"name": "Dev In Progress"},
+            "assignee": {"name": "dev.user"},
+            "customfield_qc_owner": {"name": "existing.qc"},
+        },
+    }
+    gateway = FakeGateway(
+        issues={"HMKPOS-50": raw_adhoc},
+        transitions={"HMKPOS-50": ["Submit QC", "Done"]},
+    )
+    actions = _make_actions(gateway, cfg, cal)
+
+    # Calling submit_qc without qc_owner parameter succeeds
+    res = actions.submit_qc("HMKPOS-50")
+    assert res.ok is True
+    trans_calls = [c for c in gateway.calls if c[0] == "transition"]
+    assert len(trans_calls) == 1
+    assert trans_calls[0][1] == ("HMKPOS-50", "Submit QC")
+
 
 
 def test_request_reschedule_past_date_refused(cfg, cal):
@@ -1219,6 +1311,152 @@ def test_happy_path_exact_call_sequence_qc_fail_work_item(cfg, cal):
     assert [c[0] for c in gw.calls] == ["get_issue", "get_issue", "get_transitions", "add_worklog", "transition"]
     assert gw.calls[3][1] == ("HMKPOS-101", "1h", "Found regression")
     assert gw.calls[4][1] == ("HMKPOS-101", "QC Fail")
+
+
+def test_qc_start_adhoc_task(cfg, cal):
+    raw_adhoc = {
+        "key": "HMKPOS-50",
+        "fields": {
+            "summary": "Tech adhoc",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Ad-hoc Task", "subtask": False},
+            "status": {"name": "QC TO DO"},
+            "assignee": {"name": "dev.user"},
+            "customfield_qc_owner": {"name": "qc.tester"},
+        },
+    }
+    gw = FakeGateway(
+        issues={"HMKPOS-50": raw_adhoc},
+        transitions={"HMKPOS-50": ["Start Test"]},
+    )
+    actions = _make_actions(gw, cfg, cal)
+    res = actions.qc_start("HMKPOS-50")
+    assert res.ok is True
+    assert res.next_actions == ["qc_pass", "qc_fail"]
+    trans_calls = [c for c in gw.calls if c[0] == "transition"]
+    assert len(trans_calls) == 1
+    assert trans_calls[0][1] == ("HMKPOS-50", "Start Test")
+
+
+def test_qc_pass_adhoc_task_no_story_worklog_rule(cfg, cal):
+    # For story, qc_pass without time_spent requires user worklog.
+    # For adhoc, no Story worklog rule: note is required, but time_spent is optional even without prior worklog.
+    raw_adhoc = {
+        "key": "HMKPOS-50",
+        "fields": {
+            "summary": "Tech adhoc",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Ad-hoc Task", "subtask": False},
+            "status": {"name": "Test In Progress"},
+            "assignee": {"name": "dev.user"},
+            "customfield_qc_owner": {"name": "qc.tester"},
+            "worklog": {"worklogs": [], "total": 0},
+        },
+    }
+    gw = FakeGateway(
+        issues={"HMKPOS-50": raw_adhoc},
+        transitions={"HMKPOS-50": ["QC Pass", "QC Fail"]},
+        user="qc.tester",
+    )
+    actions = _make_actions(gw, cfg, cal)
+    # Calling qc_pass with note only (no time_spent) succeeds
+    res = actions.qc_pass("HMKPOS-50", note="Verified fix on staging")
+    assert res.ok is True
+    trans_calls = [c for c in gw.calls if c[0] == "transition"]
+    assert len(trans_calls) == 1
+    assert trans_calls[0][1] == ("HMKPOS-50", "QC Pass")
+
+
+def test_qc_fail_adhoc_task_no_parent_story_or_open_bug_rule(cfg, cal):
+    raw_adhoc = {
+        "key": "HMKPOS-50",
+        "fields": {
+            "summary": "Tech adhoc",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Ad-hoc Task", "subtask": False},
+            "status": {"name": "Test In Progress"},
+            "assignee": {"name": "dev.user"},
+            "customfield_qc_owner": {"name": "qc.tester"},
+        },
+    }
+    gw = FakeGateway(
+        issues={"HMKPOS-50": raw_adhoc},
+        transitions={"HMKPOS-50": ["QC Pass", "QC Fail"]},
+        user="qc.tester",
+    )
+    actions = _make_actions(gw, cfg, cal)
+
+    # 1. qc_fail without bugs succeeds (no open-Bug rule, no parent Story needed)
+    res = actions.qc_fail("HMKPOS-50", reason="Still reproduces on staging")
+    assert res.ok is True
+    trans_calls = [c for c in gw.calls if c[0] == "transition"]
+    assert len(trans_calls) == 1
+    assert trans_calls[0][1] == ("HMKPOS-50", "QC Fail")
+
+    # 2. qc_fail with bugs creates bug subtasks under adhoc task
+    res_bugs = actions.qc_fail("HMKPOS-50", reason="Found sub-bug", bugs=["Null pointer on login"])
+    assert res_bugs.ok is True
+    create_calls = [c for c in gw.calls if c[0] == "create_issue"]
+    assert len(create_calls) == 1
+    assert create_calls[0][1][0]["parent"]["key"] == "HMKPOS-50"
+    assert "Null pointer on login" in create_calls[0][1][0]["summary"]
+
+
+def test_end_day_adhoc_ready_for_qc_without_owner_fails_entry_and_runs_others(cfg, cal):
+    raw_dev_task = {
+        "key": "HMKPOS-101",
+        "fields": {
+            "summary": "Dev task",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Dev Task", "subtask": True},
+            "status": {"name": "Dev In Progress"},
+            "assignee": {"name": "dev.user"},
+        },
+    }
+    raw_adhoc = {
+        "key": "HMKPOS-50",
+        "fields": {
+            "summary": "Tech adhoc",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Ad-hoc Task", "subtask": False},
+            "status": {"name": "Dev In Progress"},
+            "assignee": {"name": "dev.user"},
+            # no qc_owner
+        },
+    }
+    gw = FakeGateway(
+        issues={"HMKPOS-101": raw_dev_task, "HMKPOS-50": raw_adhoc},
+        transitions={
+            "HMKPOS-101": ["Submit QC", "Done"],
+            "HMKPOS-50": ["Submit QC", "Done"],
+        },
+    )
+    actions = _make_actions(gw, cfg, cal)
+    entries = [
+        EndDayEntry(key="HMKPOS-101", time_spent="2h", note="Work done", move_to=None),
+        EndDayEntry(key="HMKPOS-50", time_spent="1h", note="Done adhoc", move_to="ready_for_qc"),
+    ]
+    res = actions.end_day(entries)
+
+    # Whole batch result is not ok because one entry failed
+    assert res.ok is False
+    # HMKPOS-101 succeeded
+    assert "HMKPOS-101: Thành công" in res.message
+    # HMKPOS-50 failed with item-2 message
+    assert "HMKPOS-50: Thất bại" in res.message
+    assert "finish" in res.message.lower()
+    assert ("ai" in res.message.lower() or "qc_owner" in res.message.lower() or "test" in res.message.lower())
+
+    # HMKPOS-101 worklog was actually written (still ran)
+    wl_calls = [c for c in gw.calls if c[0] == "add_worklog" and c[1][0] == "HMKPOS-101"]
+    assert len(wl_calls) == 1
+    assert wl_calls[0][1] == ("HMKPOS-101", "2h", "Work done")
+
+    # HMKPOS-50 transition was not executed
+    trans_calls = [c for c in gw.calls if c[0] == "transition" and c[1][0] == "HMKPOS-50"]
+    assert trans_calls == []
+
+
 
 
 def test_happy_path_exact_call_sequence_flow_reschedule(cfg, cal):

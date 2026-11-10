@@ -198,7 +198,11 @@ def issue_from_json(raw: dict, cfg: EggsConfig) -> Issue:
         if (c.get("name") if isinstance(c, dict) else str(c))
     )
     part = _parse_option(get_cf("part"))
-    qc_owner = _parse_user(get_cf("qc_owner")) if issue_type == "story" else None
+    qc_owner = (
+        _parse_user(get_cf("qc_owner"))
+        if issue_type in ("story", "adhoc")
+        else None
+    )
     reschedule_requester = _parse_user(get_cf("reschedule_requester"))
     escalation_owner = _parse_user(get_cf("escalation_owner"))
 

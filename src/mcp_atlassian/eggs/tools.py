@@ -710,12 +710,26 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         note: Annotated[
             str, Field(description="Ghi chú bàn giao kiểm thử", default="")
         ] = "",
+        qc_owner: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "Jira username của QC Owner "
+                    "(chỉ dùng cho Ad-hoc Task khi cần QC)"
+                ),
+                default=None,
+            ),
+        ] = None,
         *,
         dry_run: Annotated[
             bool, Field(description="Chạy thử nghiệm", default=False)
         ] = False,
     ) -> str:
-        """Hoàn thành phần việc và chuyển sang hàng đợi kiểm thử (QC TO DO)."""
+        """Hoàn thành phần việc và chuyển sang hàng đợi kiểm thử (QC TO DO).
+
+        Đối với Ad-hoc Task, Dev lựa chọn: dùng eggs_finish nếu không cần QC,
+        hoặc eggs_submit_qc kèm qc_owner nếu cần QC.
+        """
         cfg = await asyncio.to_thread(load_config)
         user_gw = await get_user_gateway(ctx, write=True)
         roles_gw = await asyncio.to_thread(get_roles_reader, cfg)
@@ -733,7 +747,11 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         cal = WorkCalendar(cfg.holidays)
         actions = Actions(user_gw, cfg, cal)
         res = await asyncio.to_thread(
-            actions.submit_qc, key=key, note=note, dry_run=dry_run
+            actions.submit_qc,
+            key=key,
+            note=note,
+            qc_owner=qc_owner,
+            dry_run=dry_run,
         )
         if res.ok and not dry_run:
             now = datetime.now(ZoneInfo(cfg.timezone))
@@ -757,7 +775,11 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
             bool, Field(description="Chạy thử nghiệm", default=False)
         ] = False,
     ) -> str:
-        """Hoàn thành trực tiếp cho Ad-hoc Task hoặc Bug."""
+        """Hoàn thành trực tiếp cho Ad-hoc Task hoặc Bug.
+
+        Đối với Ad-hoc Task, Dev lựa chọn: dùng eggs_finish nếu không cần QC,
+        hoặc eggs_submit_qc kèm qc_owner nếu cần QC.
+        """
         cfg = await asyncio.to_thread(load_config)
         user_gw = await get_user_gateway(ctx, write=True)
         roles_gw = await asyncio.to_thread(get_roles_reader, cfg)

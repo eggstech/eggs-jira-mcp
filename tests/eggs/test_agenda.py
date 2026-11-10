@@ -150,7 +150,7 @@ def test_suggested_actions_by_flag_kind(cfg, cal):
     assert agenda_od[0].actions[1].args == {"key": "RFID-3"}
     assert agenda_od[0].actions[1].missing == ["proposed_end", "reason"]
 
-    # Work item NEED_RESCHEDULE on adhoc item -> eggs_finish + eggs_request_reschedule
+    # Work item NEED_RESCHEDULE on adhoc item -> eggs_finish + eggs_submit_qc (missing qc_owner) + eggs_request_reschedule
     iss_adhoc = _make_issue("RFID-4", issue_type="adhoc", summary="Adhoc task", status="in_progress")
     snap_adhoc = Snapshot(
         issues={"RFID-4": iss_adhoc},
@@ -160,13 +160,38 @@ def test_suggested_actions_by_flag_kind(cfg, cal):
     )
     agenda_adhoc = build_agenda(snap_adhoc, identity, cfg, now, cal)
     assert len(agenda_adhoc) == 1
-    assert len(agenda_adhoc[0].actions) == 2
+    assert len(agenda_adhoc[0].actions) == 3
     assert agenda_adhoc[0].actions[0].tool == "eggs_finish"
     assert agenda_adhoc[0].actions[0].args == {"key": "RFID-4"}
     assert agenda_adhoc[0].actions[0].missing == []
-    assert agenda_adhoc[0].actions[1].tool == "eggs_request_reschedule"
+    assert agenda_adhoc[0].actions[1].tool == "eggs_submit_qc"
     assert agenda_adhoc[0].actions[1].args == {"key": "RFID-4"}
-    assert agenda_adhoc[0].actions[1].missing == ["proposed_end", "reason"]
+    assert agenda_adhoc[0].actions[1].missing == ["qc_owner"]
+    assert agenda_adhoc[0].actions[2].tool == "eggs_request_reschedule"
+    assert agenda_adhoc[0].actions[2].args == {"key": "RFID-4"}
+    assert agenda_adhoc[0].actions[2].missing == ["proposed_end", "reason"]
+
+    # Adhoc with qc_owner already set -> eggs_submit_qc missing is empty
+    iss_adhoc_qc = _make_issue("RFID-4Q", issue_type="adhoc", summary="Adhoc task with QC", status="in_progress", qc_owner="bob")
+    snap_adhoc_qc = Snapshot(
+        issues={"RFID-4Q": iss_adhoc_qc},
+        flags={"RFID-4Q": frozenset({"NEED_RESCHEDULE"})},
+        escalations={"RFID-4Q": Escalation(level=0, owner="alice", since=date(2026, 11, 8))},
+        flows={}, epics={}, not_updated=[], today=date(2026, 11, 9),
+    )
+    agenda_adhoc_qc = build_agenda(snap_adhoc_qc, identity, cfg, now, cal)
+    assert agenda_adhoc_qc[0].actions[1].missing == []
+
+    # Dev task under adhoc keeps eggs_finish only (no submit_qc)
+    iss_dev_under_adhoc = _make_issue("RFID-4S", issue_type="dev_task", parent_type="adhoc", summary="Sub under adhoc", status="in_progress")
+    snap_dev_under_adhoc = Snapshot(
+        issues={"RFID-4S": iss_dev_under_adhoc},
+        flags={"RFID-4S": frozenset({"NEED_RESCHEDULE"})},
+        escalations={"RFID-4S": Escalation(level=0, owner="alice", since=date(2026, 11, 8))},
+        flows={}, epics={}, not_updated=[], today=date(2026, 11, 9),
+    )
+    agenda_sub = build_agenda(snap_dev_under_adhoc, identity, cfg, now, cal)
+    assert [a.tool for a in agenda_sub[0].actions] == ["eggs_finish", "eggs_request_reschedule"]
 
     # 4. Work item UNSCHEDULED -> eggs_schedule (missing ["start", "end", "estimate"])
     iss_unsch = _make_issue("RFID-5", issue_type="dev_task", summary="Unscheduled task", status="dev_todo")
@@ -663,3 +688,113 @@ def test_agenda_excludes_projects_without_role(cal):
     lead_agenda = build_agenda(snapshot_lead, lead_identity, cfg_multi, now, cal)
     lead_keys = [it.key for it in lead_agenda]
     assert "OTHER-1" in lead_keys
+
+
+def test_agenda_priority_7_adhoc_suggests_both_finish_and_submit_qc(cfg, cal):
+    identity = Identity(
+        username="alice",
+        display_name="Alice",
+        roles={"RFID": {"dev"}},
+        is_lead=False,
+    )
+    now = datetime(2026, 11, 9, 10, 0, tzinfo=ZoneInfo("Asia/Ho_Chi_Minh"))
+
+    # 1. Adhoc without QC Owner: finish, submit_qc (missing qc_owner), log_work
+    adhoc_no_qc = _make_issue("RFID-1", issue_type="adhoc", status="in_progress", assignee="alice")
+    # 2. Adhoc with QC Owner: finish, submit_qc (missing=[]), log_work
+    adhoc_with_qc = _make_issue("RFID-2", issue_type="adhoc", status="in_progress", assignee="alice", qc_owner="bob")
+    # 3. Dev task under adhoc: finish, log_work (keeps eggs_finish only)
+    sub_under_adhoc = _make_issue("RFID-3", issue_type="dev_task", parent_type="adhoc", status="in_progress", assignee="alice")
+    # 4. Standard dev task under story: submit_qc, log_work (keeps eggs_submit_qc only)
+    dev_under_story = _make_issue("RFID-4", issue_type="dev_task", parent_type="story", status="in_progress", assignee="alice")
+
+    issues = {
+        adhoc_no_qc.key: adhoc_no_qc,
+        adhoc_with_qc.key: adhoc_with_qc,
+        sub_under_adhoc.key: sub_under_adhoc,
+        dev_under_story.key: dev_under_story,
+    }
+    snapshot = Snapshot(
+        issues=issues, flags={}, escalations={}, flows={}, epics={}, not_updated=[], today=date(2026, 11, 9)
+    )
+    agenda = build_agenda(snapshot, identity, cfg, now, cal)
+    by_key = {it.key: it for it in agenda}
+
+    # Adhoc without QC Owner
+    it1 = by_key["RFID-1"]
+    tools1 = [(a.tool, a.missing) for a in it1.actions]
+    assert tools1 == [
+        ("eggs_finish", []),
+        ("eggs_submit_qc", ["qc_owner"]),
+        ("eggs_log_work", ["time_spent", "note"]),
+    ]
+
+    # Adhoc with QC Owner
+    it2 = by_key["RFID-2"]
+    tools2 = [(a.tool, a.missing) for a in it2.actions]
+    assert tools2 == [
+        ("eggs_finish", []),
+        ("eggs_submit_qc", []),
+        ("eggs_log_work", ["time_spent", "note"]),
+    ]
+
+    # Dev task under adhoc
+    it3 = by_key["RFID-3"]
+    tools3 = [(a.tool, a.missing) for a in it3.actions]
+    assert tools3 == [
+        ("eggs_finish", []),
+        ("eggs_log_work", ["time_spent", "note"]),
+    ]
+
+    # Dev task under story
+    it4 = by_key["RFID-4"]
+    tools4 = [(a.tool, a.missing) for a in it4.actions]
+    assert tools4 == [
+        ("eggs_submit_qc", []),
+        ("eggs_log_work", ["time_spent", "note"]),
+    ]
+
+
+def test_agenda_qc_queue_adhoc_task(cfg, cal):
+    identity = Identity(
+        username="qc_alice",
+        display_name="QC Alice",
+        roles={"RFID": {"qc"}},
+        is_lead=False,
+    )
+    now = datetime(2026, 11, 9, 10, 0, tzinfo=ZoneInfo("Asia/Ho_Chi_Minh"))
+
+    # An Ad-hoc Task in ready_for_qc whose own QC Owner is qc_alice
+    adhoc_qc = _make_issue(
+        "RFID-10",
+        issue_type="adhoc",
+        status="ready_for_qc",
+        assignee="dev_user",
+        qc_owner="qc_alice",
+        summary="Adhoc needs test",
+    )
+    snapshot = Snapshot(
+        issues={"RFID-10": adhoc_qc},
+        flags={},
+        escalations={},
+        flows={},
+        epics={},
+        not_updated=[],
+        today=date(2026, 11, 9),
+    )
+    agenda = build_agenda(snapshot, identity, cfg, now, cal)
+    assert len(agenda) == 1
+    assert agenda[0].priority == 4
+    assert agenda[0].key == "RFID-10"
+    assert agenda[0].actions[0].tool == "eggs_qc_start"
+
+
+def test_agenda_intent_examples_for_adhoc():
+    from mcp_atlassian.eggs.agenda import INTENTS
+
+    finish_intent = next(i for i in INTENTS if i.name == "finish")
+    assert "xong ADHOC-5, không cần QC" in finish_intent.examples
+
+    submit_qc_intent = next(i for i in INTENTS if i.name == "submit_qc")
+    assert "xong ADHOC-5, nhờ tuan.bui test" in submit_qc_intent.examples
+

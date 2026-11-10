@@ -986,4 +986,34 @@ class TestEggsToolBehavior:
             assert tools.load_config in to_thread_calls, "load_config must be called via asyncio.to_thread"
             assert tools.get_roles_reader in to_thread_calls, "get_roles_reader must be called via asyncio.to_thread"
 
+    @pytest.mark.asyncio
+    async def test_eggs_submit_qc_param_and_docstrings(self, cfg: EggsConfig):
+        server = FastMCP("test_jira")
+        register_eggs_tools(server, force=True)
+
+        tool_submit = await server.get_tool("eggs_submit_qc")
+        assert "qc_owner" in tool_submit.parameters["properties"]
+        assert "eggs_finish" in tool_submit.description
+        assert "qc_owner" in tool_submit.description
+
+        tool_finish = await server.get_tool("eggs_finish")
+        assert "eggs_finish" in tool_finish.description
+        assert "eggs_submit_qc" in tool_finish.description
+        assert "qc_owner" in tool_finish.description
+
+        user_gw = FakeGateway(user="dev1")
+        bot_gw = FakeGateway(role_members={"RFID": {"Developers": ["dev1"]}})
+        with (
+            patch("mcp_atlassian.eggs.tools.load_config", return_value=cfg),
+            patch("mcp_atlassian.eggs.tools.get_user_gateway", AsyncMock(return_value=user_gw)),
+            patch("mcp_atlassian.eggs.tools.get_roles_reader", return_value=bot_gw),
+            patch("mcp_atlassian.eggs.tools.Actions.submit_qc") as mock_submit,
+        ):
+            mock_submit.return_value = ActionResult(ok=True, message="OK", changes=[], next_actions=[])
+            res = await server.call_tool("eggs_submit_qc", {"key": "RFID-10", "qc_owner": "tuan.bui"})
+            data = json.loads(res.content[0].text)
+            assert data["ok"] is True
+            mock_submit.assert_called_once_with(key="RFID-10", note="", qc_owner="tuan.bui", dry_run=False)
+
+
 

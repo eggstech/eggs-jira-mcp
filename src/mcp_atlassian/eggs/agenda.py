@@ -97,14 +97,24 @@ INTENTS: list[Intent] = [
     Intent(
         name="submit_qc",
         roles=frozenset({"dev"}),
-        examples=["xong RFID-12, chuyển QC", "chuyển kiểm thử", "submit qc"],
+        examples=[
+            "xong RFID-12, chuyển QC",
+            "chuyển kiểm thử",
+            "submit qc",
+            "xong ADHOC-5, nhờ tuan.bui test",
+        ],
         tool="eggs_submit_qc",
         required=["key"],
     ),
     Intent(
         name="finish",
         roles=frozenset({"dev"}),
-        examples=["hoàn thành việc không cần QC", "xong task adhoc", "finish"],
+        examples=[
+            "hoàn thành việc không cần QC",
+            "xong task adhoc",
+            "finish",
+            "xong ADHOC-5, không cần QC",
+        ],
         tool="eggs_finish",
         required=["key"],
     ),
@@ -326,14 +336,31 @@ def build_agenda(
             elif issue.is_work_item and (
                 "OVERDUE" in item_flags or "NEED_RESCHEDULE" in item_flags
             ):
-                forward_tool = (
-                    "eggs_finish"
-                    if (issue.type == "adhoc" or issue.parent_type == "adhoc")
-                    else "eggs_submit_qc"
-                )
-                actions.append(
-                    SuggestedAction(tool=forward_tool, args={"key": key}, missing=[])
-                )
+                if issue.type == "adhoc":
+                    actions.append(
+                        SuggestedAction(
+                            tool="eggs_finish", args={"key": key}, missing=[]
+                        )
+                    )
+                    actions.append(
+                        SuggestedAction(
+                            tool="eggs_submit_qc",
+                            args={"key": key},
+                            missing=[] if issue.qc_owner else ["qc_owner"],
+                        )
+                    )
+                elif issue.parent_type == "adhoc":
+                    actions.append(
+                        SuggestedAction(
+                            tool="eggs_finish", args={"key": key}, missing=[]
+                        )
+                    )
+                else:
+                    actions.append(
+                        SuggestedAction(
+                            tool="eggs_submit_qc", args={"key": key}, missing=[]
+                        )
+                    )
                 actions.append(
                     SuggestedAction(
                         tool="eggs_request_reschedule",
@@ -577,18 +604,35 @@ def build_agenda(
                 continue
             title = f"[{key}] Đang làm: {issue.summary}"
             say = f"Bạn đang thực hiện {key} ({issue.summary})."
-            actions = [
-                SuggestedAction(
-                    tool="eggs_submit_qc",
-                    args={"key": key},
-                    missing=[],
-                ),
+            actions = []
+            if issue.type == "adhoc":
+                actions.append(
+                    SuggestedAction(tool="eggs_finish", args={"key": key}, missing=[])
+                )
+                actions.append(
+                    SuggestedAction(
+                        tool="eggs_submit_qc",
+                        args={"key": key},
+                        missing=[] if issue.qc_owner else ["qc_owner"],
+                    )
+                )
+            elif issue.parent_type == "adhoc":
+                actions.append(
+                    SuggestedAction(tool="eggs_finish", args={"key": key}, missing=[])
+                )
+            else:
+                actions.append(
+                    SuggestedAction(
+                        tool="eggs_submit_qc", args={"key": key}, missing=[]
+                    )
+                )
+            actions.append(
                 SuggestedAction(
                     tool="eggs_log_work",
                     args={"key": key},
                     missing=["time_spent", "note"],
-                ),
-            ]
+                )
+            )
             items.append(
                 AgendaItem(
                     priority=7,

@@ -188,6 +188,26 @@ def test_mapping_story_reads_qc_owner(base_config):
     assert issue.part is None
 
 
+def test_mapping_adhoc_reads_qc_owner(base_config):
+    adhoc_raw = {
+        "id": "10020",
+        "key": "HMKPOS-50",
+        "fields": {
+            "summary": "Fix server cache",
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Ad-hoc Task", "subtask": False},
+            "status": {"name": "Dev In Progress"},
+            "assignee": {"name": "dev.user"},
+            "customfield_qc_owner": {"name": "qc.tester"},
+        },
+    }
+    issue = issue_from_json(adhoc_raw, base_config)
+    assert issue.type == "adhoc"
+    assert issue.qc_owner == "qc.tester"
+    assert issue.is_work_item is True
+
+
+
 def test_status_changed_at_extracts_latest():
     changelog = {
         "histories": [

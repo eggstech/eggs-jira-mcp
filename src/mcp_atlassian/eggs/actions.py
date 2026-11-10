@@ -384,6 +384,7 @@ class Actions:
         time_spent: str | None = None,
         note: str = "",
         *,
+        qc_owner: str | None = None,
         dry_run: bool = False,
     ) -> ActionResult:
         issue = self._get_issue(key)
@@ -398,11 +399,32 @@ class Actions:
                 next_actions=["finish"],
             )
 
+        fields: dict[str, Any] | None = None
+        effective_qc_owner: str | None = None
+        if issue.type == "adhoc":
+            effective_qc_owner = qc_owner or issue.qc_owner
+            if not effective_qc_owner:
+                return ActionResult(
+                    ok=False,
+                    message=(
+                        f"Ad-hoc Task {key} cần có QC Owner để chuyển sang "
+                        "QC TO DO. Ai sẽ kiểm thử task này? Vui lòng cung cấp "
+                        "qc_owner hoặc dùng finish() nếu không cần QC."
+                    ),
+                    changes=[],
+                    next_actions=["submit_qc", "finish"],
+                )
+            if qc_owner:
+                qc_field_id = self.cfg.fields.get("qc_owner", "qc_owner")
+                fields = {qc_field_id: {"name": qc_owner}}
+
         matched, avail = self._find_transition(key, "submit_qc")
         if not matched:
             return self._unavailable_result(key, "submit_qc", avail)
 
         changes = ["Chuyển trạng thái sang QC TO DO"]
+        if issue.type == "adhoc" and effective_qc_owner:
+            changes.append(f"QC Owner: {effective_qc_owner}")
         if time_spent:
             changes.append(f"Log work {time_spent}: {note}")
 
@@ -417,7 +439,7 @@ class Actions:
         if time_spent:
             self.gateway.add_worklog(key, time_spent=time_spent, comment=note)
 
-        err = self._do_transition(key, matched)
+        err = self._do_transition(key, matched, fields=fields)
         if err:
             return err
 
@@ -805,7 +827,21 @@ class Actions:
                 )
             sub_results.append((e.key, sub_res))
 
-        failed = [f"{k}: {r.message}" for k, r in sub_results if not r.ok]
+        failed = []
+        for e, (k, r) in zip(entries, sub_results, strict=True):
+            if not r.ok:
+                # An Ad-hoc Task with move_to="ready_for_qc" lacking a QC Owner
+                # does not abort pre-validation: that entry fails during execution
+                # with the item-2 message while other entries still run.
+                if e.move_to == "ready_for_qc":
+                    try:
+                        iss = self._get_issue(e.key)
+                    except (JiraError, KeyError, ValueError):
+                        iss = None
+                    if iss and iss.type == "adhoc" and not iss.qc_owner:
+                        continue
+                failed.append(f"{k}: {r.message}")
+
         if failed:
             return ActionResult(
                 ok=False,
@@ -1013,6 +1049,9 @@ class Actions:
                 )
             target_story_key = issue.key
             code = issue.actor_code or "FLOW"
+        elif issue.type == "adhoc":
+            target_story_key = issue.key
+            code = issue.actor_code or "BUG"
         else:
             if not issue.parent_key:
                 return ActionResult(
