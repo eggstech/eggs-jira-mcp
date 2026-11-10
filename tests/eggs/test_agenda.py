@@ -9,6 +9,7 @@ import pytest
 from mcp_atlassian.eggs.actions import Actions
 from mcp_atlassian.eggs.agenda import (
     INTENTS,
+    allowed_actions,
     build_agenda,
     intents_for,
     mentioned_keys,
@@ -1396,3 +1397,184 @@ def test_agenda_qc_queue_parent_adhoc_or_story(cfg, cal):
     assert "RFID-31" in qc_queue_keys
     assert "RFID-41" in qc_queue_keys
     assert "RFID-51" not in qc_queue_keys
+
+
+def test_eggsbox_38_qc_sees_only_qc_start(cfg, cal):
+    # Seen live: tuan.bui (QC) ran /eggs. EGGSBOX-38 is a Bug stand-alone in status QC TO DO,
+    # assignee cuong.huynh, QC Owner tuan.bui, with a live NEED_RESCHEDULE flag at escalation level 0.
+    issue = _make_issue(
+        "EGGSBOX-38",
+        issue_type="bug",
+        status="ready_for_qc",
+        assignee="cuong.huynh",
+        qc_owner="tuan.bui",
+        summary="Bug standalone live case",
+        project="EGGSBOX",
+    )
+    identity = Identity(
+        username="tuan.bui",
+        display_name="Tuan Bui",
+        roles={"EGGSBOX": {"qc"}},
+        is_lead=False,
+    )
+    now = datetime(2026, 11, 10, 10, 0, tzinfo=ZoneInfo("Asia/Ho_Chi_Minh"))
+    snapshot = Snapshot(
+        issues={"EGGSBOX-38": issue},
+        flags={"EGGSBOX-38": frozenset({"NEED_RESCHEDULE"})},
+        escalations={
+            "EGGSBOX-38": Escalation(level=0, owner="tuan.bui", since=date(2026, 11, 9))
+        },
+        flows={},
+        epics={},
+        not_updated=[],
+        today=date(2026, 11, 10),
+    )
+    agenda = build_agenda(snapshot, identity, cfg, now, cal)
+    assert len(agenda) == 1
+    item = agenda[0]
+    assert item.key == "EGGSBOX-38"
+    assert [a.tool for a in item.actions] == ["eggs_qc_start"]
+    assert "EGGSBOX-38 đang chờ bạn test (cờ NEED_RESCHEDULE)." in item.say
+
+
+def test_eggsbox_38_assignee_in_dev_gets_submit_qc_and_reschedule(cfg, cal):
+    # Same issue seen by assignee in Dev In Progress gets submit_qc + request_reschedule
+    issue = _make_issue(
+        "EGGSBOX-38",
+        issue_type="bug",
+        status="in_progress",
+        assignee="cuong.huynh",
+        qc_owner="tuan.bui",
+        summary="Bug standalone live case",
+        project="EGGSBOX",
+    )
+    identity = Identity(
+        username="cuong.huynh",
+        display_name="Cuong Huynh",
+        roles={"EGGSBOX": {"dev"}},
+        is_lead=False,
+    )
+    now = datetime(2026, 11, 10, 10, 0, tzinfo=ZoneInfo("Asia/Ho_Chi_Minh"))
+    snapshot = Snapshot(
+        issues={"EGGSBOX-38": issue},
+        flags={"EGGSBOX-38": frozenset({"NEED_RESCHEDULE"})},
+        escalations={
+            "EGGSBOX-38": Escalation(
+                level=0, owner="cuong.huynh", since=date(2026, 11, 9)
+            )
+        },
+        flows={},
+        epics={},
+        not_updated=[],
+        today=date(2026, 11, 10),
+    )
+    agenda = build_agenda(snapshot, identity, cfg, now, cal)
+    assert len(agenda) == 1
+    item = agenda[0]
+    tools = [a.tool for a in item.actions]
+    assert "eggs_submit_qc" in tools
+    assert "eggs_request_reschedule" in tools
+    assert "eggs_qc_start" not in tools
+
+
+def test_lead_ba_not_assignee_gets_reschedule_not_submit_qc(cfg, cal):
+    # A lead_ba who is not the assignee is offered request_reschedule but not submit_qc
+    issue = _make_issue(
+        "EGGSBOX-38",
+        issue_type="bug",
+        status="in_progress",
+        assignee="cuong.huynh",
+        qc_owner="tuan.bui",
+        summary="Bug standalone live case",
+        project="EGGSBOX",
+    )
+    identity = Identity(
+        username="lead.ba",
+        display_name="Lead BA",
+        roles={"EGGSBOX": {"lead_ba"}},
+        is_lead=False,
+    )
+    now = datetime(2026, 11, 10, 10, 0, tzinfo=ZoneInfo("Asia/Ho_Chi_Minh"))
+    snapshot = Snapshot(
+        issues={"EGGSBOX-38": issue},
+        flags={"EGGSBOX-38": frozenset({"NEED_RESCHEDULE"})},
+        escalations={
+            "EGGSBOX-38": Escalation(level=0, owner="lead.ba", since=date(2026, 11, 9))
+        },
+        flows={},
+        epics={},
+        not_updated=[],
+        today=date(2026, 11, 10),
+    )
+    agenda = build_agenda(snapshot, identity, cfg, now, cal)
+    assert len(agenda) == 1
+    item = agenda[0]
+    tools = [a.tool for a in item.actions]
+    assert "eggs_request_reschedule" in tools
+    assert "eggs_submit_qc" not in tools
+
+
+def test_property_every_suggested_action_in_allowed_actions(cfg, cal):
+    # A property-style test that for a grid of (issue type × status × identity relation)
+    # every suggested action is in allowed_actions.
+    issue_types = ["dev_task", "bug_sub", "bug", "adhoc", "story", "report", "epic"]
+    statuses = [
+        "open",
+        "analyzing",
+        "ready_for_dev",
+        "todo",
+        "in_progress",
+        "ready_for_qc",
+        "testing",
+        "ready_for_uat",
+        "done",
+        "cancelled",
+    ]
+    identity_roles_map = [
+        ("dev_user", {"RFID": {"dev"}}),
+        ("qc_user", {"RFID": {"qc"}}),
+        ("ba_user", {"RFID": {"lead_ba"}}),
+        ("stranger", {"OTHER": {"dev"}}),
+    ]
+
+    now = datetime(2026, 11, 10, 10, 0, tzinfo=ZoneInfo("Asia/Ho_Chi_Minh"))
+
+    for itype in issue_types:
+        for st in statuses:
+            for username, roles in identity_roles_map:
+                ident = Identity(
+                    username=username,
+                    display_name=username,
+                    roles=roles,
+                    is_lead=False,
+                )
+                iss = _make_issue(
+                    "RFID-99",
+                    issue_type=itype,
+                    status=st,
+                    assignee="dev_user",
+                    qc_owner="qc_user",
+                    project="RFID",
+                )
+                # Test with escalation to this user and NEED_RESCHEDULE flag
+                snap = Snapshot(
+                    issues={"RFID-99": iss},
+                    flags={"RFID-99": frozenset({"NEED_RESCHEDULE"})},
+                    escalations={
+                        "RFID-99": Escalation(
+                            level=0, owner=username, since=date(2026, 11, 9)
+                        )
+                    },
+                    flows={},
+                    epics={},
+                    not_updated=[],
+                    today=date(2026, 11, 10),
+                )
+                agenda = build_agenda(snap, ident, cfg, now, cal)
+                allowed = allowed_actions(iss, ident, cfg)
+                for item in agenda:
+                    if item.key == "RFID-99":
+                        for a in item.actions:
+                            assert a.tool in allowed, (
+                                f"Action {a.tool} on ({itype}, {st}, {username}) not in allowed_actions: {allowed}"
+                            )

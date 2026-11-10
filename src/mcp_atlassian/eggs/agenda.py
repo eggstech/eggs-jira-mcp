@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 from .calendar import WorkCalendar
 from .config import EggsConfig
 from .identity import Identity
+from .model import Issue
 from .report import Snapshot
 
 
@@ -297,6 +298,136 @@ def _natural_key(key: str | None) -> tuple[str, int]:
     return (key, 0)
 
 
+def allowed_actions(issue: Issue, identity: Identity, cfg: EggsConfig) -> set[str]:
+    """Return the set of actions allowed for `identity` on `issue`.
+    Contains both tool names ('eggs_<action>') and bare action names ('<action>').
+    """
+    if issue is None:
+        return set()
+
+    res: set[str] = set()
+
+    def add(act: str) -> None:
+        bare = act.removeprefix("eggs_")
+        res.add(bare)
+        res.add(f"eggs_{bare}")
+
+    proj = issue.project
+    proj_roles: set[str] = set()
+    for p, r in identity.roles.items():
+        if p.upper() == (proj or "").upper():
+            proj_roles.update(r)
+
+    is_lead = identity.is_lead
+    is_lead_ba = ("lead_ba" in proj_roles) or is_lead
+    has_dev_role = ("dev" in proj_roles) or is_lead
+    has_qc_role = ("qc" in proj_roles) or is_lead
+
+    username = (identity.username or "").lower()
+    assignee = (issue.assignee or "").lower() if issue.assignee else None
+    is_assignee = bool(username and assignee and username == assignee)
+
+    qc_owner = (issue.qc_owner or "").lower() if issue.qc_owner else None
+    is_qc_owner = bool(username and qc_owner and username == qc_owner)
+    is_qc = is_qc_owner or has_qc_role
+
+    status = (cfg.status_logical(issue.status) or issue.status or "").lower()
+    if status == "dev_todo":
+        status = "todo"
+    elif status == "qc_to_do":
+        status = "ready_for_qc"
+    elif status == "test_in_progress":
+        status = "testing"
+
+    is_in_qc = status in ("ready_for_qc", "testing")
+    is_resolved = status in ("done", "cancelled") or issue.is_resolved
+
+    if issue.frozen or is_resolved:
+        return res
+
+    # 1. Assignee-only actions
+    # start:
+    if issue.is_work_item and status in ("todo", "open") and is_assignee:
+        add("start")
+
+    # finish:
+    if (
+        issue.is_work_item
+        and issue.type not in ("bug", "bug_sub")
+        and status == "in_progress"
+        and not is_in_qc
+        and is_assignee
+    ):
+        add("finish")
+
+    # submit_qc:
+    if (
+        issue.is_work_item
+        and not (issue.type == "dev_task" and issue.parent_type in ("adhoc", "bug"))
+        and status == "in_progress"
+        and not is_in_qc
+        and is_assignee
+    ):
+        add("submit_qc")
+
+    # log_work on own work / during testing / lead_ba:
+    if is_assignee or (is_qc and is_in_qc) or is_lead_ba:
+        add("log_work")
+
+    # block:
+    if (
+        issue.is_work_item
+        and not issue.blocked
+        and status in ("todo", "open", "in_progress")
+        and is_assignee
+    ):
+        add("block")
+
+    # unblock:
+    if issue.blocked and is_assignee:
+        add("unblock")
+
+    # request_reschedule:
+    if is_assignee or is_lead_ba:
+        add("request_reschedule")
+
+    # 2. QC actions
+    # qc_start: status maps to ready_for_qc
+    if status == "ready_for_qc" and is_qc:
+        if issue.is_work_item or issue.type == "story":
+            add("qc_start")
+
+    # qc_pass / qc_fail: status maps to testing
+    if status == "testing" and is_qc:
+        if issue.is_work_item or issue.type == "story":
+            add("qc_pass")
+            add("qc_fail")
+
+    # 3. lead_ba actions
+    if is_lead_ba:
+        add("decide_reschedule")
+        if issue.type in ("story", "epic"):
+            add("flow_reschedule")
+        if issue.type == "epic":
+            add("uat")
+        add("cancel")
+
+    # schedule:
+    if issue.is_work_item and issue.baseline_end is None and status in ("todo", "open"):
+        if is_lead_ba or is_assignee or (issue.assignee is None and has_dev_role):
+            add("schedule")
+
+    # triage_close:
+    if (
+        issue.type == "report"
+        and status in ("open", "analyzing")
+        and (is_assignee or has_qc_role or is_lead_ba)
+    ):
+        add("triage_close")
+
+    return res
+
+
 def build_agenda(
     snapshot: Snapshot,
     identity: Identity,
@@ -425,6 +556,62 @@ def build_agenda(
                     SuggestedAction(tool="eggs_unblock", args={"key": key}, missing=[])
                 )
 
+            # Filter SuggestedActions with allowed_actions
+            allowed = allowed_actions(issue, identity, cfg)
+            filtered_actions = [
+                a
+                for a in actions
+                if a.tool in allowed or a.tool.removeprefix("eggs_") in allowed
+            ]
+
+            status_norm = (
+                cfg.status_logical(issue.status) or issue.status or ""
+            ).lower()
+            if status_norm == "qc_to_do":
+                status_norm = "ready_for_qc"
+            elif status_norm == "test_in_progress":
+                status_norm = "testing"
+
+            is_in_qc = status_norm in ("ready_for_qc", "testing")
+            username = (identity.username or "").lower()
+            qc_owner = (issue.qc_owner or "").lower() if issue.qc_owner else None
+            is_qc_owner = bool(username and qc_owner and username == qc_owner)
+
+            if actions and not filtered_actions:
+                if is_in_qc and is_qc_owner:
+                    if status_norm == "ready_for_qc":
+                        filtered_actions = [
+                            SuggestedAction(
+                                tool="eggs_qc_start", args={"key": key}, missing=[]
+                            )
+                        ]
+                    else:
+                        filtered_actions = [
+                            SuggestedAction(
+                                tool="eggs_qc_pass", args={"key": key}, missing=[]
+                            ),
+                            SuggestedAction(
+                                tool="eggs_qc_fail",
+                                args={"key": key},
+                                missing=["reason"],
+                            ),
+                        ]
+                    say = f"{key} đang chờ bạn test (cờ {flag_str})."
+                else:
+                    # Informational for identity
+                    if issue.assignee and issue.assignee.lower() != username:
+                        if "NEED_RESCHEDULE" in item_flags:
+                            say = f"Chờ {issue.assignee} xin dời lịch"
+                        else:
+                            say = f"Chờ {issue.assignee} xử lý"
+                        filtered_actions = []
+                    else:
+                        continue
+            elif not actions and not filtered_actions:
+                continue
+
+            actions = filtered_actions
+
             items.append(
                 AgendaItem(
                     priority=1,
@@ -456,6 +643,14 @@ def build_agenda(
                         missing=["approve", "note"],
                     )
                 ]
+                allowed = allowed_actions(issue, identity, cfg)
+                actions = [
+                    a
+                    for a in actions
+                    if a.tool in allowed or a.tool.removeprefix("eggs_") in allowed
+                ]
+                if not actions:
+                    continue
                 items.append(
                     AgendaItem(
                         priority=2,
@@ -490,6 +685,14 @@ def build_agenda(
                     missing=["verdict", "time_spent", "note"],
                 )
             ]
+            allowed = allowed_actions(issue, identity, cfg)
+            actions = [
+                a
+                for a in actions
+                if a.tool in allowed or a.tool.removeprefix("eggs_") in allowed
+            ]
+            if not actions:
+                continue
             items.append(
                 AgendaItem(
                     priority=3,
@@ -531,6 +734,14 @@ def build_agenda(
             actions = [
                 SuggestedAction(tool="eggs_qc_start", args={"key": key}, missing=[])
             ]
+            allowed = allowed_actions(issue, identity, cfg)
+            actions = [
+                a
+                for a in actions
+                if a.tool in allowed or a.tool.removeprefix("eggs_") in allowed
+            ]
+            if not actions:
+                continue
             items.append(
                 AgendaItem(
                     priority=4,
@@ -573,6 +784,14 @@ def build_agenda(
                             missing=["note"],
                         )
                     ]
+                    allowed = allowed_actions(epic_issue, identity, cfg)
+                    actions = [
+                        a
+                        for a in actions
+                        if a.tool in allowed or a.tool.removeprefix("eggs_") in allowed
+                    ]
+                    if not actions:
+                        continue
                     items.append(
                         AgendaItem(
                             priority=5,
@@ -690,6 +909,14 @@ def build_agenda(
                     missing=["time_spent", "note"],
                 )
             )
+            allowed = allowed_actions(issue, identity, cfg)
+            actions = [
+                a
+                for a in actions
+                if a.tool in allowed or a.tool.removeprefix("eggs_") in allowed
+            ]
+            if not actions:
+                continue
             items.append(
                 AgendaItem(
                     priority=7,
