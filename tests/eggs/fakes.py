@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
@@ -31,10 +32,14 @@ class FakeGateway(JiraGateway):
         field_definitions: list[dict] | None = None,
         existing_users: set[str] | None = None,
         allowed_field_values: dict[tuple[str, str, str], list[str]] | None = None,
+        default_transitions: list[str] | None = None,
     ) -> None:
         self.issues = dict(issues or {})
         self.worklogs = list(worklogs or [])
         self.transitions = dict(transitions or {})
+        self.default_transitions = (
+            list(default_transitions) if default_transitions is not None else None
+        )
         self.components_map = dict(components_map or {})
         self.user = user
         self.status_after = dict(status_after or {})
@@ -43,9 +48,12 @@ class FakeGateway(JiraGateway):
         self.role_members = dict(role_members or {})
         self.errors_on_transition = dict(errors_on_transition or {})
         self.field_definitions = list(field_definitions or [])
-        self.existing_users = set(existing_users) if existing_users is not None else None
+        self.existing_users = (
+            set(existing_users) if existing_users is not None else None
+        )
         self.allowed_field_values = dict(allowed_field_values or {})
         self.issue_properties: dict[tuple[str, str], Any] = {}
+        self.links: list[tuple[str, str, str]] = []
         self.calls: list[tuple[str, tuple, dict[str, Any]]] = []
         self._next_id = 1000
 
@@ -64,6 +72,16 @@ class FakeGateway(JiraGateway):
             Ignores JQL unless a `search_filter: Callable[[str, dict], bool]` is passed to __init__.
         """
         self._record("search", jql, fields, expand_changelog=expand_changelog)
+        link_match = re.search(
+            r'issue in linkedIssues\("([^"]+)",\s*"is blocked by"\)', jql
+        )
+        if link_match:
+            target_key = link_match.group(1)
+            return [
+                self.issues[inward]
+                for (_l_type, inward, outward) in self.links
+                if outward == target_key and inward in self.issues
+            ]
         if self.search_filter is not None:
             return [iss for iss in self.issues.values() if self.search_filter(jql, iss)]
         return list(self.issues.values())
@@ -77,7 +95,7 @@ class FakeGateway(JiraGateway):
 
     def get_transitions(self, key: str) -> list[dict]:
         self._record("get_transitions", key)
-        names = self.transitions.get(key, [])
+        names = self.transitions.get(key, self.default_transitions or [])
         return [{"id": str(i + 1), "name": name} for i, name in enumerate(names)]
 
     def transition(
@@ -98,7 +116,7 @@ class FakeGateway(JiraGateway):
         )
         if matched_trans_key:
             raise self.errors_on_transition[matched_trans_key]
-        available = self.transitions.get(key, [])
+        available = self.transitions.get(key, self.default_transitions or [])
         matched = next(
             (name for name in available if name.lower() == transition_name.lower()),
             None,
@@ -227,6 +245,7 @@ class FakeGateway(JiraGateway):
 
     def link(self, link_type: str, inward_key: str, outward_key: str) -> None:
         self._record("link", link_type, inward_key, outward_key)
+        self.links.append((link_type, inward_key, outward_key))
 
     def worklogs_since(self, since: datetime) -> list[Worklog]:
         """Fetch worklogs updated since given datetime.
