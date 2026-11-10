@@ -148,7 +148,7 @@ class TestEggsToolsRegistration:
             t for t in all_tools if should_include_tool_by_toolset(t.tags, enabled)
         ]
         tool_names = sorted(t.name for t in tools)
-        assert len(tool_names) == 25
+        assert len(tool_names) == len(ALL_EGGS_TOOL_NAMES)
         assert tool_names == sorted(ALL_EGGS_TOOL_NAMES)
 
     @pytest.mark.asyncio
@@ -170,7 +170,7 @@ class TestEggsToolsRegistration:
             and not (read_only and "write" in t.tags)
         ]
         tool_names = sorted(t.name for t in visible_tools)
-        assert len(tool_names) == 7
+        assert len(tool_names) == len(READ_EGGS_TOOL_NAMES)
         assert tool_names == sorted(READ_EGGS_TOOL_NAMES)
 
 
@@ -723,18 +723,18 @@ class TestEggsToolBehavior:
                 register_eggs_tools(srv, force=False)
                 assert len(await srv.list_tools()) == 0
 
-        # Truthy values -> registered (all 25 tools)
+        # Truthy values -> registered (all 28 tools)
         for val in ("1", "true", "yes", "TRUE", "Yes"):
             srv = FastMCP(f"test_{val}")
             with patch.dict(os.environ, {"EGGS_ENABLED": val}):
                 register_eggs_tools(srv, force=False)
-                assert len(await srv.list_tools()) == 25
+                assert len(await srv.list_tools()) == len(ALL_EGGS_TOOL_NAMES)
 
         # force=True overrides EGGS_ENABLED=False
         srv_forced = FastMCP("test_forced")
         with patch.dict(os.environ, {"EGGS_ENABLED": "false"}):
             register_eggs_tools(srv_forced, force=True)
-            assert len(await srv_forced.list_tools()) == 25
+            assert len(await srv_forced.list_tools()) == len(ALL_EGGS_TOOL_NAMES)
 
     def test_dates_asia_ho_chi_minh_timezone(self, cfg: EggsConfig):
         # 06:00 Asia/Ho_Chi_Minh = 23:00 UTC previous day
@@ -1268,3 +1268,224 @@ def test_action_result_to_dict_code_field():
     )
     d2 = action_result_to_dict(res_with_code)
     assert d2.get("code") == "missing_qc_owner"
+
+
+class TestPlanTools:
+    VALID_PLAN_YAML = """
+schema: eggs-plan/v2
+project: RFID
+epic:
+  summary: Epic Test
+  due: 2026-12-01
+  owner: ba1
+flows:
+  - code: CH-01
+    actor: CH
+    summary: Flow Check-in
+    ac:
+      - Scan RFID tag
+    due: 2026-11-25
+    ba: ba1
+    qc: qc1
+    depends_on: []
+    parts:
+      - part: BE
+        assignee: dev1
+        estimate: 1d
+tech_tasks: []
+open_questions: []
+"""
+
+    INVALID_PLAN_YAML = """
+schema: eggs-plan/v2
+project: RFID
+epic:
+  summary: Epic Test
+  due: 2026-12-01
+  owner: ba1
+flows:
+  - code: UNKNOWN-01
+    actor: UNKNOWN
+    summary: Flow Unknown Actor
+    ac:
+      - Scan RFID tag
+    due: 2026-11-25
+    ba: ba1
+    qc: qc1
+    depends_on: []
+    parts:
+      - part: BE
+        assignee: dev1
+        estimate: 1d
+tech_tasks: []
+open_questions: []
+"""
+
+    @pytest.mark.asyncio
+    async def test_eggs_migrate_epic_refuses_dev(self, cfg: EggsConfig):
+        server = FastMCP("test_jira")
+        register_eggs_tools(server, force=True)
+
+        user_gw = FakeGateway(user="dev1")
+        bot_gw = FakeGateway(
+            user="eggsbot",
+            role_members={"RFID": {"Developers": ["dev1"]}},
+        )
+
+        with (
+            patch("mcp_atlassian.eggs.tools.load_config", return_value=cfg),
+            patch(
+                "mcp_atlassian.eggs.tools.get_user_gateway",
+                AsyncMock(return_value=user_gw),
+            ),
+            patch("mcp_atlassian.eggs.tools.get_roles_reader", return_value=bot_gw),
+        ):
+            res_str = await server.call_tool("eggs_migrate_epic", {"epic": "RFID-532"})
+            res_json = json.loads(res_str.content[0].text)
+            assert res_json.get("ok") is False
+            assert "Lead-BA" in res_json.get("message", "")
+
+    @pytest.mark.asyncio
+    async def test_eggs_plan_apply_refuses_dev(self, cfg: EggsConfig):
+        server = FastMCP("test_jira")
+        register_eggs_tools(server, force=True)
+
+        user_gw = FakeGateway(user="dev1")
+        bot_gw = FakeGateway(
+            user="eggsbot",
+            role_members={"RFID": {"Developers": ["dev1"]}},
+        )
+
+        with (
+            patch("mcp_atlassian.eggs.tools.load_config", return_value=cfg),
+            patch(
+                "mcp_atlassian.eggs.tools.get_user_gateway",
+                AsyncMock(return_value=user_gw),
+            ),
+            patch("mcp_atlassian.eggs.tools.get_roles_reader", return_value=bot_gw),
+        ):
+            res_str = await server.call_tool(
+                "eggs_plan_apply", {"plan_yaml": self.VALID_PLAN_YAML}
+            )
+            res_json = json.loads(res_str.content[0].text)
+            assert res_json["ok"] is False
+            assert "Lead-BA" in res_json["message"]
+
+    @pytest.mark.asyncio
+    async def test_eggs_plan_apply_refuses_invalid_plan(self, cfg: EggsConfig):
+        server = FastMCP("test_jira")
+        register_eggs_tools(server, force=True)
+
+        user_gw = FakeGateway(
+            user="ba1",
+            components_map={"RFID": ["CH - Check-in"]},
+            allowed_field_values={
+                ("RFID", "Dev Task", cfg.fields.get("part", "customfield_10701")): [
+                    "BE",
+                    "FE APP",
+                ]
+            },
+            existing_users={"ba1", "qc1", "dev1"},
+        )
+        bot_gw = FakeGateway(
+            user="eggsbot",
+            role_members={"RFID": {"Business Analysts": ["ba1"]}},
+        )
+
+        with (
+            patch("mcp_atlassian.eggs.tools.load_config", return_value=cfg),
+            patch(
+                "mcp_atlassian.eggs.tools.get_user_gateway",
+                AsyncMock(return_value=user_gw),
+            ),
+            patch("mcp_atlassian.eggs.tools.get_roles_reader", return_value=bot_gw),
+        ):
+            initial_issue_count = len(user_gw.issues)
+            res_str = await server.call_tool(
+                "eggs_plan_apply", {"plan_yaml": self.INVALID_PLAN_YAML}
+            )
+            res_json = json.loads(res_str.content[0].text)
+            assert res_json["ok"] is False
+            assert len(res_json["warnings"]) > 0
+            # Nothing created
+            assert len(user_gw.issues) == initial_issue_count
+            assert res_json["created"] == []
+
+    @pytest.mark.asyncio
+    async def test_plan_tools_json_shapes(self, cfg: EggsConfig):
+        server = FastMCP("test_jira")
+        register_eggs_tools(server, force=True)
+
+        user_gw = FakeGateway(
+            user="ba1",
+            components_map={"RFID": ["CH - Check-in"]},
+            allowed_field_values={
+                ("RFID", "Dev Task", cfg.fields.get("part", "customfield_10701")): [
+                    "BE",
+                    "FE APP",
+                ]
+            },
+            existing_users={"ba1", "qc1", "dev1"},
+            issues={
+                "RFID-532": {
+                    "key": "RFID-532",
+                    "fields": {
+                        "issuetype": {"name": "Epic"},
+                        "summary": "Existing Epic",
+                    },
+                }
+            },
+        )
+        bot_gw = FakeGateway(
+            user="eggsbot",
+            role_members={"RFID": {"Business Analysts": ["ba1"]}},
+        )
+
+        with (
+            patch("mcp_atlassian.eggs.tools.load_config", return_value=cfg),
+            patch(
+                "mcp_atlassian.eggs.tools.get_user_gateway",
+                AsyncMock(return_value=user_gw),
+            ),
+            patch("mcp_atlassian.eggs.tools.get_roles_reader", return_value=bot_gw),
+        ):
+            # 1. eggs_plan_validate shape: {ok, errors, warnings, questions, tree, plan_yaml}
+            val_res = await server.call_tool(
+                "eggs_plan_validate", {"plan_yaml": self.VALID_PLAN_YAML}
+            )
+            val_json = json.loads(val_res.content[0].text)
+            assert "ok" in val_json
+            assert "errors" in val_json
+            assert "warnings" in val_json
+            assert "questions" in val_json
+            assert "tree" in val_json
+            assert "plan_yaml" in val_json
+            assert val_json["ok"] is True
+
+            # 2. eggs_plan_apply shape: {ok, message, changes, created, updated, warnings, plan_yaml}
+            apply_res = await server.call_tool(
+                "eggs_plan_apply",
+                {"plan_yaml": self.VALID_PLAN_YAML, "dry_run": True},
+            )
+            apply_json = json.loads(apply_res.content[0].text)
+            assert "ok" in apply_json
+            assert "message" in apply_json
+            assert "changes" in apply_json
+            assert "created" in apply_json
+            assert "updated" in apply_json
+            assert "warnings" in apply_json
+            assert "plan_yaml" in apply_json
+            assert apply_json["ok"] is True
+
+            # 3. eggs_migrate_epic shape: {plan_yaml, stories, missing, other_issues}
+            migrate_res = await server.call_tool(
+                "eggs_migrate_epic", {"epic": "RFID-532"}
+            )
+            migrate_json = json.loads(migrate_res.content[0].text)
+            assert "plan_yaml" in migrate_json
+            assert "stories" in migrate_json
+            assert "missing" in migrate_json
+            assert "actor" in migrate_json["missing"]
+            assert "due" in migrate_json["missing"]
+            assert "qc" in migrate_json["missing"]
+            assert "other_issues" in migrate_json

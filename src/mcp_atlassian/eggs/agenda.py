@@ -235,11 +235,22 @@ INTENTS: list[Intent] = [
         required=[],
     ),
     Intent(
-        name="plan_input",
+        name="plan_cards",
         roles=frozenset({"lead_ba", "lead"}),
-        examples=["tạo card từ tài liệu", "tạo luồng từ spec", "/eggs tạo card từ ..."],
-        tool=None,
-        required=[],
+        examples=[
+            "tạo card từ tài liệu này",
+            "lên card cho spec",
+            "tạo story từ yêu cầu",
+        ],
+        tool="eggs_plan_validate",
+        required=["plan_yaml"],
+    ),
+    Intent(
+        name="migrate_epic",
+        roles=frozenset({"lead_ba", "lead"}),
+        examples=["chuyển đổi Epic RFID-532", "migrate epic HH-317"],
+        tool="eggs_migrate_epic",
+        required=["epic"],
     ),
 ]
 

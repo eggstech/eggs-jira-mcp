@@ -10,7 +10,7 @@ Hệ thống triển khai bằng Docker Compose gồm hai service chạy song so
 
 1. **`mcp`**:
    - Chạy server FastMCP giao thức Streamable HTTP trên cổng 9000.
-   - Cung cấp 25 công cụ nghiệp vụ `eggs_*` và 7 công cụ Jira chỉ đọc (`jira_search`, `jira_get_issue`, `jira_get_worklog`, `jira_batch_get_changelogs`, `jira_get_project_epic_hierarchy`, `jira_get_transitions`, `jira_search_fields`).
+   - Cung cấp 28 công cụ nghiệp vụ `eggs_*` và 7 công cụ Jira chỉ đọc (`jira_search`, `jira_get_issue`, `jira_get_worklog`, `jira_batch_get_changelogs`, `jira_get_project_epic_hierarchy`, `jira_get_transitions`, `jira_search_fields`).
    - Mọi thao tác ghi của người dùng bắt buộc qua công cụ `eggs_*`. Mọi công cụ ghi Jira thô đều bị chặn.
    - Xác thực người dùng bằng Personal Access Token (PAT) cá nhân qua header HTTP.
 
@@ -253,3 +253,14 @@ docker compose build guardian
 # Khởi động lại dịch vụ
 docker compose up -d
 ```
+
+---
+
+## 10. Công cụ lập kế hoạch và chuyển đổi Epic (Plan & Migrate)
+
+Hệ thống hỗ trợ BA/Lead chuyển đổi tài liệu yêu cầu thành các Story/Dev Task chuẩn hóa trên Jira hoặc migrate các Epic cũ sang mô hình EGGS thông qua định dạng `plan.yaml` (`eggs-plan/v2`):
+
+- **`eggs_plan_validate`**: Kiểm tra tính hợp lệ và chuẩn hóa cấu trúc `plan.yaml` đối chiếu với Jira (Component/Actor, tuỳ chọn Part, thành viên dự án, ngày hết hạn). Trả về cây công việc và danh sách câu hỏi cần làm rõ.
+- **`eggs_plan_apply`**: Áp dụng kế hoạch `plan.yaml` lên Jira (hỗ trợ `dry_run=True` để xem trước thay đổi). Tự động tạo/cập nhật Epic, Story, Dev Task, Ad-hoc Task và liên kết `Blocks` giữa các luồng.
+- **`eggs_migrate_epic`**: Trích xuất Epic hiện có trên Jira thành file `plan.yaml` mẫu kèm thống kê các thông tin còn thiếu (actor, due date, qc) để bổ sung trước khi chuẩn hóa.
+

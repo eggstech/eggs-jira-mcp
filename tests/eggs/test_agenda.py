@@ -402,6 +402,8 @@ def test_every_intent_tool_is_a_real_action():
         "eggs_workstream_status",
         "eggs_daily_report",
         "eggs_pending_approvals",
+        "eggs_plan_validate",
+        "eggs_migrate_epic",
     }
     for it in INTENTS:
         if it.tool is None or it.tool in known_read_tools:
@@ -431,6 +433,8 @@ def test_intents_for_dev_excludes_decide_reschedule():
     assert "decide_reschedule" not in names
     assert "flow_reschedule" not in names
     assert "uat" not in names
+    assert "plan_cards" not in names
+    assert "migrate_epic" not in names
 
 
 def test_intents_for_lead_includes_status_and_report():
@@ -446,6 +450,30 @@ def test_intents_for_lead_includes_status_and_report():
     assert "daily_report" in names
     assert "pending_approvals" in names
     assert "decide_reschedule" in names
+    assert "plan_cards" in names
+    assert "migrate_epic" in names
+
+
+def test_intents_visible_to_lead_ba_and_not_dev():
+    ba_identity = Identity(
+        username="ba1",
+        display_name="BA 1",
+        roles={"RFID": {"lead_ba"}},
+        is_lead=False,
+    )
+    ba_intents = {it.name for it in intents_for(ba_identity)}
+    assert "plan_cards" in ba_intents
+    assert "migrate_epic" in ba_intents
+
+    dev_identity = Identity(
+        username="dev1",
+        display_name="Dev 1",
+        roles={"RFID": {"dev"}},
+        is_lead=False,
+    )
+    dev_intents = {it.name for it in intents_for(dev_identity)}
+    assert "plan_cards" not in dev_intents
+    assert "migrate_epic" not in dev_intents
 
 
 def test_mentioned_keys_filters_unknown_projects():

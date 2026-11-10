@@ -31,6 +31,9 @@ from mcp_atlassian.eggs.config import EggsConfig, load_config
 from mcp_atlassian.eggs.gateway import JiraGateway
 from mcp_atlassian.eggs.gateway_atlassian import AtlassianGateway
 from mcp_atlassian.eggs.identity import Identity, IdentityCache, resolve_identity
+from mcp_atlassian.eggs.plan import PlanError, dump_plan, parse_plan
+from mcp_atlassian.eggs.plan_apply import apply_plan, export_epic
+from mcp_atlassian.eggs.plan_validate import load_plan_context, validate_plan
 from mcp_atlassian.eggs.report import (
     Snapshot,
     build_snapshot,
@@ -57,6 +60,8 @@ READ_EGGS_TOOL_NAMES = frozenset(
         "eggs_workstream_status",
         "eggs_daily_report",
         "eggs_pending_approvals",
+        "eggs_plan_validate",
+        "eggs_migrate_epic",
     }
 )
 
@@ -80,6 +85,7 @@ WRITE_EGGS_TOOL_NAMES = frozenset(
         "eggs_end_day",
         "eggs_triage_open",
         "eggs_triage_close",
+        "eggs_plan_apply",
     }
 )
 
@@ -568,8 +574,105 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
             render_pending_approvals, snapshot, ident.username, cfg
         )
 
+    @server.tool(
+        tags=read_tags,
+        annotations={"title": "EGGS Plan Validate", "readOnlyHint": True},
+    )
+    async def eggs_plan_validate(
+        ctx: Context,
+        plan_yaml: Annotated[
+            str, Field(description="Nội dung kế hoạch plan.yaml định dạng eggs-plan/v2")
+        ],
+    ) -> str:
+        """Kiểm tra và chuẩn hóa file plan.yaml trước khi đưa lên Jira."""
+        cfg = await asyncio.to_thread(load_config)
+        user_gw = await get_user_gateway(ctx, write=False)
+        now = datetime.now(ZoneInfo(cfg.timezone))
+        today = now.astimezone(ZoneInfo(cfg.timezone)).date()
+
+        try:
+            plan = parse_plan(plan_yaml)
+        except PlanError as err:
+            out = {
+                "ok": False,
+                "errors": [{"path": err.path, "message": str(err)}],
+                "warnings": [],
+                "questions": [],
+                "tree": "",
+                "plan_yaml": plan_yaml,
+            }
+            return json.dumps(out, indent=2, ensure_ascii=False)
+
+        ctx_plan = await asyncio.to_thread(load_plan_context, user_gw, cfg, plan, today)
+        report = await asyncio.to_thread(validate_plan, plan, ctx_plan, cfg)
+        errors = [
+            {"path": f.path, "message": f.message}
+            for f in report.findings
+            if f.level == "error"
+        ]
+        warnings = [f.message for f in report.findings if f.level == "warning"]
+        updated_yaml = dump_plan(report.plan)
+        out = {
+            "ok": report.ok,
+            "errors": errors,
+            "warnings": warnings,
+            "questions": report.questions,
+            "tree": report.tree,
+            "plan_yaml": updated_yaml,
+        }
+        return json.dumps(out, indent=2, ensure_ascii=False)
+
+    @server.tool(
+        tags=read_tags,
+        annotations={"title": "EGGS Migrate Epic", "readOnlyHint": True},
+    )
+    async def eggs_migrate_epic(
+        ctx: Context,
+        epic: Annotated[
+            str,
+            Field(description="Mã Epic cần chuyển đổi (ví dụ: RFID-532, HH-317)"),
+        ],
+    ) -> str:
+        """Trích xuất Epic hiện có thành plan.yaml để chuyển đổi sang mô hình EGGS."""
+        cfg = await asyncio.to_thread(load_config)
+        user_gw = await get_user_gateway(ctx, write=False)
+        roles_gw = await asyncio.to_thread(get_roles_reader, cfg)
+        ident = await asyncio.to_thread(
+            resolve_identity, user_gw, roles_gw, cfg, _identity_cache
+        )
+
+        proj = epic.split("-")[0].upper()
+        refusal = _check_project_role(ident, proj, {"lead_ba"}, "Lead-BA")
+        if refusal:
+            out = {
+                "ok": False,
+                "message": refusal.message,
+                "plan_yaml": "",
+                "stories": 0,
+                "missing": {"actor": 0, "due": 0, "qc": 0},
+                "other_issues": 0,
+            }
+            return json.dumps(out, indent=2, ensure_ascii=False)
+
+        exported_plan = await asyncio.to_thread(export_epic, user_gw, cfg, epic)
+        missing_actor = sum(1 for f in exported_plan.flows if not f.actor)
+        missing_due = sum(1 for f in exported_plan.flows if not f.due)
+        missing_qc = sum(1 for f in exported_plan.flows if not f.qc)
+        plan_yaml = dump_plan(exported_plan)
+        out = {
+            "plan_yaml": plan_yaml,
+            "stories": len(exported_plan.flows),
+            "missing": {
+                "actor": missing_actor,
+                "due": missing_due,
+                "qc": missing_qc,
+            },
+            "other_issues": len(exported_plan.other_issues),
+        }
+        return json.dumps(out, indent=2, ensure_ascii=False)
+
     # -------------------------------------------------------------------------
-    # WRITE TOOLS (18)
+    # WRITE TOOLS (19)
     # -------------------------------------------------------------------------
 
     @server.tool(tags=write_tags, annotations={"title": "EGGS Schedule"})
@@ -1616,3 +1719,68 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
                 _attach_next_agenda_item, res, user_gw, ident, cfg, cal, now
             )
         return json.dumps(action_result_to_dict(res), indent=2, ensure_ascii=False)
+
+    @server.tool(tags=write_tags, annotations={"title": "EGGS Plan Apply"})
+    @eggs_check_write_access
+    async def eggs_plan_apply(
+        ctx: Context,
+        plan_yaml: Annotated[
+            str, Field(description="Nội dung kế hoạch plan.yaml định dạng eggs-plan/v2")
+        ],
+        *,
+        dry_run: Annotated[
+            bool, Field(description="Chạy thử nghiệm không ghi", default=False)
+        ] = False,
+    ) -> str:
+        """Tạo hoặc cập nhật Epic, Story, Dev Task theo kế hoạch plan.yaml."""
+        cfg = await asyncio.to_thread(load_config)
+        user_gw = await get_user_gateway(ctx, write=True)
+        roles_gw = await asyncio.to_thread(get_roles_reader, cfg)
+        ident = await asyncio.to_thread(
+            resolve_identity, user_gw, roles_gw, cfg, _identity_cache
+        )
+
+        try:
+            plan = parse_plan(plan_yaml)
+        except PlanError as err:
+            out = {
+                "ok": False,
+                "message": f"Lỗi cú pháp kế hoạch: {err}",
+                "changes": [],
+                "created": [],
+                "updated": [],
+                "warnings": [f"{err.path}: {err}"],
+                "plan_yaml": plan_yaml,
+            }
+            return json.dumps(out, indent=2, ensure_ascii=False)
+
+        proj = plan.project.upper()
+        refusal = _check_project_role(ident, proj, {"lead_ba"}, "Lead-BA")
+        if refusal:
+            out = {
+                "ok": False,
+                "message": refusal.message,
+                "changes": [],
+                "created": [],
+                "updated": [],
+                "warnings": [],
+                "plan_yaml": plan_yaml,
+            }
+            return json.dumps(out, indent=2, ensure_ascii=False)
+
+        now = datetime.now(ZoneInfo(cfg.timezone))
+        today = now.astimezone(ZoneInfo(cfg.timezone)).date()
+        ctx_plan = await asyncio.to_thread(load_plan_context, user_gw, cfg, plan, today)
+        res = await asyncio.to_thread(
+            apply_plan, user_gw, cfg, plan, ctx_plan, dry_run=dry_run
+        )
+        out = {
+            "ok": res.ok,
+            "message": res.message,
+            "changes": res.changes,
+            "created": res.created,
+            "updated": res.updated,
+            "warnings": res.warnings,
+            "plan_yaml": dump_plan(res.plan),
+        }
+        return json.dumps(out, indent=2, ensure_ascii=False)
