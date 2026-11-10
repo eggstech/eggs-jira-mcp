@@ -166,3 +166,6 @@ class TestDeployToolFiltering:
 
         assert tuple(enabled_tools_env) == DEPLOY_ENABLED_TOOLS
         assert tuple(toolsets_env) == DEPLOY_TOOLSETS
+
+        mcp_healthcheck = data["services"]["mcp"]["healthcheck"]["test"]
+        assert any("http://127.0.0.1:9000/healthz" in part for part in mcp_healthcheck)
