@@ -565,3 +565,33 @@ def test_get_changelog_null_total_does_not_crash(mock_client):
         "changelog": {"histories": [{"id": "1"}], "total": None}
     }
     assert gateway.get_changelog("PROJ-1") == [{"id": "1"}]
+
+
+def test_set_issue_property_sends_json_string(mock_client):
+    gateway = AtlassianGateway(mock_client)
+    gateway.set_issue_property("PROJ-1", "eggs.flowCode", "CH-01")
+
+    mock_client.put.assert_called_once_with(
+        "rest/api/2/issue/PROJ-1/properties/eggs.flowCode", data='"CH-01"'
+    )
+
+
+def test_get_issue_property_returns_value_or_none(mock_client):
+    from requests.exceptions import HTTPError
+
+    gateway = AtlassianGateway(mock_client)
+    mock_client.get.return_value = {"key": "eggs.flowCode", "value": "CH-01"}
+    assert gateway.get_issue_property("PROJ-1", "eggs.flowCode") == "CH-01"
+
+    resp = MagicMock()
+    resp.status_code = 404
+    mock_client.get.side_effect = HTTPError("404 Client Error", response=resp)
+    assert gateway.get_issue_property("PROJ-1", "eggs.flowCode") is None
+
+
+def test_user_exists_url_encodes_username(mock_client):
+    gateway = AtlassianGateway(mock_client)
+    mock_client.get.return_value = {"name": "a b"}
+
+    assert gateway.user_exists("a b") is True
+    mock_client.get.assert_called_once_with("rest/api/2/user?username=a%20b")

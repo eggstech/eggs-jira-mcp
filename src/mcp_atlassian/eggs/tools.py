@@ -421,7 +421,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
     write_tags = {"jira", "write", f"toolset:{EGGS_TOOLSET_NAME}"}
 
     # -------------------------------------------------------------------------
-    # READ TOOLS (7)
+    # READ TOOLS (11)
     # -------------------------------------------------------------------------
 
     @server.tool(
@@ -812,12 +812,31 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
             resolve_identity, user_gw, roles_gw, cfg, _identity_cache
         )
 
-        proj = epic.split("-")[0].upper()
+        try:
+            epic_issue = await asyncio.to_thread(user_gw.get_issue, epic)
+            epic_error = None
+        except Exception as exc:  # noqa: BLE001
+            epic_issue = None
+            epic_error = str(exc)
+
+        project_field = (epic_issue or {}).get("fields", {}).get("project") or {}
+        proj = (project_field.get("key") or epic.split("-")[0]).upper()
         refusal = _check_project_role(ident, proj, {"lead_ba"}, "Lead-BA")
         if refusal:
             out = {
                 "ok": False,
                 "message": refusal.message,
+                "plan_yaml": "",
+                "stories": 0,
+                "missing": {"actor": 0, "due": 0, "qc": 0},
+                "other_issues": 0,
+            }
+            return json.dumps(out, indent=2, ensure_ascii=False)
+
+        if epic_error is not None:
+            out = {
+                "ok": False,
+                "message": f"Không tìm thấy Epic {epic}: {epic_error}",
                 "plan_yaml": "",
                 "stories": 0,
                 "missing": {"actor": 0, "due": 0, "qc": 0},
@@ -831,6 +850,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         missing_qc = sum(1 for f in exported_plan.flows if not f.qc)
         plan_yaml = dump_plan(exported_plan)
         out = {
+            "ok": True,
             "plan_yaml": plan_yaml,
             "stories": len(exported_plan.flows),
             "missing": {
@@ -855,7 +875,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         return await asyncio.to_thread(get_components_summary, user_gw, project.upper())
 
     # -------------------------------------------------------------------------
-    # WRITE TOOLS (19)
+    # WRITE TOOLS (23)
     # -------------------------------------------------------------------------
 
     @server.tool(tags=write_tags, annotations={"title": "EGGS Schedule"})
@@ -1991,6 +2011,8 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
                 "created": [],
                 "updated": [],
                 "warnings": [f"{err.path}: {err}"],
+                "errors": [{"code": "", "key": "", "error": str(err)}],
+                "would_create": [],
                 "plan_yaml": plan_yaml,
             }
             return json.dumps(out, indent=2, ensure_ascii=False)
@@ -2005,6 +2027,8 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
                 "created": [],
                 "updated": [],
                 "warnings": [],
+                "errors": [],
+                "would_create": [],
                 "plan_yaml": plan_yaml,
             }
             return json.dumps(out, indent=2, ensure_ascii=False)
@@ -2022,6 +2046,8 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
             "created": res.created,
             "updated": res.updated,
             "warnings": res.warnings,
+            "errors": res.errors,
+            "would_create": res.would_create,
             "plan_yaml": dump_plan(res.plan),
         }
         return json.dumps(out, indent=2, ensure_ascii=False)

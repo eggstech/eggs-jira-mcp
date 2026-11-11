@@ -1475,13 +1475,18 @@ open_questions: []
             assert "updated" in apply_json
             assert "warnings" in apply_json
             assert "plan_yaml" in apply_json
+            assert "errors" in apply_json
+            assert "would_create" in apply_json
             assert apply_json["ok"] is True
+            assert "DRYRUN" not in apply_json["plan_yaml"]
+            assert apply_json["would_create"]
 
-            # 3. eggs_migrate_epic shape: {plan_yaml, stories, missing, other_issues}
+            # 3. eggs_migrate_epic shape: {ok, plan_yaml, stories, missing, other_issues}
             migrate_res = await server.call_tool(
                 "eggs_migrate_epic", {"epic": "RFID-532"}
             )
             migrate_json = json.loads(migrate_res.content[0].text)
+            assert migrate_json["ok"] is True
             assert "plan_yaml" in migrate_json
             assert "stories" in migrate_json
             assert "missing" in migrate_json
