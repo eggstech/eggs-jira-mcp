@@ -1891,7 +1891,10 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         assignee: Annotated[
             str | None,
             Field(
-                description="Username người nhận việc",
+                description=(
+                    "Username người nhận việc. Bỏ trống: Dev tạo bug/adhoc và BA "
+                    "tạo Story thì giao cho chính người tạo; còn lại phải nêu"
+                ),
                 default=None,
             ),
         ] = None,

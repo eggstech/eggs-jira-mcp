@@ -2756,6 +2756,26 @@ class Actions:
         else:
             effective_summary = summary.strip()
 
+        # 11/11: without an assignee Jira falls back to the Project Lead, which
+        # the dry run never showed. Default to the creator when they do this
+        # kind of work (Dev for a bug/Ad-hoc, BA for a Story), otherwise ask.
+        if issue_type != "bug_sub" and not effective_assignee:
+            owner_role = "lead_ba" if issue_type == "story" else "dev"
+            if creator and owner_role in effective_roles:
+                effective_assignee = creator
+            else:
+                who = "BA phụ trách Story" if issue_type == "story" else "Dev xử lý"
+                return ActionResult(
+                    ok=False,
+                    message=(
+                        f"Cần chỉ định người thực hiện ({who}). Nếu bỏ trống, "
+                        "Jira sẽ tự gán cho Project Lead."
+                    ),
+                    missing=["assignee"],
+                    changes=[],
+                    next_actions=[],
+                )
+
         if dry_run:
             if issue_type == "bug_sub":
                 changes = [

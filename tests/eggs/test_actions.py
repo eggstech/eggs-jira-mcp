@@ -4308,6 +4308,7 @@ def test_create_issue_validations(cfg, cal):
         project="EGGSBOX",
         issue_type="adhoc",
         summary="Adhoc dry run",
+        assignee="dev1",
         creator="lead.ba",
         creator_roles={"lead_ba"},
         dry_run=True,
@@ -5268,3 +5269,121 @@ def test_has_ac_heading_accepts_wiki_and_legacy_markdown():
     assert has_ac_heading("## Acceptance Criteria\n- a")
     assert has_ac_heading("h3. acceptance criteria")
     assert not has_ac_heading("Mô tả không có AC")
+
+
+# --- W4 (11/11): never let Jira pick the assignee (it used the Project Lead) ----
+def _eggsbox(cfg):
+    cfg.projects["EGGSBOX"] = ProjectConfig(
+        key="EGGSBOX", default_lead_ba="cuong.huynh", triage_owner="tuan.bui"
+    )
+
+
+def _created_fields(gw):
+    return [c for c in gw.calls if c[0] == "create_issue"][-1][1][0]
+
+
+@pytest.mark.parametrize("issue_type", ["adhoc", "bug"])
+def test_dev_creating_without_assignee_is_assigned_to_self(cfg, cal, issue_type):
+    _eggsbox(cfg)
+    gw = FakeGateway()
+    kwargs = {"qc_owner": "tuan.bui"} if issue_type == "bug" else {}
+    dry = _make_actions(gw, cfg, cal).create_issue(
+        project="EGGSBOX",
+        issue_type=issue_type,
+        summary="x",
+        creator="henry",
+        creator_roles={"dev"},
+        dry_run=True,
+        **kwargs,
+    )
+    assert "Assignee: henry" in dry.changes
+    res = _make_actions(gw, cfg, cal).create_issue(
+        project="EGGSBOX",
+        issue_type=issue_type,
+        summary="x",
+        creator="henry",
+        creator_roles={"dev"},
+        **kwargs,
+    )
+    assert res.ok is True
+    assert _created_fields(gw)["assignee"] == {"name": "henry"}
+
+
+@pytest.mark.parametrize("issue_type", ["adhoc", "bug"])
+def test_qc_creating_without_assignee_is_asked_who(cfg, cal, issue_type):
+    _eggsbox(cfg)
+    gw = FakeGateway()
+    res = _make_actions(gw, cfg, cal).create_issue(
+        project="EGGSBOX",
+        issue_type=issue_type,
+        summary="x",
+        creator="tuan.bui",
+        creator_roles={"qc"},
+        dry_run=True,
+    )
+    assert res.ok is False
+    assert res.missing == ["assignee"]
+    assert "Project Lead" in res.message
+
+
+def test_story_without_assignee_goes_to_ba_creator_else_asks(cfg, cal):
+    _eggsbox(cfg)
+    gw = FakeGateway(
+        issues={
+            "EGGSBOX-1": {
+                "key": "EGGSBOX-1",
+                "fields": {
+                    "project": {"key": "EGGSBOX"},
+                    "issuetype": {"name": "Epic"},
+                    "status": {"name": "Open"},
+                },
+            }
+        }
+    )
+    res = _make_actions(gw, cfg, cal).create_issue(
+        project="EGGSBOX",
+        issue_type="story",
+        summary="x",
+        epic="EGGSBOX-1",
+        creator="quang.nguyen",
+        creator_roles={"lead_ba", "qc"},
+        dry_run=True,
+    )
+    assert res.ok is True and "Assignee: quang.nguyen" in res.changes
+    res_qc = _make_actions(gw, cfg, cal).create_issue(
+        project="EGGSBOX",
+        issue_type="story",
+        summary="x",
+        epic="EGGSBOX-1",
+        creator="tuan.bui",
+        creator_roles={"qc"},
+        dry_run=True,
+    )
+    assert res_qc.ok is False and res_qc.missing == ["assignee"]
+
+
+def test_bug_related_to_keeps_related_assignee(cfg, cal):
+    _eggsbox(cfg)
+    gw = FakeGateway(
+        issues={
+            "EGGSBOX-5": {
+                "key": "EGGSBOX-5",
+                "fields": {
+                    "project": {"key": "EGGSBOX"},
+                    "issuetype": {"name": "Dev Task"},
+                    "status": {"name": "Done"},
+                    "assignee": {"name": "nhan.duong"},
+                },
+            }
+        }
+    )
+    res = _make_actions(gw, cfg, cal).create_issue(
+        project="EGGSBOX",
+        issue_type="bug",
+        summary="x",
+        related_to="EGGSBOX-5",
+        creator="tuan.bui",
+        creator_roles={"qc"},
+        dry_run=True,
+    )
+    assert res.ok is True and "Assignee: nhan.duong" in res.changes
