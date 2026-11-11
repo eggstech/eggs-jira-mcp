@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -165,6 +165,49 @@ def _expand_env_vars(data: Any) -> Any:
     return data
 
 
+_CHAT_WEBHOOK_PREFIX = "https://chat.googleapis.com/"
+
+
+def _apply_webhooks_file(
+    config_path: Path,
+    lead_chat_webhook: str | None,
+    projects: dict[str, ProjectConfig],
+) -> tuple[str | None, dict[str, ProjectConfig]]:
+    """Overlay Google Chat webhooks from webhooks.yaml (11/11).
+
+    The file sits next to config.yaml (or at $EGGS_WEBHOOKS) and holds
+    ``lead: <url>`` plus ``projects: {KEY: <url>}``. It is read on every load, so
+    the guardian picks up edits on its next run. Only Google Chat URLs are used;
+    URLs are never logged because they carry the webhook secret.
+    """
+    env_path = os.getenv("EGGS_WEBHOOKS")
+    wh_path = Path(env_path) if env_path else config_path.parent / "webhooks.yaml"
+    if not wh_path.is_file():
+        return lead_chat_webhook, projects
+    raw = yaml.safe_load(wh_path.read_text(encoding="utf-8")) or {}
+    if not isinstance(raw, dict):
+        logger.warning("webhooks.yaml không đúng định dạng, bỏ qua")
+        return lead_chat_webhook, projects
+
+    def _valid(target: str, url: Any) -> str | None:
+        if not url:
+            return None
+        if isinstance(url, str) and url.strip().startswith(_CHAT_WEBHOOK_PREFIX):
+            return url.strip()
+        logger.warning("webhooks.yaml: %s không phải URL Google Chat, bỏ qua", target)
+        return None
+
+    if "lead" in raw:
+        lead_chat_webhook = _valid("lead", raw.get("lead"))
+    new_projects = dict(projects)
+    for key, url in (raw.get("projects") or {}).items():
+        if key not in new_projects:
+            logger.warning("webhooks.yaml: dự án %s không có trong config, bỏ qua", key)
+            continue
+        new_projects[key] = replace(new_projects[key], chat_webhook=_valid(key, url))
+    return lead_chat_webhook, new_projects
+
+
 def load_config(path: str | None = None) -> EggsConfig:
     """Load EggsConfig from a YAML file path or EGGS_CONFIG env var."""
     if not path:
@@ -274,6 +317,11 @@ def load_config(path: str | None = None) -> EggsConfig:
     fields_raw = data.get("fields") or {}
     clean_fields = {k: v for k, v in fields_raw.items() if v is not None}
 
+    lead_chat_webhook = data.get("lead_chat_webhook")
+    lead_chat_webhook, projects = _apply_webhooks_file(
+        config_path, lead_chat_webhook, projects
+    )
+
     return EggsConfig(
         lead_user=data["lead_user"],
         jira_url=data["jira_url"],
@@ -301,7 +349,7 @@ def load_config(path: str | None = None) -> EggsConfig:
         thresholds=thresholds,
         holidays=frozenset(holidays_set),
         projects=projects,
-        lead_chat_webhook=data.get("lead_chat_webhook"),
+        lead_chat_webhook=lead_chat_webhook,
         kit_min_version=data.get("kit_min_version", "0.1.0"),
         roles=normalized_roles,
         create_roles=data.get(

@@ -2309,6 +2309,12 @@ def test_bot_identity_current_user_raises_skips_unfreeze_and_evaluates_health(
     res = evaluate(gw, cfg, now, cal)
     assert res.exit_code == 0
 
+    # A non-string identity (review S2 minor) is treated as unknown, not a crash
+    gw2 = FakeGateway(issues=issues, user="bot")
+    gw2.myself = MagicMock(return_value={"name": {"odd": 1}})
+    assert evaluate(gw2, cfg, now, cal).exit_code == 0
+    assert not [c for c in gw2.calls if c[0] == "remove_label"]
+
     # removes no label
     remove_calls = [c for c in gw.calls if c[0] == "remove_label"]
     assert len(remove_calls) == 0
@@ -3266,3 +3272,54 @@ def test_backfill_qc_owner_skips_issue_with_no_issuetype_name(
     assert any(
         "RFID-10" in r.message and "issuetype" in r.message for r in caplog.records
     )
+
+
+# --- 11/11: chat-test sends one test message to every configured group -------
+def _chat_test_env(cfg, monkeypatch, tmp_path):
+    config_file = tmp_path / "eggs.yaml"
+    config_file.write_text(yaml.safe_dump(dataclasses.asdict(cfg), allow_unicode=True))
+    monkeypatch.setenv("JIRA_URL", cfg.jira_url)
+    monkeypatch.setenv("EGGS_BOT_TOKEN", "dummy_token")
+    monkeypatch.setenv("EGGS_CONFIG", str(config_file))
+    monkeypatch.delenv("EGGS_WEBHOOKS", raising=False)
+    posted: list[tuple[str, str | None]] = []
+
+    def fake_post(webhook, text, http_post=None, project_key=None):
+        if "FAIL" in webhook:
+            raise RuntimeError("Gửi Google Chat thất bại (HTTP 403)")
+        posted.append((webhook, project_key))
+        assert "EGGS guardian" in text
+
+    monkeypatch.setattr("mcp_atlassian.eggs.guardian.post_to_chat", fake_post)
+    return posted
+
+
+def test_chat_test_posts_to_lead_and_every_project_with_a_webhook(
+    cfg: EggsConfig, monkeypatch: pytest.MonkeyPatch, tmp_path, capsys
+):
+    posted = _chat_test_env(cfg, monkeypatch, tmp_path)
+    gw = FakeGateway(issues={})
+    code = main(["chat-test"], gateway=gw)
+    assert code == 0
+    expected = {None} | {
+        k for k, p in cfg.projects.items() if p.chat_webhook and not p.frozen
+    }
+    assert {p[1] for p in posted} == expected
+    assert gw.calls == []  # no Jira call
+    out = capsys.readouterr().out
+    assert "https://" not in out  # never print webhook URLs
+
+
+def test_chat_test_one_project_and_failure_exit_code(
+    cfg: EggsConfig, monkeypatch: pytest.MonkeyPatch, tmp_path, capsys
+):
+    proj = next(k for k, p in cfg.projects.items() if p.chat_webhook)
+    cfg.projects[proj] = dataclasses.replace(
+        cfg.projects[proj], chat_webhook="https://chat.googleapis.com/FAIL"
+    )
+    posted = _chat_test_env(cfg, monkeypatch, tmp_path)
+    code = main(["chat-test", "--project", proj], gateway=FakeGateway(issues={}))
+    assert code == 1
+    assert posted == []
+    out = capsys.readouterr().out
+    assert proj in out and "HTTP 403" in out and "FAIL" not in out

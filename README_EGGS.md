@@ -91,7 +91,7 @@ uv run eggs-guardian resolve-fields
 Mở file `config.yaml` và cập nhật:
 - `lead_user`: Tên đăng nhập Jira của Lead dự án.
 - `projects`: Khai báo các dự án áp dụng quy trình, người chịu trách nhiệm (`default_lead_ba`, `triage_owner`, `qc_owner`).
-- `webhooks`: Điền URL Google Chat Webhook cho kênh thông báo chung của Lead và kênh riêng của từng dự án.
+- Webhook Google Chat **không** để trong `config.yaml`: tạo `webhooks.yaml` từ `webhooks.example.yaml` (cùng thư mục), điền `lead` (nhóm chung, nhận báo cáo tổng) và `projects: {KEY: URL}` (nhóm nội bộ của từng dự án). Chỉ nhận URL `https://chat.googleapis.com/...`. Guardian đọc lại file ở mỗi lượt chạy nên sửa xong không cần khởi động lại. Kiểm tra: `docker compose exec guardian eggs-guardian chat-test [--project KEY]` (in OK/LỖI từng nhóm, không in URL). Phải tạo file trước `docker compose up`, nếu không Docker tạo thư mục trùng tên.
 
 ### Bước 4: Cấu hình biến môi trường
 

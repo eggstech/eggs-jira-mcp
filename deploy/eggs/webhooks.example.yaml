@@ -1,0 +1,11 @@
+# Google Chat webhooks for eggs-guardian (internal groups only).
+# Copy to webhooks.yaml next to config.yaml; never commit the real file.
+# The guardian reads it on every run: edits apply from the next run, no restart.
+# Check with: docker compose exec guardian eggs-guardian chat-test [--project KEY]
+#
+# lead: the shared group for all projects (overall report).
+# projects: one internal group per project. A project left out or empty gets no
+# message. Several projects may point to the same URL.
+lead: ""
+projects:
+  EGGSBOX: ""

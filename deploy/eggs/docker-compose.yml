@@ -33,7 +33,9 @@ services:
       context: ../..
       dockerfile: deploy/eggs/Dockerfile.guardian
     image: eggs-jira-guardian:latest
-    entrypoint: ["supercronic", "/deploy/crontab"]
+    # Absolute path: supercronic re-execs argv[0] as a subreaper and fails with
+    # "fork exec: no such file or directory" when started as plain "supercronic".
+    entrypoint: ["/usr/local/bin/supercronic", "/deploy/crontab"]
     environment:
       JIRA_URL: https://jira.eggstech.io.vn
       EGGS_BOT_TOKEN: ${EGGS_BOT_TOKEN}
@@ -42,6 +44,9 @@ services:
     volumes:
       - ./crontab:/deploy/crontab:ro
       - ./config.yaml:/config/config.yaml:ro
+      # Google Chat webhooks (secrets). Create it from webhooks.example.yaml before
+      # `up`, otherwise Docker creates a directory with this name.
+      - ./webhooks.yaml:/config/webhooks.yaml:ro
     restart: unless-stopped
     depends_on:
       - mcp

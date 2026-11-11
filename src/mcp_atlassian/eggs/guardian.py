@@ -1049,7 +1049,7 @@ def unfreeze_stale_issues(
         logger.warning("Không thể xác định danh tính bot user: %s", exc)
         return []
 
-    if not bot_user or not bot_user.strip():
+    if not isinstance(bot_user, str) or not bot_user.strip():
         logger.warning(
             "Danh tính bot user trống, bỏ qua unfreeze để tránh gỡ nhầm nhãn."
         )
@@ -1332,6 +1332,46 @@ def _build_gateway_from_env(cfg: EggsConfig | None = None) -> JiraGateway:
     return AtlassianGateway(fetcher.jira, cfg=cfg)
 
 
+def run_chat_test(
+    cfg: EggsConfig,
+    now: datetime,
+    project: str | None = None,
+    http_post: Any = None,
+) -> int:
+    """Send one test message to each configured Google Chat group.
+
+    Prints one line per group (never the URL). Returns 1 if any send failed or
+    the requested project has no webhook.
+    """
+    targets: list[tuple[str, str | None, str]] = []
+    if project:
+        p = cfg.projects.get(project)
+        if not p or not p.chat_webhook:
+            sys.stdout.write(f"{project}: chưa có webhook trong webhooks.yaml\n")
+            return 1
+        targets.append((project, project, p.chat_webhook))
+    else:
+        if cfg.lead_chat_webhook:
+            targets.append(("lead (nhóm chung)", None, cfg.lead_chat_webhook))
+        for key, p in sorted(cfg.projects.items()):
+            if p.chat_webhook and not p.frozen:
+                targets.append((key, key, p.chat_webhook))
+    if not targets:
+        sys.stdout.write("Chưa khai báo webhook nào (webhooks.yaml).\n")
+        return 1
+
+    failed = 0
+    for label, key, url in targets:
+        text = f"✅ EGGS guardian: kết nối nhóm chat {label} OK ({now:%H:%M %d/%m/%Y})"
+        try:
+            post_to_chat(url, text, http_post=http_post, project_key=key)
+            sys.stdout.write(f"{label}: OK\n")
+        except Exception as e:  # noqa: BLE001
+            failed += 1
+            sys.stdout.write(f"{label}: LỖI {e}\n")
+    return 1 if failed else 0
+
+
 def main(
     argv: list[str] | None = None,
     gateway: JiraGateway | None = None,
@@ -1371,6 +1411,13 @@ def main(
         "ops-epics", help="Đảm bảo tồn tại Epic [OPS] tháng hiện tại cho từng dự án"
     )
     p_ops.add_argument("--dry-run", action="store_true", help="Không tạo mới")
+
+    # chat-test
+    p_chat = subparsers.add_parser(
+        "chat-test",
+        help="Gửi một tin thử vào nhóm Lead và nhóm của từng dự án (webhooks.yaml)",
+    )
+    p_chat.add_argument("--project", help="Chỉ gửi thử cho một dự án")
 
     # resolve-fields
     subparsers.add_parser(
@@ -1436,6 +1483,9 @@ def main(
     tz = ZoneInfo(cfg.timezone)
     now = datetime.now(tz)
     today = now.date()
+
+    if args.subcommand == "chat-test":
+        return run_chat_test(cfg, now, project=args.project, http_post=http_post)
 
     # Every subcommand exits 0 on a non-working day without calling Jira,
     # except resolve-fields, backfill-qc-owner, and freeze-legacy

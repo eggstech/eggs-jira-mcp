@@ -565,3 +565,76 @@ projects:
     cfg = load_config(str(cfg_file))
     assert cfg.fields["epic_name"] == "customfield_10102"
     assert cfg.fields["planned_start"] == "customfield_99999"
+
+
+# --- 11/11: Google Chat webhooks live in webhooks.yaml next to config.yaml -----
+_BASE_YAML = """
+lead_user: cuong.huynh
+jira_url: https://jira.eggstech.io.vn
+link_types:
+  interrupts: Interrupts
+  causes: Causes
+  relates: Relates
+  duplicates: Duplicate
+projects:
+  EGGSBOX:
+    default_lead_ba: cuong.huynh
+    triage_owner: tuan.bui
+  ROCKY:
+    default_lead_ba: cuong.huynh
+    triage_owner: tuan.bui
+    chat_webhook: https://chat.googleapis.com/v1/spaces/OLD/messages?key=k
+"""
+_G = "https://chat.googleapis.com/v1/spaces/"
+
+
+def _write(tmp_path, webhooks: str | None):
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(_BASE_YAML)
+    if webhooks is not None:
+        (tmp_path / "webhooks.yaml").write_text(webhooks)
+    return str(cfg_file)
+
+
+def test_webhooks_file_sets_lead_and_project_webhooks(tmp_path, monkeypatch):
+    monkeypatch.delenv("EGGS_WEBHOOKS", raising=False)
+    path = _write(
+        tmp_path,
+        f"lead: {_G}ALL/messages?key=a\n"
+        f"projects:\n  EGGSBOX: {_G}BOX/messages?key=b\n  ROCKY: {_G}RK/messages?key=c\n",
+    )
+    cfg = load_config(path)
+    assert cfg.lead_chat_webhook == f"{_G}ALL/messages?key=a"
+    assert cfg.projects["EGGSBOX"].chat_webhook == f"{_G}BOX/messages?key=b"
+    assert cfg.projects["ROCKY"].chat_webhook == f"{_G}RK/messages?key=c"
+
+
+def test_webhooks_file_missing_keeps_config_values(tmp_path, monkeypatch):
+    monkeypatch.delenv("EGGS_WEBHOOKS", raising=False)
+    cfg = load_config(_write(tmp_path, None))
+    assert cfg.lead_chat_webhook is None
+    assert cfg.projects["ROCKY"].chat_webhook.startswith(_G + "OLD")
+
+
+def test_webhooks_file_ignores_non_google_urls_and_unknown_projects(
+    tmp_path, monkeypatch, caplog
+):
+    monkeypatch.delenv("EGGS_WEBHOOKS", raising=False)
+    path = _write(
+        tmp_path,
+        "lead: http://evil.example/x\n"
+        f"projects:\n  NOPE: {_G}N/messages?key=n\n  EGGSBOX: ''\n",
+    )
+    cfg = load_config(path)
+    assert cfg.lead_chat_webhook is None
+    assert "NOPE" not in cfg.projects
+    assert cfg.projects["EGGSBOX"].chat_webhook is None
+    assert "evil.example" not in caplog.text
+
+
+def test_webhooks_path_from_env(tmp_path, monkeypatch):
+    other = tmp_path / "elsewhere.yaml"
+    other.write_text(f"lead: {_G}ENV/messages?key=e\n")
+    monkeypatch.setenv("EGGS_WEBHOOKS", str(other))
+    cfg = load_config(_write(tmp_path, None))
+    assert cfg.lead_chat_webhook == f"{_G}ENV/messages?key=e"
