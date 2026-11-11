@@ -1940,6 +1940,46 @@ class TestStructuredErrorsKeepAuthErrors:
         assert "token" in text
 
     @pytest.mark.asyncio
+    async def test_raw_http_404_from_the_client_is_a_structured_error(
+        self, cfg: EggsConfig
+    ):
+        from requests import Response
+        from requests.exceptions import HTTPError
+
+        server = FastMCP("test_jira")
+        register_eggs_tools(server, force=True)
+        resp = Response()
+        resp.status_code = 404
+        resp._content = b'{"errorMessages":["Issue Does Not Exist"],"errors":{}}'
+        user = FakeGateway(user="lead1", issues={})
+        user.get_issue = MagicMock(  # type: ignore[method-assign]
+            side_effect=HTTPError("Issue Does Not Exist", response=resp)
+        )
+        members = ["lead1"]
+        bot = FakeGateway(
+            user="eggsbot",
+            role_members={
+                "RFID": {
+                    "Business Analysts": members,
+                    "Testers": members,
+                    "Developers": members,
+                }
+            },
+        )
+        with (
+            patch("mcp_atlassian.eggs.tools.load_config", return_value=cfg),
+            patch(
+                "mcp_atlassian.eggs.tools.get_user_gateway",
+                AsyncMock(return_value=user),
+            ),
+            patch("mcp_atlassian.eggs.tools.get_roles_reader", return_value=bot),
+        ):
+            res = await server.call_tool("eggs_qc_start", {"key": "RFID-999"})
+        data = json.loads(res.content[0].text)
+        assert data["ok"] is False
+        assert data["message"] == TestStructuredErrors.MISSING
+
+    @pytest.mark.asyncio
     async def test_flow_reschedule_missing_story_names_the_story(self, cfg: EggsConfig):
         data = await TestStructuredErrors._call(
             cfg,

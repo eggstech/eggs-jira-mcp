@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 from fastmcp import Context, FastMCP
 from fastmcp.exceptions import ToolError
 from pydantic import Field
+from requests.exceptions import HTTPError
 
 from mcp_atlassian import __version__
 from mcp_atlassian.eggs.actions import (
@@ -36,7 +37,7 @@ from mcp_atlassian.eggs.agenda import (
 from mcp_atlassian.eggs.calendar import WorkCalendar
 from mcp_atlassian.eggs.config import EggsConfig, load_config
 from mcp_atlassian.eggs.gateway import JiraError, JiraGateway
-from mcp_atlassian.eggs.gateway_atlassian import AtlassianGateway
+from mcp_atlassian.eggs.gateway_atlassian import AtlassianGateway, _handle_http_error
 from mcp_atlassian.eggs.identity import Identity, IdentityCache, resolve_identity
 from mcp_atlassian.eggs.plan import PlanError, dump_plan, parse_plan
 from mcp_atlassian.eggs.plan_apply import apply_plan, export_epic
@@ -328,7 +329,8 @@ def eggs_structured_errors(func: Any) -> Any:
     async def wrapper(ctx: Context, *args: Any, **kwargs: Any) -> Any:
         try:
             return await func(ctx, *args, **kwargs)
-        except JiraError as exc:
+        except (JiraError, HTTPError) as raw:
+            exc = raw if isinstance(raw, JiraError) else _handle_http_error(raw)
             key = _call_issue_key(args, kwargs)
             logger.error(
                 "Eggs tool '%s' lỗi Jira%s: %s",
@@ -339,7 +341,7 @@ def eggs_structured_errors(func: Any) -> Any:
             if exc.status_code in (401, 403):
                 raise ToolError(
                     "Jira từ chối quyền truy cập (token hết hạn hoặc thiếu quyền)."
-                ) from exc
+                ) from raw
             text = str(exc).lower()
             missing = exc.status_code == 404 or any(
                 marker in text
