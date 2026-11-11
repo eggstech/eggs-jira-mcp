@@ -116,6 +116,23 @@ class AtlassianGateway(JiraGateway):
             self.client.post(f"rest/api/2/issue/{key}/transitions", data=payload)
         except HTTPError as e:
             raise _handle_http_error(e) from e
+        if comment:
+            self._ensure_comment_kept(key, comment)
+
+    def _ensure_comment_kept(self, key: str, comment: str) -> None:
+        """Re-add a transition comment that Jira dropped.
+
+        Jira DC silently ignores ``update.comment`` on a transition without a
+        screen (Unblock, Start, Finish...). It does not say which transitions
+        have one, so check the latest comments and post it when missing.
+        """
+        try:
+            recent = self.get_comments(key)[-3:]
+            if any(str(c.get("body", "")).strip() == comment.strip() for c in recent):
+                return
+        except Exception:  # noqa: BLE001
+            logger.warning("Issue %s: không đọc được comment để kiểm tra", key)
+        self.add_comment(key, comment)
 
     def update_fields(
         self,
