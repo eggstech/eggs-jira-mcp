@@ -77,6 +77,18 @@ LOGICAL_FIELD_NAMES: dict[str, str] = {
 }
 
 
+@dataclass(frozen=True)
+class EscalationAlert:
+    """An issue whose escalation appeared or went up in this evaluate run."""
+
+    project: str
+    key: str
+    summary: str
+    level: int
+    owner: str | None
+    flags: tuple[str, ...]
+
+
 class EvaluationResult(list):
     """Result of guardian evaluation, keeping backwards-compatibility as a list."""
 
@@ -86,11 +98,13 @@ class EvaluationResult(list):
         issue_count: int = 0,
         field_count: int = 0,
         has_errors: bool = False,  # noqa: FBT001, FBT002
+        alerts: list[EscalationAlert] | None = None,
     ) -> None:
         super().__init__(changes)
         self.issue_count = issue_count
         self.field_count = field_count
         self.has_errors = has_errors
+        self.alerts = alerts or []
 
     @property
     def exit_code(self) -> int:
@@ -139,6 +153,7 @@ def evaluate(
     changed_issues_set: set[str] = set()
     total_fields_count = 0
     has_errors = False
+    alerts: list[EscalationAlert] = []
 
     for key, iss in snapshot.issues.items():
         is_res = iss.is_resolved() if callable(iss.is_resolved) else iss.is_resolved
@@ -233,6 +248,22 @@ def evaluate(
                 changes.append(f"{key}: updated {list(field_changes.keys())}")
                 changed_issues_set.add(key)
                 total_fields_count += len(field_changes)
+                # Unset Escalation Level reads as 0, so a first flag is new too.
+                if desired_level is not None and (
+                    not iss.health_flags
+                    or iss.escalation_level is None
+                    or desired_level > iss.escalation_level
+                ):
+                    alerts.append(
+                        EscalationAlert(
+                            project=iss.project,
+                            key=key,
+                            summary=iss.summary or "",
+                            level=desired_level,
+                            owner=desired_owner,
+                            flags=tuple(sorted(new_flags)),
+                        )
+                    )
 
         # Comment on cleared flags ONLY after successful field write
         if write_succeeded:
@@ -254,7 +285,72 @@ def evaluate(
         issue_count=len(changed_issues_set),
         field_count=total_fields_count,
         has_errors=has_errors,
+        alerts=alerts,
     )
+
+
+_LEVEL_LABELS = {0: "cần xử lý", 1: "leo thang L1", 2: "leo thang L2 (Lead)"}
+
+
+def _alert_lines(alerts: list[EscalationAlert]) -> list[str]:
+    lines = []
+    for a in sorted(alerts, key=lambda x: (-x.level, x.key)):
+        summary = a.summary if len(a.summary) <= 80 else a.summary[:77] + "..."
+        label = _LEVEL_LABELS.get(a.level, f"leo thang L{a.level}")
+        owner = f" → {a.owner}" if a.owner else ""
+        flags = f" ({', '.join(a.flags)})" if a.flags else ""
+        lines.append(f"- {a.key} · {summary} · {label}{owner}{flags}")
+    return lines
+
+
+def post_escalation_alerts(
+    cfg: EggsConfig,
+    alerts: list[EscalationAlert],
+    now: datetime,
+    *,
+    dry_run: bool = False,
+    http_post: Any = None,
+) -> int:
+    """Post new or raised escalations right away.
+
+    Each project's group gets its own alerts. The Lead group gets level-2
+    alerts, and every alert of a project without its own group, unless it
+    is the same group as the project's.
+    """
+    if not alerts:
+        return 0
+    stamp = now.astimezone(ZoneInfo(cfg.timezone)).strftime("%H:%M")
+    by_project: dict[str, list[EscalationAlert]] = {}
+    for a in alerts:
+        by_project.setdefault(a.project.upper(), []).append(a)
+
+    posts: list[tuple[str, str, str | None]] = []
+    lead_alerts: list[EscalationAlert] = []
+    for proj, items in sorted(by_project.items()):
+        p = cfg.projects.get(proj)
+        webhook = p.chat_webhook if p and not p.frozen else None
+        if webhook:
+            text = f"🚨 Leo thang mới ({proj}, {stamp}):\n" + "\n".join(
+                _alert_lines(items)
+            )
+            posts.append((webhook, text, proj))
+        if webhook != cfg.lead_chat_webhook:
+            lead_alerts.extend(a for a in items if a.level >= 2 or not webhook)
+    if lead_alerts and cfg.lead_chat_webhook:
+        text = f"🚨 Leo thang mới ({stamp}):\n" + "\n".join(_alert_lines(lead_alerts))
+        posts.append((cfg.lead_chat_webhook, text, None))
+
+    failures = 0
+    for webhook, text, proj in posts:
+        if dry_run:
+            sys.stdout.write(f"=== Escalation {proj or 'Lead'} ===\n{text}\n")
+            continue
+        try:
+            post_to_chat(webhook, text, http_post=http_post, project_key=proj)
+        except Exception as e:  # noqa: BLE001
+            logger.error("Gửi leo thang %s thất bại: %s", proj or "Lead", e)
+            failures += 1
+    return failures
 
 
 class OpsEpicResult(list):
@@ -1524,6 +1620,15 @@ def main(
 
     if args.subcommand == "evaluate":
         res = evaluate(gw, cfg, now, cal, dry_run=args.dry_run)
+        alert_failures = post_escalation_alerts(
+            cfg,
+            getattr(res, "alerts", []),
+            now,
+            dry_run=args.dry_run,
+            http_post=http_post,
+        )
+        if alert_failures:
+            return 1
         issue_count = getattr(res, "issue_count", len({c.split(":")[0] for c in res}))
         field_count = getattr(res, "field_count", 0)
         logger.info(

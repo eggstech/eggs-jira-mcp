@@ -3362,3 +3362,108 @@ def test_chat_test_one_project_and_failure_exit_code(
     assert posted == []
     out = capsys.readouterr().out
     assert proj in out and "HTTP 403" in out and "FAIL" not in out
+
+
+def _overdue_issue(key: str = "RFID-1") -> dict[str, Any]:
+    return {
+        "key": key,
+        "fields": {
+            "project": {"key": key.split("-")[0]},
+            "issuetype": {"name": "Dev Task", "subtask": True},
+            "summary": "Màn hình thanh toán",
+            "status": {"name": "Dev In Progress"},
+            "assignee": {"name": "alice"},
+            "customfield_10109": "2026-11-16",
+            "customfield_10700": "2026-11-16",
+            "customfield_10712": None,
+        },
+    }
+
+
+def test_evaluate_reports_new_escalation_once(cfg: EggsConfig, cal: WorkCalendar):
+    gw = FakeGateway(issues={"RFID-1": _overdue_issue()})
+    first = evaluate(gw, cfg, NOW_WED, cal)
+    assert [a.key for a in first.alerts] == ["RFID-1"]
+    assert first.alerts[0].project == "RFID"
+    assert "OVERDUE" in first.alerts[0].flags
+    second = evaluate(gw, cfg, NOW_WED, cal)
+    assert second.alerts == []
+
+
+def test_evaluate_no_alert_when_write_fails(cfg: EggsConfig, cal: WorkCalendar):
+    gw = FakeGateway(issues={"RFID-1": _overdue_issue()})
+
+    def boom(*_a: Any, **_k: Any) -> None:
+        raise JiraError("down")
+
+    gw.update_fields = boom  # type: ignore[method-assign]
+    assert evaluate(gw, cfg, NOW_WED, cal).alerts == []
+
+
+def _alert(project: str, key: str, level: int):
+    from mcp_atlassian.eggs.guardian import EscalationAlert
+
+    return EscalationAlert(
+        project=project,
+        key=key,
+        summary="Việc",
+        level=level,
+        owner="bob",
+        flags=("OVERDUE",),
+    )
+
+
+def test_post_escalation_alerts_routing(cfg: EggsConfig, monkeypatch):
+    from mcp_atlassian.eggs.guardian import post_escalation_alerts
+
+    posted: list[tuple[str, str, str | None]] = []
+    monkeypatch.setattr(
+        "mcp_atlassian.eggs.guardian.post_to_chat",
+        lambda webhook, text, http_post=None, project_key=None: posted.append(
+            (webhook, text, project_key)
+        ),
+    )
+    cfg2 = dataclasses.replace(
+        cfg,
+        projects={
+            **cfg.projects,
+            "CP": dataclasses.replace(cfg.projects["CP"], chat_webhook=None),
+        },
+    )
+    failures = post_escalation_alerts(
+        cfg2,
+        [
+            _alert("RFID", "RFID-1", 0),
+            _alert("RFID", "RFID-2", 2),
+            _alert("CP", "CP-1", 1),
+        ],
+        NOW_WED,
+    )
+    assert failures == 0
+    targets = {(p[2] or "LEAD"): p for p in posted}
+    assert set(targets) == {"RFID", "LEAD"}
+    assert "RFID-1" in targets["RFID"][1] and "RFID-2" in targets["RFID"][1]
+    assert "10:00" in targets["RFID"][1]
+    # Lead gets the level-2 alert and the project without its own group.
+    assert "RFID-2" in targets["LEAD"][1] and "CP-1" in targets["LEAD"][1]
+    assert "RFID-1" not in targets["LEAD"][1]
+
+
+def test_post_escalation_alerts_same_group_posts_once(cfg: EggsConfig, monkeypatch):
+    from mcp_atlassian.eggs.guardian import post_escalation_alerts
+
+    posted: list[str] = []
+    monkeypatch.setattr(
+        "mcp_atlassian.eggs.guardian.post_to_chat",
+        lambda webhook, text, http_post=None, project_key=None: posted.append(text),
+    )
+    shared = cfg.lead_chat_webhook
+    cfg2 = dataclasses.replace(
+        cfg,
+        projects={
+            "RFID": dataclasses.replace(cfg.projects["RFID"], chat_webhook=shared)
+        },
+    )
+    post_escalation_alerts(cfg2, [_alert("RFID", "RFID-9", 2)], NOW_WED)
+    assert len(posted) == 1
+    assert post_escalation_alerts(cfg2, [], NOW_WED) == 0
