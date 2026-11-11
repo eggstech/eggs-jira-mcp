@@ -604,3 +604,71 @@ def test_user_exists_url_encodes_username(mock_client):
 
     assert gateway.user_exists("a b") is True
     mock_client.get.assert_called_once_with("rest/api/2/user?username=a%20b")
+
+
+def test_field_allowed_values_uses_jira9_createmeta_endpoints(mock_client):
+    """Jira DC 9 removed GET issue/createmeta; use the per-project endpoints."""
+    pages = {
+        "rest/api/2/issue/createmeta/EGGSBOX/issuetypes": [
+            {
+                "values": [{"id": "10001", "name": "Story"}],
+                "startAt": 0,
+                "maxResults": 1,
+                "total": 2,
+                "isLast": False,
+            },
+            {
+                "values": [{"id": "10200", "name": "Dev Task"}],
+                "startAt": 1,
+                "maxResults": 1,
+                "total": 2,
+                "isLast": True,
+            },
+        ],
+        "rest/api/2/issue/createmeta/EGGSBOX/issuetypes/10200": [
+            {
+                "values": [
+                    {"fieldId": "summary", "name": "Summary"},
+                    {
+                        "fieldId": "customfield_10701",
+                        "name": "Part",
+                        "allowedValues": [
+                            {"id": "1", "value": "FE APP"},
+                            {"id": "2", "value": "BE"},
+                        ],
+                    },
+                ],
+                "startAt": 0,
+                "maxResults": 50,
+                "total": 2,
+                "isLast": True,
+            }
+        ],
+    }
+    calls: list[tuple[str, dict]] = []
+
+    def fake_get(path, params=None, **_kw):
+        calls.append((path, dict(params or {})))
+        seq = pages[path]
+        start = int((params or {}).get("startAt", 0))
+        for page in seq:
+            if page["startAt"] == start:
+                return page
+        return {"values": [], "isLast": True}
+
+    mock_client.get.side_effect = fake_get
+    gateway = AtlassianGateway(mock_client)
+
+    assert gateway.field_allowed_values("EGGSBOX", "Dev Task", "customfield_10701") == [
+        "FE APP",
+        "BE",
+    ]
+    assert gateway.field_allowed_values("EGGSBOX", "Dev Task", "Part") == [
+        "FE APP",
+        "BE",
+    ]
+    assert gateway.field_allowed_values("EGGSBOX", "Epic", "Part") == []
+    assert all(
+        "issue/createmeta?" not in p and p != "rest/api/2/issue/createmeta"
+        for p, _ in calls
+    )

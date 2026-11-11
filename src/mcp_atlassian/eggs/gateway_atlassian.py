@@ -598,46 +598,58 @@ class AtlassianGateway(JiraGateway):
                 return False
             raise _handle_http_error(e) from e
 
+    def _createmeta_values(self, path: str) -> list[dict]:
+        """Collect every page of a Jira 9 createmeta listing."""
+        out: list[dict] = []
+        start = 0
+        while True:
+            try:
+                res = self.client.get(path, params={"startAt": start, "maxResults": 50})
+            except HTTPError as e:
+                raise _handle_http_error(e) from e
+            if not isinstance(res, dict):
+                return out
+            values = [v for v in res.get("values") or [] if isinstance(v, dict)]
+            out.extend(values)
+            if res.get("isLast", True) or not values:
+                return out
+            start += len(values)
+
     def field_allowed_values(
         self, project: str, issue_type: str, field_id: str
     ) -> list[str]:
-        """Fetch allowed values for a field via createmeta."""
-        try:
-            res = self.client.get(
-                "rest/api/2/issue/createmeta",
-                params={
-                    "projectKeys": project,
-                    "issuetypeNames": issue_type,
-                    "expand": "projects.issuetypes.fields",
-                },
-            )
-        except HTTPError as e:
-            raise _handle_http_error(e) from e
+        """Fetch allowed values for a field on the create screen.
 
-        if not isinstance(res, dict):
+        Jira DC 9 removed ``GET issue/createmeta``; use
+        ``issue/createmeta/{project}/issuetypes[/{id}]`` instead.
+        ``field_id`` may be the field id or its display name.
+        """
+        base = f"rest/api/2/issue/createmeta/{quote(project, safe='')}/issuetypes"
+        type_id = next(
+            (
+                str(t.get("id"))
+                for t in self._createmeta_values(base)
+                if t.get("name") == issue_type
+            ),
+            None,
+        )
+        if type_id is None:
             return []
-        projects = res.get("projects") or []
-        for p in projects:
-            for it in p.get("issuetypes") or []:
-                fields = it.get("fields") or {}
-                field_info = fields.get(field_id)
-                if not field_info:
-                    for f in fields.values():
-                        if isinstance(f, dict) and f.get("name") == field_id:
-                            field_info = f
-                            break
-                if field_info and isinstance(field_info, dict):
-                    allowed = field_info.get("allowedValues") or []
-                    vals: list[str] = []
-                    for opt in allowed:
-                        if isinstance(opt, dict):
-                            val = opt.get("value") or opt.get("name")
-                            if val:
-                                vals.append(str(val))
-                        elif isinstance(opt, str):
-                            vals.append(opt)
-                    return vals
-        return []
+        fields = self._createmeta_values(f"{base}/{type_id}")
+        field_info = next(
+            (f for f in fields if f.get("fieldId") == field_id), None
+        ) or next((f for f in fields if f.get("name") == field_id), None)
+        if not field_info:
+            return []
+        vals: list[str] = []
+        for opt in field_info.get("allowedValues") or []:
+            if isinstance(opt, dict):
+                val = opt.get("value") or opt.get("name")
+                if val:
+                    vals.append(str(val))
+            elif isinstance(opt, str):
+                vals.append(opt)
+        return vals
 
     def set_issue_property(self, key: str, name: str, value: Any) -> None:
         """Set an issue property via PUT rest/api/2/issue/{key}/properties/{name}.
