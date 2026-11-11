@@ -2006,6 +2006,54 @@ def test_unfreeze_evaluates_health_normally(cfg: EggsConfig):
     assert len(update_calls) >= 1
 
 
+def test_unfreeze_dry_run_evaluates_without_writing(cfg: EggsConfig):
+    from mcp_atlassian.eggs.guardian import evaluate
+
+    cal = WorkCalendar(cfg.holidays)
+    now = datetime(2026, 11, 10, 10, 0, tzinfo=TZ)
+    issues = {
+        "RFID-10": {
+            "key": "RFID-10",
+            "fields": {
+                "summary": "Stale story",
+                "issuetype": {"name": "Story"},
+                "status": {"name": "Dev In Progress"},
+                "assignee": None,
+                "labels": ["legacy-frozen"],
+                "updated": "2026-11-10T09:30:00.000+0700",
+                "comment": {
+                    "comments": [
+                        {
+                            "author": {"name": "human"},
+                            "created": "2026-11-10T09:20:00.000+0700",
+                            "body": "Starting work on this.",
+                        }
+                    ]
+                },
+            },
+            "changelog": {
+                "histories": [
+                    {
+                        "created": "2026-11-09T08:00:00.000+0700",
+                        "author": {"name": "bot"},
+                        "items": [
+                            {
+                                "field": "labels",
+                                "fromString": "",
+                                "toString": "legacy-frozen",
+                            }
+                        ],
+                    }
+                ]
+            },
+        }
+    }
+    gw = FakeGateway(issues=issues, user="bot")
+    res = evaluate(gw, cfg, now, cal, dry_run=True)
+    assert not [c for c in gw.calls if c[0] in ("remove_label", "update_fields")]
+    assert any(c.startswith("RFID-10") for c in res)
+
+
 def test_unfreeze_window_misses_weekends_and_outages(cfg: EggsConfig):
     from mcp_atlassian.eggs.guardian import unfreeze_stale_issues
 

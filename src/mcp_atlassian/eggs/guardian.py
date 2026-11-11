@@ -17,7 +17,7 @@ import logging
 import os
 import re
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -144,7 +144,7 @@ def evaluate(
     if dry_run and unfrozen_keys:
         for k in unfrozen_keys:
             if k in snapshot.issues:
-                snapshot.issues[k].frozen = False
+                snapshot.issues[k] = replace(snapshot.issues[k], frozen=False)
 
     allowed_guardian_field_ids = {
         cfg.fields[f] for f in GUARDIAN_LOGICAL_FIELDS if f in cfg.fields
