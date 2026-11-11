@@ -46,6 +46,8 @@ class ProjectConfig:
 class EggsConfig:
     lead_user: str
     jira_url: str
+    # Extra users with Lead rights; lead_user stays the escalation owner.
+    lead_users: frozenset[str] = frozenset()
     timezone: str = "Asia/Ho_Chi_Minh"
     frozen_label: str = "legacy-frozen"
     flagged_impediment_value: str = "Impediment"
@@ -276,6 +278,15 @@ def load_config(path: str | None = None) -> EggsConfig:
     if "jira_url" not in data or not data["jira_url"]:
         raise ValueError("Missing required configuration key: 'jira_url'")
 
+    lead_users_data = data.get("lead_users") or []
+    if isinstance(lead_users_data, str):
+        lead_users_data = [lead_users_data]
+    if not isinstance(lead_users_data, list):
+        raise ValueError("'lead_users' must be a list of usernames")
+    lead_users = frozenset(
+        str(u).strip().lower() for u in lead_users_data if str(u).strip()
+    ) | {str(data["lead_user"]).strip().lower()}
+
     link_types_data = data.get("link_types")
     if not isinstance(link_types_data, dict):
         raise ValueError("Missing required configuration key: 'link_types'")
@@ -344,6 +355,7 @@ def load_config(path: str | None = None) -> EggsConfig:
     return EggsConfig(
         lead_user=data["lead_user"],
         jira_url=data["jira_url"],
+        lead_users=lead_users,
         timezone=data.get("timezone", "Asia/Ho_Chi_Minh"),
         frozen_label=data.get("frozen_label", "legacy-frozen"),
         flagged_impediment_value=data.get("flagged_impediment_value", "Impediment"),

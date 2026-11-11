@@ -2,6 +2,8 @@
 # Copy to config.yaml and customize for your deployment.
 
 lead_user: cuong.huynh
+# Other users with Lead rights (lead_user is always included and owns escalations)
+lead_users: [henry, viet.le]
 jira_url: https://jira.eggstech.io.vn
 lead_chat_webhook: null
 kit_min_version: 0.1.0

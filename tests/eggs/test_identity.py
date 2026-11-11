@@ -358,3 +358,24 @@ def test_myself_failure_raises_clear_vietnamese_error():
         str(exc_info.value)
         == "PAT không hợp lệ hoặc đã hết hạn — tạo PAT mới trong Jira → Profile → Personal Access Tokens"
     )
+
+
+def test_identity_extra_lead_users_are_lead():
+    cfg = EggsConfig(
+        lead_user="cuong.huynh",
+        lead_users=frozenset({"cuong.huynh", "henry", "viet.le"}),
+        jira_url="https://jira.eggstech.io.vn",
+        projects={
+            "RFID": ProjectConfig(
+                key="RFID", default_lead_ba="cuong.huynh", triage_owner="cuong.huynh"
+            ),
+        },
+        roles={"lead_ba": ["Lead-BA"], "qc": ["QC"], "dev": ["Developers"]},
+    )
+    bot_gw = FakeGateway(
+        me={"name": "eggsbot", "displayName": "U Guardian"},
+        role_members={"RFID": {}},
+    )
+    for name, expected in (("Viet.Le", True), ("henry", True), ("tuan.bui", False)):
+        user_gw = FakeGateway(me={"name": name, "displayName": name})
+        assert resolve_identity(user_gw, bot_gw, cfg).is_lead is expected

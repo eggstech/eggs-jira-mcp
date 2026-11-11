@@ -69,7 +69,8 @@ def resolve_identity(
 
     username = me.get("name") or me.get("key") or ""
     display_name = me.get("displayName") or username
-    is_lead = username.strip().lower() == cfg.lead_user.strip().lower()
+    norm = username.strip().lower()
+    is_lead = norm == cfg.lead_user.strip().lower() or norm in cfg.lead_users
 
     # Bot user is ignored by identity
     if username.strip().lower() == cfg.bot_user.strip().lower():

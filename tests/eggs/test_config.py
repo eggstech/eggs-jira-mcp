@@ -668,3 +668,25 @@ def test_webhooks_path_from_env(tmp_path, monkeypatch):
     monkeypatch.setenv("EGGS_WEBHOOKS", str(other))
     cfg = load_config(_write(tmp_path, None))
     assert cfg.lead_chat_webhook == f"{_G}ENV/messages?key=e"
+
+
+def test_load_config_lead_users_include_lead_user(tmp_path):
+    yaml_content = """
+lead_user: cuong.huynh
+lead_users: [Henry, viet.le]
+jira_url: https://jira.eggstech.io.vn
+link_types:
+  interrupts: "is interrupted by"
+  causes: "causes"
+  relates: "relates to"
+  duplicates: "duplicates"
+projects:
+  PROJ:
+    default_lead_ba: cuong.huynh
+    triage_owner: cuong.huynh
+"""
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(yaml_content)
+    cfg = load_config(str(cfg_file))
+    assert cfg.lead_user == "cuong.huynh"
+    assert cfg.lead_users == frozenset({"cuong.huynh", "henry", "viet.le"})
