@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any, Literal
 
+from .actions import has_ac_heading
 from .config import EggsConfig
 from .gateway import JiraGateway
 from .plan import Plan, split_codes
@@ -402,10 +403,10 @@ def validate_plan(plan: Plan, ctx: PlanContext, cfg: EggsConfig) -> ValidationRe
                 if story.get("key") == flow.key:
                     desc = story.get("fields", {}).get("description") or ""
                     break
-            if "## Acceptance Criteria" not in desc:
+            if not has_ac_heading(desc):
                 msg = (
                     f"Luồng '{label}': keep_description=true nhưng description "
-                    f"của Story {flow.key} không có tiêu đề '## Acceptance Criteria'"
+                    f"của Story {flow.key} không có tiêu đề 'h2. Acceptance Criteria'"
                 )
                 findings.append(Finding("warning", f"flows[{i}].keep_description", msg))
 

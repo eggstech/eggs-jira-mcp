@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
+from .actions import AC_HEADING
 from .config import EggsConfig
 from .gateway import JiraError, JiraGateway
 from .plan import Plan, PlanEpic, PlanFlow, PlanPart, format_summary, split_codes
@@ -159,8 +160,8 @@ def apply_plan(
 
                 # Description
                 if not flow.keep_description and flow.ac:
-                    desired_desc = "## Acceptance Criteria\n" + "\n".join(
-                        f"- {ac}" for ac in flow.ac
+                    desired_desc = (
+                        AC_HEADING + "\n" + "\n".join(f"- {ac}" for ac in flow.ac)
                     )
                     curr_desc = st_fields.get("description") or ""
                     if curr_desc.strip() != desired_desc.strip():
@@ -214,9 +215,7 @@ def apply_plan(
                         f"[Dry-run] Tạo Story mới: [{flow.code}] {flow.summary}"
                     )
                 else:
-                    desc = "## Acceptance Criteria\n" + "\n".join(
-                        f"- {ac}" for ac in flow.ac
-                    )
+                    desc = AC_HEADING + "\n" + "\n".join(f"- {ac}" for ac in flow.ac)
                     comp_name = ctx.components.get(flow.actor) if flow.actor else None
                     story_payload: dict[str, Any] = {
                         "project": {"key": working_plan.project},

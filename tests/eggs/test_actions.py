@@ -5,7 +5,12 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from mcp_atlassian.eggs.actions import Actions, EndDayEntry
+from mcp_atlassian.eggs.actions import (
+    Actions,
+    EndDayEntry,
+    has_ac_heading,
+    update_ac_section,
+)
 from mcp_atlassian.eggs.calendar import WorkCalendar
 from mcp_atlassian.eggs.config import EggsConfig, ProjectConfig
 from mcp_atlassian.eggs.gateway import JiraError
@@ -4972,14 +4977,10 @@ def test_update_description(cfg, cal):
     )
     assert res_qc.ok is True
     new_desc = gw.issues["EGGSBOX-2"]["fields"]["description"]
-    assert (
-        new_desc.split("## Acceptance Criteria")[0]
-        == story_desc_orig.split("## Acceptance Criteria")[0]
-    )
-    assert (
-        new_desc.split("## Technical Notes")[1]
-        == story_desc_orig.split("## Technical Notes")[1]
-    )
+    # Legacy markdown heading is rewritten as a Jira wiki heading (W2, 11/11).
+    assert new_desc.startswith("Title line\n\nh2. Acceptance Criteria\n")
+    assert "## Acceptance Criteria" not in new_desc
+    assert new_desc.endswith("## Technical Notes\nKeep this exactly.")
     assert "- New AC 1\n- New AC 2" in new_desc
 
     # 3. dev who is assignee appends to a Dev Task
@@ -5237,3 +5238,33 @@ def test_log_work_changes_have_no_role_label(cfg, cal):
     )
     assert res.ok is True
     assert res.changes and "(dev)" not in res.changes[0]
+
+
+# --- W2 (11/11): Jira DC renders wiki markup; "## x" is a numbered list ---------
+
+
+def test_update_ac_section_writes_wiki_heading():
+    assert update_ac_section("", "- a") == "h2. Acceptance Criteria\n- a\n"
+    assert update_ac_section("Intro", "- a") == (
+        "Intro\n\nh2. Acceptance Criteria\n- a\n"
+    )
+
+
+def test_update_ac_section_replaces_wiki_section_keeping_numbered_items_inside():
+    desc = "Intro\nh2. Acceptance Criteria\n# a\n# b\nh2. Notes\nkeep"
+    out = update_ac_section(desc, "- c")
+    assert out == "Intro\nh2. Acceptance Criteria\n- c\n\nh2. Notes\nkeep"
+
+
+def test_update_ac_section_does_not_repeat_a_heading_given_in_the_text():
+    out = update_ac_section("", "h2. Acceptance Criteria\n- a")
+    assert out.count("Acceptance Criteria") == 1
+    out = update_ac_section("", "## Acceptance Criteria\n- a")
+    assert out == "h2. Acceptance Criteria\n- a\n"
+
+
+def test_has_ac_heading_accepts_wiki_and_legacy_markdown():
+    assert has_ac_heading("x\nh2. Acceptance Criteria\n- a")
+    assert has_ac_heading("## Acceptance Criteria\n- a")
+    assert has_ac_heading("h3. acceptance criteria")
+    assert not has_ac_heading("Mô tả không có AC")

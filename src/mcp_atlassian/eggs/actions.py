@@ -3199,17 +3199,34 @@ def _make_diff_preview(old_text: str, new_text: str, max_lines: int = 10) -> str
     return "\n".join(changed_lines[:max_lines])
 
 
+AC_HEADING = "h2. Acceptance Criteria"
+# Jira DC stores descriptions as wiki markup ("h2." heading). Stories written
+# before 11/11 used the markdown "## Acceptance Criteria", which Jira shows as
+# a numbered list item; both are still recognised when reading.
+_AC_HEADING_RE = re.compile(
+    r"^(?:h[1-6]\.|#{1,3})\s*Acceptance Criteria\b", re.IGNORECASE | re.MULTILINE
+)
+
+
+def has_ac_heading(description: str | None) -> bool:
+    """True when the description has an Acceptance Criteria heading."""
+    return bool(description) and bool(_AC_HEADING_RE.search(description or ""))
+
+
 def update_ac_section(description: str, new_ac: str) -> str:
-    """Replace or append the ## Acceptance Criteria section in markdown description."""
+    """Replace or append the Acceptance Criteria section (Jira wiki markup)."""
     norm_desc = description.replace("\r\n", "\n") if description else ""
     clean_ac = new_ac.strip()
-    if clean_ac.lower().startswith("## acceptance criteria"):
-        ac_block = clean_ac
-    else:
-        ac_block = f"## Acceptance Criteria\n{clean_ac}"
+    first, _, rest = clean_ac.partition("\n")
+    if _AC_HEADING_RE.match(first):
+        clean_ac = rest.strip()
+    ac_block = f"{AC_HEADING}\n{clean_ac}" if clean_ac else AC_HEADING
 
+    # The section ends at the next wiki heading or legacy "## " heading; a
+    # single "# " line is a wiki numbered-list item and stays inside.
     pattern = re.compile(
-        r"(^##\s+Acceptance Criteria[^\n]*\n?)(.*?)(?=(?:^#{1,2}\s+|\Z))",
+        r"(^(?:h[1-6]\.|#{1,3})\s*Acceptance Criteria[^\n]*\n?)(.*?)"
+        r"(?=(?:^h[1-6]\.\s|^##\s|\Z))",
         re.MULTILINE | re.DOTALL | re.IGNORECASE,
     )
     m = pattern.search(norm_desc)
