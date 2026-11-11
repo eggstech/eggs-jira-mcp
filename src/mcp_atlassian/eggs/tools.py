@@ -446,9 +446,12 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
             "   - **Dev**: schedule, start, log_work, submit_qc, block, unblock.\n"
             "   - **QC**: qc_start, qc_pass, qc_fail, triage_open, triage_close.\n"
             "   - **Lead-BA**: flow_reschedule, uat, decide_reschedule, cancel.\n"
-            "   - **Mọi người**: log_work, block, unblock, end_day (sau 17:00).\n"
+            "   - **Mọi người**: log_work, block, unblock, end_day (thường sau "
+            "17:00; sớm hơn vẫn được nhưng có cảnh báo).\n"
             "4. **Chốt chặn Lead-BA**: Duyệt dời lịch, ký UAT, dời hạn Story.\n"
             "5. **Người duyệt khác người đề xuất**: Không tự duyệt dời lịch của mình.\n"
+            "6. **Remaining Estimate**: Jira tự trừ theo giờ đã log (về 0 khi "
+            "log vượt). EGGS chỉ dùng Original Estimate.\n"
         )
 
     @server.tool(
@@ -1653,7 +1656,10 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
             for e in entries
         ]
         res = await asyncio.to_thread(
-            actions.end_day, entries=typed_entries, dry_run=dry_run
+            actions.end_day,
+            entries=typed_entries,
+            dry_run=dry_run,
+            now=datetime.now(ZoneInfo(cfg.timezone)),
         )
         if res.ok and not dry_run:
             now = datetime.now(ZoneInfo(cfg.timezone))

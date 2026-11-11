@@ -951,7 +951,19 @@ class Actions:
         entries: list[EndDayEntry],
         *,
         dry_run: bool = False,
+        now: datetime | None = None,
     ) -> ActionResult:
+        # 11/11: ending the day early is allowed (people leave early), but the
+        # confirmation says so instead of silently accepting it.
+        early_warning: str | None = None
+        if now is not None:
+            local_now = now.astimezone(ZoneInfo(self.cfg.timezone))
+            end_hour = self.cfg.thresholds.end_day_hour
+            if self.cal.is_working_day(local_now.date()) and local_now.hour < end_hour:
+                early_warning = (
+                    f"Chưa tới {end_hour}:00 (bây giờ {local_now:%H:%M}): "
+                    "bạn kết thúc ngày sớm?"
+                )
         # Pre-validate all entries first before executing any writes
         sub_results: list[tuple[str, ActionResult]] = []
         for e in entries:
@@ -1044,7 +1056,7 @@ class Actions:
                     changes=[],
                     next_actions=[],
                 )
-            changes: list[str] = []
+            changes: list[str] = [early_warning] if early_warning else []
             for e in entries:
                 changes.append(f"Log {e.time_spent} trên {e.key}: {e.note}")
                 if e.move_to:
@@ -1107,7 +1119,7 @@ class Actions:
         return ActionResult(
             ok=True,
             message=ok_msg,
-            changes=write_changes if write_changes else changes,
+            changes=write_changes,
             next_actions=[],
         )
 

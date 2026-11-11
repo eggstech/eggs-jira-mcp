@@ -5387,3 +5387,21 @@ def test_bug_related_to_keeps_related_assignee(cfg, cal):
         dry_run=True,
     )
     assert res.ok is True and "Assignee: nhan.duong" in res.changes
+
+
+# --- W5 (11/11): end_day before end_day_hour is allowed but flagged -----------
+@pytest.mark.parametrize(
+    ("hour", "warned"), [(10, True), (16, True), (17, False), (19, False)]
+)
+def test_end_day_dry_run_warns_before_end_day_hour(cfg, cal, hour, warned):
+    data = _base_fixtures(cfg)
+    gw = FakeGateway(issues=data["issues"], transitions=data["transitions"])
+    now = datetime(2026, 11, 18, hour, 2, tzinfo=_VN)
+    res = _make_actions(gw, cfg, cal).end_day(
+        [EndDayEntry(key="HMKPOS-101", time_spent="2h", note="x")],
+        dry_run=True,
+        now=now,
+    )
+    assert res.ok is True
+    has_warning = any("Chưa tới 17:00" in c for c in res.changes)
+    assert has_warning is warned
