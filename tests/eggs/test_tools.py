@@ -1565,6 +1565,11 @@ def _actions_call_mismatches() -> list[str]:
     for fn in ast.walk(tree):
         if not (isinstance(fn, ast.AsyncFunctionDef) and fn.name.startswith("eggs_")):
             continue
+        tool_params = {
+            a.arg: ast.unparse(a.annotation)
+            for a in fn.args.args + fn.args.kwonlyargs
+            if a.annotation is not None
+        }
         for call in ast.walk(fn):
             if not isinstance(call, ast.Call):
                 continue
@@ -1593,6 +1598,21 @@ def _actions_call_mismatches() -> list[str]:
                 continue
             sig = inspect.signature(method)
             kwargs = {k.arg: None for k in call.keywords if k.arg}
+            for kw in call.keywords:
+                # A raw str tool parameter must not reach a date-only argument.
+                if not (
+                    kw.arg in sig.parameters
+                    and isinstance(kw.value, ast.Name)
+                    and kw.value.id in tool_params
+                ):
+                    continue
+                wanted = str(sig.parameters[kw.arg].annotation)
+                given = tool_params[kw.value.id]
+                if "date" in wanted and "str" not in wanted and "str" in given:
+                    problems.append(
+                        f"{fn.name} -> Actions.{target}: {kw.arg} gets a str, "
+                        f"expects {wanted}"
+                    )
             try:
                 sig.bind(None, *([None] * n_pos), **kwargs)
             except TypeError as e:
@@ -1753,3 +1773,39 @@ def test_triage_open_refuses_without_source_or_reporter(cfg: EggsConfig):
     assert res.ok is False
     assert res.missing == ["source_url", "reported_by"]
     assert not [c for c in gw.calls if c[0] in ("create_issue", "search")]
+
+
+@pytest.mark.asyncio
+async def test_start_with_dates_reaches_actions_as_dates(cfg: EggsConfig):
+    data = await TestBrokenWrappersFixed._call(
+        cfg,
+        "eggs_start",
+        {
+            "key": "RFID-10",
+            "start": "2026-11-11",
+            "end": "2026-11-20",
+            "estimate": "32h",
+            "dry_run": True,
+        },
+        {
+            "RFID-10": {
+                "key": "RFID-10",
+                "fields": {
+                    "issuetype": {"name": "Dev Task"},
+                    "summary": "T",
+                    "status": {"name": "DEV To Do"},
+                    "project": {"key": "RFID"},
+                    "assignee": {"name": "lead1"},
+                },
+            }
+        },
+    )
+    assert "ok" in data, data
+    bad = await TestBrokenWrappersFixed._call(
+        cfg,
+        "eggs_start",
+        {"key": "RFID-10", "start": "11/11/2026", "end": "2026-11-20"},
+        {},
+    )
+    assert bad["ok"] is False
+    assert "YYYY-MM-DD" in bad["message"]

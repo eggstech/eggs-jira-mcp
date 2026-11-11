@@ -410,6 +410,18 @@ def _is_eggs_enabled() -> bool:
     return val in {"1", "true", "yes"}
 
 
+_BAD_START_END = json.dumps(
+    {
+        "ok": False,
+        "message": "start và end phải theo dạng YYYY-MM-DD.",
+        "changes": [],
+        "next_actions": [],
+    },
+    indent=2,
+    ensure_ascii=False,
+)
+
+
 def _parse_reported_at(value: str | None, tz_name: str) -> datetime | None:
     """Parse a report time in common formats; naive values use the config tz."""
     if value is None or not value.strip():
@@ -942,18 +954,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
             start_date = date.fromisoformat(start)
             end_date = date.fromisoformat(end)
         except ValueError:
-            return json.dumps(
-                action_result_to_dict(
-                    ActionResult(
-                        ok=False,
-                        message="start và end phải theo dạng YYYY-MM-DD.",
-                        changes=[],
-                        next_actions=[],
-                    )
-                ),
-                indent=2,
-                ensure_ascii=False,
-            )
+            return _BAD_START_END
         res = await asyncio.to_thread(
             actions.schedule,
             key=key,
@@ -1005,11 +1006,16 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
 
         cal = WorkCalendar(cfg.holidays)
         actions = Actions(user_gw, cfg, cal)
+        try:
+            start_date = date.fromisoformat(start) if start else None
+            end_date = date.fromisoformat(end) if end else None
+        except ValueError:
+            return _BAD_START_END
         res = await asyncio.to_thread(
             actions.start,
             key=key,
-            start=start,
-            end=end,
+            start=start_date,
+            end=end_date,
             estimate=estimate,
             dry_run=dry_run,
         )
