@@ -8,7 +8,7 @@ import json
 import logging
 import os
 import threading
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from functools import wraps
 from typing import Annotated, Any, Literal
 from zoneinfo import ZoneInfo
@@ -42,6 +42,7 @@ from mcp_atlassian.eggs.plan_validate import load_plan_context, validate_plan
 from mcp_atlassian.eggs.report import (
     Snapshot,
     build_snapshot,
+    compute_worklog_report,
     render_pending_approvals,
     render_report,
     render_workstream,
@@ -64,6 +65,7 @@ READ_EGGS_TOOL_NAMES = frozenset(
         "eggs_next",
         "eggs_workstream_status",
         "eggs_daily_report",
+        "eggs_worklog_report",
         "eggs_pending_approvals",
         "eggs_plan_validate",
         "eggs_migrate_epic",
@@ -354,13 +356,14 @@ def _make_snapshot(
     cal: WorkCalendar,
     today: date | None = None,
     now: datetime | None = None,
+    worklog_since: date | None = None,
 ) -> Snapshot:
     tz = ZoneInfo(cfg.timezone)
     if today is None:
         current_dt = now or datetime.now(tz)
         today = current_dt.astimezone(tz).date()
     since = datetime(today.year, today.month, today.day, 0, 0, tzinfo=tz)
-    return build_snapshot(gateway, cfg, today, cal, since)
+    return build_snapshot(gateway, cfg, today, cal, since, worklog_since=worklog_since)
 
 
 def _get_next_agenda_item(
@@ -594,6 +597,121 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
             _make_snapshot, user_gw, cfg, cal, today=today, now=now
         )
         return await asyncio.to_thread(render_report, snapshot, cfg, project=project)
+
+    @server.tool(
+        tags=read_tags,
+        annotations={"title": "EGGS Worklog Report", "readOnlyHint": True},
+    )
+    async def eggs_worklog_report(
+        ctx: Context,
+        project: Annotated[
+            str | None, Field(description="Mã dự án (RFID, HH...)", default=None)
+        ] = None,
+        person: Annotated[
+            str | None, Field(description="Tên người cần xem worklog", default=None)
+        ] = None,
+        date_from: Annotated[
+            str | None, Field(description="Ngày bắt đầu (YYYY-MM-DD)", default=None)
+        ] = None,
+        date_to: Annotated[
+            str | None, Field(description="Ngày kết thúc (YYYY-MM-DD)", default=None)
+        ] = None,
+    ) -> str:
+        """Báo cáo tổng hợp worklog theo người và theo dự án."""
+        cfg = await asyncio.to_thread(load_config)
+        user_gw = await get_user_gateway(ctx, write=False)
+        roles_gw = await asyncio.to_thread(get_roles_reader, cfg)
+        ident = await asyncio.to_thread(
+            resolve_identity, user_gw, roles_gw, cfg, _identity_cache
+        )
+
+        cal = WorkCalendar(cfg.holidays)
+        now = datetime.now(ZoneInfo(cfg.timezone))
+        today = now.astimezone(ZoneInfo(cfg.timezone)).date()
+
+        d_from: date | None = None
+        if date_from:
+            try:
+                d_from = date.fromisoformat(date_from)
+            except ValueError:
+                return json.dumps(
+                    {
+                        "ok": False,
+                        "message": "date_from không đúng định dạng YYYY-MM-DD.",
+                        "range": {"from": date_from, "to": str(date_to)},
+                        "people": [],
+                        "idle_with_work_in_progress": [],
+                    },
+                    ensure_ascii=False,
+                )
+
+        d_to: date | None = None
+        if date_to:
+            try:
+                d_to = date.fromisoformat(date_to)
+            except ValueError:
+                return json.dumps(
+                    {
+                        "ok": False,
+                        "message": "date_to không đúng định dạng YYYY-MM-DD.",
+                        "range": {"from": str(date_from), "to": date_to},
+                        "people": [],
+                        "idle_with_work_in_progress": [],
+                    },
+                    ensure_ascii=False,
+                )
+
+        eff_from = (
+            d_from if d_from is not None else today - timedelta(days=today.weekday())
+        )
+        eff_to = d_to if d_to is not None else today
+
+        if eff_from > eff_to:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "message": "date_from không được lớn hơn date_to.",
+                    "range": {"from": eff_from.isoformat(), "to": eff_to.isoformat()},
+                    "people": [],
+                    "idle_with_work_in_progress": [],
+                },
+                ensure_ascii=False,
+            )
+
+        if (eff_to - eff_from).days + 1 > 31:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "message": "Khoảng thời gian không được vượt quá 31 ngày.",
+                    "range": {"from": eff_from.isoformat(), "to": eff_to.isoformat()},
+                    "people": [],
+                    "idle_with_work_in_progress": [],
+                },
+                ensure_ascii=False,
+            )
+
+        snapshot = await asyncio.to_thread(
+            _make_snapshot,
+            user_gw,
+            cfg,
+            cal,
+            today=today,
+            now=now,
+            worklog_since=eff_from,
+        )
+        report = await asyncio.to_thread(
+            compute_worklog_report,
+            snapshot,
+            cfg,
+            cal,
+            ident,
+            project=project,
+            person=person,
+            date_from=d_from,
+            date_to=d_to,
+            now=now,
+        )
+        return json.dumps(report, ensure_ascii=False)
 
     @server.tool(
         tags=read_tags,

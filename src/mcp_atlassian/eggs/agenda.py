@@ -49,6 +49,18 @@ INTENTS: list[Intent] = [
         required=[],
     ),
     Intent(
+        name="worklog_report",
+        roles=frozenset({"any"}),
+        examples=[
+            "tình hình worklog",
+            "ai chưa log giờ",
+            "tuần này log bao nhiêu giờ",
+            "giờ làm của henry",
+        ],
+        tool="eggs_worklog_report",
+        required=[],
+    ),
+    Intent(
         name="create_issue",
         roles=frozenset({"qc", "lead_ba", "dev"}),
         examples=[

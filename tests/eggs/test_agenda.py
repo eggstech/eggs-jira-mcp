@@ -404,6 +404,7 @@ def test_every_intent_tool_is_a_real_action():
         "eggs_next",
         "eggs_workstream_status",
         "eggs_daily_report",
+        "eggs_worklog_report",
         "eggs_pending_approvals",
         "eggs_plan_validate",
         "eggs_migrate_epic",
@@ -433,6 +434,7 @@ def test_intents_for_dev_excludes_decide_reschedule():
     assert "start" in names
     assert "submit_qc" in names
     assert "log_work" in names
+    assert "worklog_report" in names
     assert "decide_reschedule" not in names
     assert "flow_reschedule" not in names
     assert "uat" not in names

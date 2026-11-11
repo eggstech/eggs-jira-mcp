@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from .calendar import WorkCalendar
@@ -11,6 +13,7 @@ from .escalation import Escalation, escalate
 from .forecast import EpicMetrics, FlowMetrics, epic_metrics, flow_metrics
 from .gateway import JiraGateway
 from .health import compute_flags, detect_interruptions, people_not_updated
+from .identity import Identity
 from .mapping import issue_from_json
 from .model import Issue, Worklog
 
@@ -33,6 +36,7 @@ def build_snapshot(
     today: date,
     cal: WorkCalendar,
     since: datetime,
+    worklog_since: date | None = None,
 ) -> Snapshot:
     """Fetch issues and worklogs, run all domain engines, and produce Snapshot."""
     # Active projects (non-frozen)
@@ -79,8 +83,11 @@ def build_snapshot(
             if parent.epic_key:
                 issues[key] = replace(iss, epic_key=parent.epic_key)
 
-    # Worklogs for the last 10 working days
-    since_wl_date = cal.add_working_days(today, -10)
+    # Worklogs for the last 10 working days or custom window covering date_from
+    if worklog_since is not None:
+        since_wl_date = worklog_since
+    else:
+        since_wl_date = cal.add_working_days(today, -10)
     since_wl = datetime(
         since_wl_date.year,
         since_wl_date.month,
@@ -529,3 +536,306 @@ def render_pending_approvals(snapshot: Snapshot, user: str, cfg: EggsConfig) -> 
         lines.append(f"- {base_url}/browse/{iss.key} | {iss.summary}{end_str}{req_str}")
 
     return "\n".join(lines)
+
+
+_WEEKDAYS_VI = [
+    "Thứ Hai",
+    "Thứ Ba",
+    "Thứ Tư",
+    "Thứ Năm",
+    "Thứ Sáu",
+    "Thứ Bảy",
+    "Chủ Nhật",
+]
+
+
+def _fmt_hours(h: float) -> str:
+    if h.is_integer():
+        return f"{int(h)}h"
+    return f"{h:g}h"
+
+
+def compute_worklog_report(
+    snapshot: Snapshot,
+    cfg: EggsConfig,
+    cal: WorkCalendar,
+    identity: Identity,
+    project: str | None = None,
+    person: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    tz = ZoneInfo(cfg.timezone)
+    current_now = now or datetime.now(tz)
+    current_today = current_now.astimezone(tz).date()
+
+    if date_from is None:
+        d_from = current_today - timedelta(days=current_today.weekday())
+    else:
+        d_from = date_from
+
+    if date_to is None:
+        d_to = current_today
+    else:
+        d_to = date_to
+
+    if d_from > d_to:
+        return {
+            "ok": False,
+            "message": "date_from không được lớn hơn date_to.",
+            "range": {"from": d_from.isoformat(), "to": d_to.isoformat()},
+            "people": [],
+            "idle_with_work_in_progress": [],
+        }
+
+    if (d_to - d_from).days + 1 > 31:
+        return {
+            "ok": False,
+            "message": "Khoảng thời gian không được vượt quá 31 ngày.",
+            "range": {"from": d_from.isoformat(), "to": d_to.isoformat()},
+            "people": [],
+            "idle_with_work_in_progress": [],
+        }
+
+    proj = project.upper() if project else None
+    norm_caller = identity.username.strip().lower()
+    norm_person = person.strip().lower() if person else None
+
+    # Check team access:
+    if proj:
+        has_team_access = identity.is_lead or (
+            "lead_ba" in identity.roles.get(proj, set())
+        )
+    else:
+        ba_projects = {p for p, roles in identity.roles.items() if "lead_ba" in roles}
+        has_team_access = identity.is_lead or bool(ba_projects)
+
+    if not has_team_access:
+        if norm_person is not None and norm_person != norm_caller:
+            return {
+                "ok": False,
+                "message": (
+                    "Bạn chỉ xem được giờ của mình; "
+                    "giờ của người khác do BA hoặc Lead xem."
+                ),
+                "range": {"from": d_from.isoformat(), "to": d_to.isoformat()},
+                "people": [],
+                "idle_with_work_in_progress": [],
+            }
+        target_person = identity.username
+        is_team_view = False
+    else:
+        if norm_person is not None:
+            target_person = person.strip()
+            is_team_view = False
+        else:
+            target_person = None
+            is_team_view = True
+
+    # Allowed projects for issues:
+    if proj:
+        allowed_projects: set[str] | None = {proj}
+    elif not is_team_view:
+        allowed_projects = None
+    else:
+        if identity.is_lead:
+            allowed_projects = None
+        else:
+            allowed_projects = {
+                p for p, roles in identity.roles.items() if "lead_ba" in roles
+            }
+
+    def round_to_quarter(hours: float) -> float:
+        return round(round(hours * 4.0) / 4.0, 2)
+
+    # Filter worklogs
+    matching_worklogs = []
+    for wl in snapshot.worklogs:
+        wl_started_local = wl.started.astimezone(tz)
+        wl_date = wl_started_local.date()
+        if not (d_from <= wl_date <= d_to):
+            continue
+
+        iss = snapshot.issues.get(wl.issue_key)
+        if iss is not None:
+            wl_project = iss.project.upper()
+        else:
+            wl_project = "khác"
+
+        if is_team_view:
+            if allowed_projects is not None and wl_project not in allowed_projects:
+                continue
+            if wl_project == "khác":
+                continue
+        else:
+            if allowed_projects is not None:
+                if (
+                    "khác" not in allowed_projects
+                    and wl_project not in allowed_projects
+                ):
+                    continue
+            wl_author_norm = wl.author.strip().lower()
+            expected_user = target_person.lower() if target_person else norm_caller
+            if wl_author_norm != expected_user:
+                continue
+
+        matching_worklogs.append((wl, wl_date, wl_project))
+
+    if not is_team_view:
+        people_usernames = [target_person] if target_person else [norm_caller]
+    else:
+        people_usernames = sorted({wl.author for wl, _, _ in matching_worklogs})
+
+    people = []
+    user_hours_map: dict[str, float] = {}
+
+    all_days: list[date] = []
+    cur = d_from
+    while cur <= d_to:
+        all_days.append(cur)
+        cur += timedelta(days=1)
+
+    working_days_count = sum(1 for d in all_days if cal.is_working_day(d))
+    target_total = round_to_quarter(
+        working_days_count * cfg.thresholds.daily_hours_target
+    )
+
+    person_missing_descriptions: dict[str, list[str]] = {}
+
+    for username in people_usernames:
+        user_wls = [
+            (wl, dt)
+            for wl, dt, _ in matching_worklogs
+            if wl.author.strip().lower() == username.strip().lower()
+        ]
+        day_seconds: dict[date, int] = defaultdict(int)
+        issue_seconds: dict[str, int] = defaultdict(int)
+        for wl, dt in user_wls:
+            day_seconds[dt] += wl.seconds
+            issue_seconds[wl.issue_key] += wl.seconds
+
+        total_secs = sum(day_seconds.values())
+        user_total_hours = round_to_quarter(total_secs / 3600.0)
+        user_hours_map[username] = user_total_hours
+
+        days_list = []
+        missing_hours_total = 0.0
+        missing_day_strs = []
+
+        for d in all_days:
+            is_work = cal.is_working_day(d)
+            logged_secs = day_seconds.get(d, 0)
+            d_hours = round_to_quarter(logged_secs / 3600.0)
+
+            if is_work:
+                target = cfg.thresholds.daily_hours_target
+                if d < current_today:
+                    below_target = d_hours < target
+                elif d == current_today:
+                    if current_now.hour >= cfg.thresholds.end_day_hour:
+                        below_target = d_hours < target
+                    else:
+                        below_target = False
+                else:
+                    below_target = False
+
+                if below_target:
+                    diff = round_to_quarter(target - d_hours)
+                    missing_hours_total += diff
+                    w_vn = _WEEKDAYS_VI[d.weekday()]
+                    missing_day_strs.append(
+                        f"{w_vn} {d.strftime('%d/%m')} ({_fmt_hours(diff)})"
+                    )
+
+                days_list.append(
+                    {
+                        "date": d.isoformat(),
+                        "hours": d_hours,
+                        "below_target": below_target,
+                        "holiday": False,
+                    }
+                )
+            else:
+                if d_hours > 0:
+                    days_list.append(
+                        {
+                            "date": d.isoformat(),
+                            "hours": d_hours,
+                            "below_target": False,
+                            "holiday": True,
+                        }
+                    )
+
+        top_issues = []
+        for k, secs in sorted(issue_seconds.items(), key=lambda x: (-x[1], x[0]))[:3]:
+            iss_obj = snapshot.issues.get(k)
+            summary_str = iss_obj.summary if iss_obj else ""
+            top_issues.append(
+                {
+                    "key": k,
+                    "summary": summary_str,
+                    "hours": round_to_quarter(secs / 3600.0),
+                }
+            )
+
+        missing_hours_total = round_to_quarter(missing_hours_total)
+        person_missing_descriptions[username] = missing_day_strs
+        people.append(
+            {
+                "username": username,
+                "total_hours": user_total_hours,
+                "days": days_list,
+                "top_issues": top_issues,
+                "missing_hours": missing_hours_total,
+            }
+        )
+
+    people.sort(key=lambda p: p["username"].lower())
+
+    # Idle with work in progress:
+    idle_people = []
+    if is_team_view:
+        in_progress_assignees = set()
+        for iss in snapshot.issues.values():
+            if (
+                iss.status == "in_progress"
+                and iss.assignee
+                and not iss.is_resolved
+                and not iss.frozen
+            ):
+                if allowed_projects is None or iss.project.upper() in allowed_projects:
+                    in_progress_assignees.add(iss.assignee)
+        idle_people = sorted(
+            u for u in in_progress_assignees if user_hours_map.get(u, 0.0) == 0.0
+        )
+
+    message_lines = []
+    for p in people:
+        u = p["username"]
+        missing_strs = person_missing_descriptions.get(u, [])
+        if missing_strs:
+            missing_detail = ", ".join(missing_strs)
+            line = (
+                f"{u}: {_fmt_hours(p['total_hours'])}/{_fmt_hours(target_total)}, "
+                f"thiếu {missing_detail}"
+            )
+        else:
+            line = f"{u}: {_fmt_hours(p['total_hours'])}/{_fmt_hours(target_total)}"
+        message_lines.append(line)
+
+    if idle_people:
+        message_lines.append(f"Chưa log giờ: {', '.join(idle_people)}")
+
+    if not message_lines:
+        message_str = "Không có dữ liệu worklog."
+    else:
+        message_str = "\n".join(message_lines)
+
+    return {
+        "ok": True,
+        "message": message_str,
+        "range": {"from": d_from.isoformat(), "to": d_to.isoformat()},
+        "people": people,
+        "idle_with_work_in_progress": idle_people,
+    }

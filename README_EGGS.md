@@ -263,6 +263,7 @@ Hệ thống hỗ trợ BA/Lead chuyển đổi tài liệu yêu cầu thành c�
 - **`eggs_plan_validate`**: Kiểm tra tính hợp lệ và chuẩn hóa cấu trúc `plan.yaml` đối chiếu với Jira (Component/Actor, tuỳ chọn Part, thành viên dự án, ngày hết hạn). Trả về cây công việc và danh sách câu hỏi cần làm rõ.
 - **`eggs_plan_apply`**: Áp dụng kế hoạch `plan.yaml` lên Jira (hỗ trợ `dry_run=True` để xem trước thay đổi). Tự động tạo/cập nhật Epic, Story, Dev Task, Ad-hoc Task và liên kết `Blocks` giữa các luồng.
 - **`eggs_migrate_epic`**: Trích xuất Epic hiện có trên Jira thành file `plan.yaml` mẫu kèm thống kê các thông tin còn thiếu (actor, due date, qc) để bổ sung trước khi chuẩn hóa.
+- **`eggs_worklog_report`**: Báo cáo tổng hợp worklog theo cá nhân hoặc dự án trong khoảng thời gian (mặc định tuần hiện tại).
 
 ### Vòng đời của Story (Story Workflow Lifecycle)
 
