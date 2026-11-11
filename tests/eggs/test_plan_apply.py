@@ -1635,3 +1635,32 @@ def test_part_without_assignee_warns_when_only_part_could_match():
 
     assert res.ok
     assert any("HMK-101" in w and "assignee" in w and "BE" in w for w in res.warnings)
+
+
+def test_dry_run_does_not_list_a_link_that_already_exists():
+    cfg = make_cfg()
+
+    gateway = FakeGateway(
+        components_map={"HMK": ["CH - CỬA HÀNG"]},
+        issues={
+            "HMK-1": _epic(),
+            "HMK-10": _story("HMK-10", "[CH-01] One", customfield_10100="HMK-1"),
+            "HMK-11": _story("HMK-11", "[CH-02] Two", customfield_10100="HMK-1"),
+        },
+        default_transitions=DEFAULT_FLOW_TRANSITIONS,
+    )
+    gateway.allowed_field_values = {("HMK", "Dev Task", "customfield_10701"): ["BE"]}
+    gateway.links.append(("Blocks", "HMK-10", "HMK-11"))  # HMK-10 blocks HMK-11
+    plan = Plan(
+        project="HMK",
+        epic=PlanEpic(existing="HMK-1"),
+        flows=[
+            _flow("CH-01", "One", key="HMK-10"),
+            _flow("CH-02", "Two", key="HMK-11", depends_on=["CH-01"]),
+        ],
+    )
+    ctx = load_plan_context(gateway, cfg, plan, today=date(2026, 11, 10))
+    res = apply_plan(gateway, cfg, plan, ctx, dry_run=True)
+
+    assert not any("liên kết" in c for c in res.changes)
+    assert not any(w.get("type") == "Link" for w in res.would_create)

@@ -733,8 +733,25 @@ def apply_plan(
                     raise JiraError(msg)
                 dep_pairs.append((dep_code, dep_key))
 
+            # Existing blockers are read for any Story that already exists,
+            # so dry-run lists only the links apply would really create.
+            blocking_keys: set[str] = set()
+            if flow.key:
+                try:
+                    jql_links = f'issue in linkedIssues("{flow.key}", "is blocked by")'
+                    existing_blocking = gateway.search(jql_links, fields=["key"])
+                except Exception as exc:  # noqa: BLE001
+                    msg = f"Không đọc được liên kết hiện có của {flow.key}: {exc}"
+                    raise JiraError(msg) from exc
+                blocking_keys = {
+                    str(issue.get("key"))
+                    for issue in existing_blocking
+                    if issue.get("key")
+                }
+            new_pairs = [(c, k) for c, k in dep_pairs if k not in blocking_keys]
+
             if dry_run:
-                for dep_code, dep_key in dep_pairs:
+                for dep_code, dep_key in new_pairs:
                     would_create.append(
                         {
                             "type": "Link",
@@ -748,18 +765,7 @@ def apply_plan(
                 continue
 
             link_type = cfg.link_types.get("blocks", "Blocks")
-            try:
-                jql_links = f'issue in linkedIssues("{story_key}", "is blocked by")'
-                existing_blocking = gateway.search(jql_links, fields=["key"])
-            except Exception as exc:  # noqa: BLE001
-                msg = f"Không đọc được liên kết hiện có của {story_key}: {exc}"
-                raise JiraError(msg) from exc
-            blocking_keys = {
-                issue.get("key") for issue in existing_blocking if issue.get("key")
-            }
-            for _dep_code, dep_key in dep_pairs:
-                if dep_key in blocking_keys:
-                    continue
+            for _dep_code, dep_key in new_pairs:
                 gateway.link(link_type, inward_key=dep_key, outward_key=story_key)
                 changes.append(
                     f"Tạo liên kết {dep_key} blocks {story_key} (type: {link_type})"
