@@ -87,6 +87,7 @@ WRITE_EGGS_TOOL_NAMES = frozenset(
         "eggs_unblock",
         "eggs_request_reschedule",
         "eggs_flow_reschedule",
+        "eggs_story_step",
         "eggs_uat",
         "eggs_decide_reschedule",
         "eggs_cancel",
@@ -1489,6 +1490,54 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
             new_due=new_due_date,
             reason=reason,
             dry_run=dry_run,
+        )
+        if res.ok and not dry_run:
+            now = datetime.now(ZoneInfo(cfg.timezone))
+            res = await asyncio.to_thread(
+                _attach_next_agenda_item, res, user_gw, ident, cfg, cal, now
+            )
+        return json.dumps(action_result_to_dict(res), indent=2, ensure_ascii=False)
+
+    @server.tool(tags=write_tags, annotations={"title": "EGGS Story Step"})
+    @eggs_check_write_access
+    async def eggs_story_step(
+        ctx: Context,
+        key: Annotated[str, Field(description="Mã Story hoặc Epic")],
+        step: Annotated[
+            str,
+            Field(
+                description=(
+                    "Bước nghiệp vụ BA: analysis_done, reopen_analysis, "
+                    "ready_for_dev, close_epic"
+                )
+            ),
+        ],
+        comment: Annotated[
+            str | None,
+            Field(description="Ghi chú kèm theo bước", default=None),
+        ] = None,
+        *,
+        dry_run: Annotated[
+            bool, Field(description="Chạy thử nghiệm", default=False)
+        ] = False,
+    ) -> str:
+        """Thực hiện bước nghiệp vụ BA cho Story hoặc đóng Epic."""
+        cfg = await asyncio.to_thread(load_config)
+        user_gw = await get_user_gateway(ctx, write=True)
+        roles_gw = await asyncio.to_thread(get_roles_reader, cfg)
+        ident = await asyncio.to_thread(
+            resolve_identity, user_gw, roles_gw, cfg, _identity_cache
+        )
+
+        cal = WorkCalendar(cfg.holidays)
+        actions = Actions(user_gw, cfg, cal)
+        res = await asyncio.to_thread(
+            actions.story_step,
+            key=key,
+            step=step,
+            comment=comment,
+            dry_run=dry_run,
+            identity=ident,
         )
         if res.ok and not dry_run:
             now = datetime.now(ZoneInfo(cfg.timezone))

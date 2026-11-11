@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 from .calendar import WorkCalendar
 from .config import EggsConfig
 from .gateway import JiraError, JiraGateway
+from .identity import Identity
 from .mapping import issue_fields_for_write, issue_from_json
 from .model import Issue
 
@@ -120,7 +121,18 @@ class Actions:
     def _find_transition(
         self, key: str, logical_trans_name: str
     ) -> tuple[str | None, list[str]]:
-        target_name = self.cfg.transitions[logical_trans_name]
+        default_names = {
+            "analysis_done": "Analysis Done",
+            "reopen_analysis": "Reopen Analysis",
+            "ready_for_dev": "Ready For Dev",
+            "close_epic": "Close Epic",
+        }
+        target_name = self.cfg.transitions.get(
+            logical_trans_name,
+            default_names.get(
+                logical_trans_name, logical_trans_name.replace("_", " ").title()
+            ),
+        )
         available = self.gateway.get_transitions(key)
         avail_names = [t["name"] for t in available]
         matched = next(
@@ -131,7 +143,18 @@ class Actions:
     def _unavailable_result(
         self, key: str, logical_trans_name: str, avail_names: list[str]
     ) -> ActionResult:
-        target_name = self.cfg.transitions[logical_trans_name]
+        default_names = {
+            "analysis_done": "Analysis Done",
+            "reopen_analysis": "Reopen Analysis",
+            "ready_for_dev": "Ready For Dev",
+            "close_epic": "Close Epic",
+        }
+        target_name = self.cfg.transitions.get(
+            logical_trans_name,
+            default_names.get(
+                logical_trans_name, logical_trans_name.replace("_", " ").title()
+            ),
+        )
         avail_str = ", ".join(avail_names) if avail_names else "(không có)"
         return ActionResult(
             ok=False,
@@ -1562,6 +1585,333 @@ class Actions:
             message=f"Đã gửi yêu cầu dời Due Date cho {actual_key}.",
             changes=changes,
             next_actions=["decide_reschedule"],
+        )
+
+    def story_step(
+        self,
+        key: str,
+        step: str,
+        comment: str | None = None,
+        *,
+        dry_run: bool = False,
+        identity: Identity | None = None,
+    ) -> ActionResult:
+        valid_steps = (
+            "analysis_done",
+            "reopen_analysis",
+            "ready_for_dev",
+            "close_epic",
+        )
+        if step not in valid_steps:
+            return ActionResult(
+                ok=False,
+                message=(
+                    f"step '{step}' không hợp lệ. "
+                    f"Chỉ chấp nhận một trong 4 bước: {', '.join(valid_steps)}."
+                ),
+                changes=[],
+                next_actions=[],
+            )
+
+        raw, issue = self._get_raw_and_issue(key)
+
+        if identity is not None:
+            proj = issue.project.upper()
+            user_roles = identity.roles.get(proj, set())
+            if not identity.is_lead and "lead_ba" not in user_roles:
+                return ActionResult(
+                    ok=False,
+                    message="Bước này do BA hoặc Lead làm.",
+                    changes=[],
+                    next_actions=[],
+                )
+
+        if step == "analysis_done":
+            if issue.type != "story":
+                return ActionResult(
+                    ok=False,
+                    message=(
+                        f"Issue {key} không phải là Story "
+                        f"(loại hiện tại: {issue.type})."
+                    ),
+                    changes=[],
+                    next_actions=[],
+                )
+            if issue.status != "open":
+                status_display = self.cfg.statuses.get(
+                    issue.status, issue.status.title()
+                )
+                if issue.status == "analyzing":
+                    fitting = "ready_for_dev hoặc reopen_analysis"
+                else:
+                    fitting = "không có bước BA phù hợp"
+                return ActionResult(
+                    ok=False,
+                    message=f"Story {key} đã {status_display}; bước tiếp là {fitting}.",
+                    changes=[],
+                    next_actions=[],
+                )
+
+            gaps: list[str] = []
+            missing: list[str] = []
+            if len(issue.components) == 0:
+                gaps.append("chưa có Component (Actor)")
+                missing.append("component")
+            elif len(issue.components) > 1:
+                gaps.append(
+                    f"có {len(issue.components)} Components (chỉ cho phép đúng 1)"
+                )
+                missing.append("component")
+
+            if not issue.qc_owner:
+                gaps.append("chưa có QC Owner")
+                missing.append("qc_owner")
+
+            desc = (raw.get("fields", {}).get("description") or "").strip()
+            if not desc:
+                gaps.append("mô tả (description) trống")
+                missing.append("description")
+
+            if gaps:
+                gap_msg = "; ".join(gaps)
+                return ActionResult(
+                    ok=False,
+                    message=f"Story {key} thiếu thông tin: {gap_msg}.",
+                    changes=[],
+                    next_actions=[],
+                    missing=missing,
+                )
+
+            warning: str | None = None
+            if not has_ac_heading(desc):
+                warning = "Mô tả chưa có mục Acceptance Criteria"
+
+            changes = ["Open → Analyzed (Analysis Done)"]
+            if warning:
+                changes.append(warning)
+            next_actions = ["ready_for_dev"]
+
+        elif step == "reopen_analysis":
+            if issue.type != "story":
+                return ActionResult(
+                    ok=False,
+                    message=(
+                        f"Issue {key} không phải là Story "
+                        f"(loại hiện tại: {issue.type})."
+                    ),
+                    changes=[],
+                    next_actions=[],
+                )
+            if issue.status != "analyzing":
+                status_display = self.cfg.statuses.get(
+                    issue.status, issue.status.title()
+                )
+                if issue.status == "open":
+                    fitting = "analysis_done"
+                else:
+                    fitting = "không có bước BA phù hợp"
+                return ActionResult(
+                    ok=False,
+                    message=(
+                        f"Story {key} đang ở trạng thái {status_display}; "
+                        f"bước tiếp là {fitting}."
+                    ),
+                    changes=[],
+                    next_actions=[],
+                )
+
+            if not comment or not comment.strip():
+                return ActionResult(
+                    ok=False,
+                    message="Comment (lý do mở lại phân tích) là bắt buộc.",
+                    changes=[],
+                    next_actions=[],
+                    missing=["comment"],
+                )
+
+            changes = ["Analyzed → Open (Reopen Analysis)"]
+            next_actions = ["analysis_done"]
+
+        elif step == "ready_for_dev":
+            if issue.type != "story":
+                return ActionResult(
+                    ok=False,
+                    message=(
+                        f"Issue {key} không phải là Story "
+                        f"(loại hiện tại: {issue.type})."
+                    ),
+                    changes=[],
+                    next_actions=[],
+                )
+            if issue.status != "analyzing":
+                status_display = self.cfg.statuses.get(
+                    issue.status, issue.status.title()
+                )
+                if issue.status == "open":
+                    fitting = "analysis_done"
+                else:
+                    fitting = "không có bước BA phù hợp"
+                return ActionResult(
+                    ok=False,
+                    message=(
+                        f"Story {key} đang ở trạng thái {status_display}; "
+                        f"bước tiếp là {fitting}."
+                    ),
+                    changes=[],
+                    next_actions=[],
+                )
+
+            gaps = []
+            missing = []
+            if len(issue.components) == 0:
+                gaps.append("chưa có Component (Actor)")
+                missing.append("component")
+            elif len(issue.components) > 1:
+                gaps.append(
+                    f"có {len(issue.components)} Components (chỉ cho phép đúng 1)"
+                )
+                missing.append("component")
+
+            if not issue.due_date:
+                gaps.append("chưa có Due Date")
+                missing.append("due_date")
+
+            if not issue.qc_owner:
+                gaps.append("chưa có QC Owner")
+                missing.append("qc_owner")
+
+            raw_subtasks = raw.get("fields", {}).get("subtasks")
+            if raw_subtasks is None:
+                raw_subtasks = self.gateway.get_subtasks(key)
+
+            dev_task_types = set(self.cfg.issue_types.get("dev_task", ["Dev Task"]))
+            dev_tasks: list[Issue] = []
+            for st in raw_subtasks:
+                st_key = st.get("key")
+                if not st_key:
+                    continue
+                st_raw, st_issue = self._get_raw_and_issue(st_key)
+                st_raw_type = (
+                    st_raw.get("fields", {}).get("issuetype", {}).get("name", "")
+                )
+                is_dt = (st_issue.type == "dev_task") or (st_raw_type in dev_task_types)
+                if is_dt and st_issue.status != "cancelled":
+                    dev_tasks.append(st_issue)
+
+            if not dev_tasks:
+                gaps.append("chưa có Dev Task nào")
+                missing.append("dev_task")
+            else:
+                for dt in dev_tasks:
+                    dt_lacks = []
+                    if not dt.part:
+                        dt_lacks.append("Part")
+                    if not dt.estimate_seconds or dt.estimate_seconds <= 0:
+                        dt_lacks.append("Original Estimate")
+                    if dt_lacks:
+                        lacks_str = " và ".join(dt_lacks)
+                        gaps.append(f"Dev Task {dt.key} thiếu {lacks_str}")
+                        missing.append(dt.key)
+
+            if gaps:
+                gap_msg = "; ".join(gaps)
+                return ActionResult(
+                    ok=False,
+                    message=f"Story {key} thiếu thông tin: {gap_msg}.",
+                    changes=[],
+                    next_actions=[],
+                    missing=missing,
+                )
+
+            changes = ["Analyzed → Ready For Dev (Ready For Dev)"]
+            next_actions = []
+
+        elif step == "close_epic":
+            if issue.type != "epic":
+                return ActionResult(
+                    ok=False,
+                    message=(
+                        f"Issue {key} không phải là Epic (loại hiện tại: {issue.type})."
+                    ),
+                    changes=[],
+                    next_actions=[],
+                )
+            if issue.status != "in_progress":
+                status_display = self.cfg.statuses.get(
+                    issue.status, issue.status.title()
+                )
+                return ActionResult(
+                    ok=False,
+                    message=(
+                        f"Epic {key} đang ở trạng thái {status_display}; "
+                        "bước close_epic chỉ áp dụng khi "
+                        "Epic ở trạng thái Dev In Progress."
+                    ),
+                    changes=[],
+                    next_actions=[],
+                )
+
+            epic_link_id = self.cfg.fields.get("epic_link")
+            if epic_link_id:
+                cf_match = re.search(r"\d+", epic_link_id)
+                cf_id = cf_match.group(0) if cf_match else epic_link_id
+                jql_epic = f'cf[{cf_id}] = "{key}"'
+            else:
+                jql_epic = f'"Epic Link" = "{key}"'
+
+            children = self.gateway.search(
+                jql_epic, fields=["key", "status", "summary", "issuetype"]
+            )
+            open_issues: list[tuple[str, str]] = []
+            for child in children:
+                c_key = child.get("key")
+                if c_key == key:
+                    continue
+                st_fields = child.get("fields", {}).get("status", {})
+                st_name = st_fields.get("name", "")
+                logical_st = self.cfg.status_logical(st_name) or st_name.lower()
+                if logical_st not in ("done", "cancelled"):
+                    open_issues.append((c_key, st_name or logical_st))
+
+            if open_issues:
+                open_strs = [f"{k} ({s})" for k, s in open_issues[:10]]
+                remaining = len(open_issues) - 10
+                if remaining > 0:
+                    open_desc = ", ".join(open_strs) + f" và {remaining} issue khác"
+                else:
+                    open_desc = ", ".join(open_strs)
+                return ActionResult(
+                    ok=False,
+                    message=f"Epic {key} còn issue chưa hoàn thành: {open_desc}.",
+                    changes=[],
+                    next_actions=[],
+                    missing=[k for k, _ in open_issues],
+                )
+
+            changes = ["Dev In Progress → Done (Close Epic)"]
+            next_actions = []
+
+        matched, avail_names = self._find_transition(key, step)
+        if not matched:
+            return self._unavailable_result(key, step, avail_names)
+
+        if dry_run:
+            return ActionResult(
+                ok=True,
+                message=f"[DRY-RUN] Sẽ thực hiện transition '{matched}' cho {key}.",
+                changes=changes,
+                next_actions=next_actions,
+            )
+
+        err = self._do_transition(key, matched, comment=comment)
+        if err is not None:
+            return err
+
+        return ActionResult(
+            ok=True,
+            message=f"Đã thực hiện transition '{matched}' cho {key}.",
+            changes=changes,
+            next_actions=next_actions,
         )
 
     def uat(

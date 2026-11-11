@@ -166,6 +166,7 @@ transitions:
   start_triage: Start Triage
   close_report: Close Report
   analysis_done: Analysis Done
+  reopen_analysis: Reopen Analysis
   set_due: Set Due Date
   ready_for_dev: Ready For Dev
   close_epic: Close Epic

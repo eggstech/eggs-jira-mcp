@@ -437,6 +437,7 @@ def test_intents_for_dev_excludes_decide_reschedule():
     assert "worklog_report" in names
     assert "decide_reschedule" not in names
     assert "flow_reschedule" not in names
+    assert "story_step" not in names
     assert "uat" not in names
     assert "plan_cards" not in names
     assert "migrate_epic" not in names
@@ -457,6 +458,7 @@ def test_intents_for_lead_includes_status_and_report():
     assert "decide_reschedule" in names
     assert "plan_cards" in names
     assert "migrate_epic" in names
+    assert "story_step" in names
 
 
 def test_intents_visible_to_lead_ba_and_not_dev():
@@ -469,6 +471,7 @@ def test_intents_visible_to_lead_ba_and_not_dev():
     ba_intents = {it.name for it in intents_for(ba_identity)}
     assert "plan_cards" in ba_intents
     assert "migrate_epic" in ba_intents
+    assert "story_step" in ba_intents
 
     dev_identity = Identity(
         username="dev1",
@@ -479,6 +482,7 @@ def test_intents_visible_to_lead_ba_and_not_dev():
     dev_intents = {it.name for it in intents_for(dev_identity)}
     assert "plan_cards" not in dev_intents
     assert "migrate_epic" not in dev_intents
+    assert "story_step" not in dev_intents
 
 
 def test_mentioned_keys_filters_unknown_projects():

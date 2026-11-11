@@ -253,6 +253,19 @@ INTENTS: list[Intent] = [
         required=["key", "proposed_due", "reason"],
     ),
     Intent(
+        name="story_step",
+        roles=frozenset({"lead_ba"}),
+        examples=[
+            "phân tích xong RFID-3",
+            "mở lại phân tích",
+            "Story sẵn sàng cho dev",
+            "chuyển Ready For Dev",
+            "đóng Epic",
+        ],
+        tool="eggs_story_step",
+        required=["key", "step"],
+    ),
+    Intent(
         name="uat",
         roles=frozenset({"lead_ba"}),
         examples=[
