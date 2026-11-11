@@ -292,14 +292,24 @@ def evaluate(
 _LEVEL_LABELS = {0: "cần xử lý", 1: "leo thang L1", 2: "leo thang L2 (Lead)"}
 
 
-def _alert_lines(alerts: list[EscalationAlert]) -> list[str]:
+ALERT_LINE_LIMIT = 15
+
+
+def _alert_lines(
+    alerts: list[EscalationAlert], limit: int = ALERT_LINE_LIMIT
+) -> list[str]:
     lines = []
-    for a in sorted(alerts, key=lambda x: (-x.level, x.key)):
+    ordered = sorted(alerts, key=lambda x: (-x.level, x.key))
+    for a in ordered[:limit]:
         summary = a.summary if len(a.summary) <= 80 else a.summary[:77] + "..."
         label = _LEVEL_LABELS.get(a.level, f"leo thang L{a.level}")
         owner = f" → {a.owner}" if a.owner else ""
         flags = f" ({', '.join(a.flags)})" if a.flags else ""
         lines.append(f"- {a.key} · {summary} · {label}{owner}{flags}")
+    if len(ordered) > limit:
+        lines.append(
+            f"- … và {len(ordered) - limit} việc khác (xem báo cáo sáng hoặc /eggs)"
+        )
     return lines
 
 
@@ -1490,6 +1500,11 @@ def main(
         help="Tính toán cờ sức khỏe, leo thang, ETA và ghi ngược Jira",
     )
     p_eval.add_argument("--dry-run", action="store_true", help="Không ghi vào Jira")
+    p_eval.add_argument(
+        "--no-alerts",
+        action="store_true",
+        help="Ghi Jira nhưng không gửi leo thang vào nhóm chat (chạy mồi lần đầu)",
+    )
 
     # report
     p_rep = subparsers.add_parser("report", help="Xuất báo cáo ngày và gửi Google Chat")
@@ -1622,13 +1637,14 @@ def main(
 
     if args.subcommand == "evaluate":
         res = evaluate(gw, cfg, now, cal, dry_run=args.dry_run)
-        alert_failures = post_escalation_alerts(
-            cfg,
-            getattr(res, "alerts", []),
-            now,
-            dry_run=args.dry_run,
-            http_post=http_post,
-        )
+        alerts = getattr(res, "alerts", [])
+        if args.no_alerts:
+            logger.info("Bỏ qua gửi %d leo thang (--no-alerts).", len(alerts))
+            alert_failures = 0
+        else:
+            alert_failures = post_escalation_alerts(
+                cfg, alerts, now, dry_run=args.dry_run, http_post=http_post
+            )
         issue_count = getattr(res, "issue_count", len({c.split(":")[0] for c in res}))
         field_count = getattr(res, "field_count", 0)
         logger.info(

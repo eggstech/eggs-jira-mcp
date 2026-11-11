@@ -3531,3 +3531,47 @@ def test_post_escalation_alerts_same_group_posts_once(cfg: EggsConfig, monkeypat
     post_escalation_alerts(cfg2, [_alert("RFID", "RFID-9", 2)], NOW_WED)
     assert len(posted) == 1
     assert post_escalation_alerts(cfg2, [], NOW_WED) == 0
+
+
+def test_alert_message_is_capped(cfg: EggsConfig, monkeypatch):
+    from mcp_atlassian.eggs.guardian import ALERT_LINE_LIMIT, post_escalation_alerts
+
+    posted: list[str] = []
+    monkeypatch.setattr(
+        "mcp_atlassian.eggs.guardian.post_to_chat",
+        lambda webhook, text, http_post=None, project_key=None: posted.append(text),
+    )
+    alerts = [_alert("RFID", f"RFID-{i}", 0) for i in range(1, 41)]
+    post_escalation_alerts(cfg, alerts, NOW_WED)
+    rfid = next(t for t in posted if "RFID-1 " in t or "RFID-10 " in t)
+    lines = [ln for ln in rfid.splitlines() if ln.startswith("- ")]
+    assert len(lines) == ALERT_LINE_LIMIT + 1
+    assert lines[-1].startswith("- … và 25 việc khác")
+
+
+def test_evaluate_no_alerts_writes_but_does_not_post(cfg: EggsConfig, monkeypatch):
+    posted: list[str] = []
+    monkeypatch.setattr(
+        "mcp_atlassian.eggs.guardian.post_to_chat",
+        lambda webhook, text, http_post=None, project_key=None: posted.append(text),
+    )
+    monkeypatch.setattr(
+        "mcp_atlassian.eggs.guardian.load_config", lambda *_a, **_k: cfg
+    )
+    monkeypatch.setenv("EGGS_CONFIG", "unused.yaml")
+    monkeypatch.setenv("JIRA_URL", cfg.jira_url)
+    monkeypatch.setenv("EGGS_BOT_TOKEN", "dummy_token")
+    gw = FakeGateway(issues={"RFID-1": _overdue_issue()})
+    monkeypatch.setattr(
+        "mcp_atlassian.eggs.guardian.datetime",
+        type(
+            "MockDT",
+            (),
+            {"now": lambda tz=None: NOW_WED, "combine": datetime.combine},
+        ),
+    )
+    if True:
+        code = main(["evaluate", "--no-alerts"], gateway=gw)
+    assert code == 0
+    assert posted == []
+    assert any(c[0] == "update_fields" for c in gw.calls)
