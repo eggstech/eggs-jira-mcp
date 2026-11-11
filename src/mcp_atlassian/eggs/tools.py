@@ -410,6 +410,34 @@ def _is_eggs_enabled() -> bool:
     return val in {"1", "true", "yes"}
 
 
+def _parse_reported_at(value: str | None, tz_name: str) -> datetime | None:
+    """Parse a report time in common formats; naive values use the config tz."""
+    if value is None or not value.strip():
+        return None
+    text = value.strip()
+    parsed: datetime | None = None
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        for fmt in (
+            "%Y-%m-%dT%H:%M:%S.%f%z",
+            "%d/%m/%Y %H:%M",
+            "%d/%m/%Y %H:%M:%S",
+            "%d/%m/%Y",
+        ):
+            try:
+                parsed = datetime.strptime(text, fmt)  # noqa: DTZ007
+                break
+            except ValueError:
+                continue
+    if parsed is None:
+        msg = f"Unrecognised reported_at: {value!r}"
+        raise ValueError(msg)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=ZoneInfo(tz_name))
+    return parsed
+
+
 def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
     """Register all 25 egg tools on the given FastMCP server."""
     if not force and not _is_eggs_enabled():
@@ -888,9 +916,6 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         estimate: Annotated[
             str, Field(description="Thời lượng ước tính (ví dụ '2d', '4h')")
         ],
-        assignee: Annotated[
-            str | None, Field(description="Người nhận việc", default=None)
-        ] = None,
         *,
         dry_run: Annotated[
             bool, Field(description="Chạy thử nghiệm không ghi", default=False)
@@ -913,13 +938,28 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
 
         cal = WorkCalendar(cfg.holidays)
         actions = Actions(user_gw, cfg, cal)
+        try:
+            start_date = date.fromisoformat(start)
+            end_date = date.fromisoformat(end)
+        except ValueError:
+            return json.dumps(
+                action_result_to_dict(
+                    ActionResult(
+                        ok=False,
+                        message="start và end phải theo dạng YYYY-MM-DD.",
+                        changes=[],
+                        next_actions=[],
+                    )
+                ),
+                indent=2,
+                ensure_ascii=False,
+            )
         res = await asyncio.to_thread(
             actions.schedule,
             key=key,
-            start=start,
-            end=end,
+            start=start_date,
+            end=end_date,
             estimate=estimate,
-            assignee=assignee,
             dry_run=dry_run,
         )
         if res.ok and not dry_run:
@@ -1582,8 +1622,15 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         ],
         note: Annotated[str, Field(description="Ghi chú UAT", default="")] = "",
         bugs: Annotated[
-            list[dict[str, Any]] | None,
-            Field(description="Danh sách bug khi UAT fail", default=None),
+            dict[str, list[str]] | None,
+            Field(
+                description=(
+                    "Khi UAT fail: Story key → danh sách mô tả bug, ví dụ "
+                    '{"RFID-12": ["Sai tổng tiền"]}. Story không có bug mới '
+                    "thì phải còn Bug sub-task đang mở."
+                ),
+                default=None,
+            ),
         ] = None,
         stories: Annotated[
             list[str] | None,
@@ -1613,12 +1660,12 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         actions = Actions(user_gw, cfg, cal)
         res = await asyncio.to_thread(
             actions.uat,
-            epic=epic,
+            epic_key=epic,
             actor=actor,
             action=action,
             note=note,
+            story_keys=stories,
             bugs=bugs,
-            stories=stories,
             dry_run=dry_run,
         )
         if res.ok and not dry_run:
@@ -1673,8 +1720,8 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         res = await asyncio.to_thread(
             actions.decide_reschedule,
             key=key,
-            approved=approved,
-            reason=reason,
+            approve=approved,
+            note=reason,
             new_end=new_end_date,
             dry_run=dry_run,
         )
@@ -1871,7 +1918,15 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         ],
         reported_by: Annotated[str, Field(description="Tên người phản ánh")],
         reported_at: Annotated[
-            str | None, Field(description="Thời điểm phản ánh", default=None)
+            str | None,
+            Field(
+                description=(
+                    "Thời điểm khách báo, ví dụ '2026-11-11 09:30', "
+                    "'2026-11-11T09:30:00+07:00' hoặc '11/11/2026 09:30'; "
+                    "bỏ trống = bây giờ"
+                ),
+                default=None,
+            ),
         ] = None,
         *,
         dry_run: Annotated[
@@ -1896,13 +1951,31 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
 
         cal = WorkCalendar(cfg.holidays)
         actions = Actions(user_gw, cfg, cal)
+        try:
+            rep_dt = _parse_reported_at(reported_at, cfg.timezone)
+        except ValueError:
+            return json.dumps(
+                action_result_to_dict(
+                    ActionResult(
+                        ok=False,
+                        message=(
+                            "reported_at không đọc được; dùng dạng "
+                            "'2026-11-11 09:30' hoặc '11/11/2026 09:30'."
+                        ),
+                        changes=[],
+                        next_actions=[],
+                    )
+                ),
+                indent=2,
+                ensure_ascii=False,
+            )
         res = await asyncio.to_thread(
             actions.triage_open,
             project=project,
             text=text,
             source_url=source_url,
             reported_by=reported_by,
-            reported_at=reported_at,
+            reported_at=rep_dt,
             dry_run=dry_run,
         )
         if res.ok and not dry_run:
@@ -1918,27 +1991,52 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         ctx: Context,
         key: Annotated[str, Field(description="Mã User Report cần đóng")],
         verdict: Annotated[
-            str,
+            Literal[
+                "bug",
+                "guidance",
+                "feature",
+                "data_fix",
+                "duplicate",
+                "cannot_reproduce",
+                "third_party",
+            ],
             Field(
                 description=(
-                    "Kết luận: 'is_bug_flow', 'is_bug_ops', "
-                    "'is_known_issue', hoặc 'not_a_bug'"
+                    "Kết luận: 'bug' (là lỗi), 'guidance' (hướng dẫn sử dụng), "
+                    "'feature' (yêu cầu tính năng), 'data_fix' (sửa dữ liệu/cấu "
+                    "hình), 'duplicate' (trùng phản ánh khác), 'cannot_reproduce' "
+                    "(không tái hiện được), 'third_party' (lỗi bên thứ ba)"
                 )
             ),
         ],
         note: Annotated[str, Field(description="Ghi chú kết luận phản ánh")],
-        time_spent: Annotated[str, Field(description="Thời gian phân tích phản ánh")],
+        time_spent: Annotated[
+            str, Field(description="Thời gian phân tích phản ánh, ví dụ '15m'")
+        ],
         bug_target: Annotated[
             str | None,
             Field(
-                description="Mã Story hoặc Ad-hoc Task cho is_bug_flow",
+                description=(
+                    "Với 'bug': Story hoặc Ad-hoc Task để tạo Bug sub-task dưới "
+                    "nó; bỏ trống thì tạo Bug stand-alone trong Epic [OPS]"
+                ),
+                default=None,
+            ),
+        ] = None,
+        bug_summary: Annotated[
+            str | None,
+            Field(
+                description="Với 'bug': tiêu đề Bug (mặc định lấy từ phản ánh)",
                 default=None,
             ),
         ] = None,
         link_key: Annotated[
             str | None,
             Field(
-                description="Mã issue liên kết cho is_known_issue",
+                description=(
+                    "Với 'feature': Story; 'data_fix': Ad-hoc Task; "
+                    "'duplicate': User Report gốc"
+                ),
                 default=None,
             ),
         ] = None,
@@ -1970,7 +2068,8 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
             verdict=verdict,
             note=note,
             time_spent=time_spent,
-            bug_target=bug_target,
+            bug_story_key=bug_target,
+            bug_summary=bug_summary,
             link_key=link_key,
             dry_run=dry_run,
         )

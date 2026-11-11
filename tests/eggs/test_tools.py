@@ -227,12 +227,12 @@ class TestEggsToolBehavior:
             assert res_json["ok"] is True
             assert mock_uat.called
             mock_uat.assert_called_once_with(
-                epic="RFID-E1",
+                epic_key="RFID-E1",
                 actor="KH",
                 action="start",
                 note="All good",
+                story_keys=None,
                 bugs=None,
-                stories=None,
                 dry_run=False,
             )
 
@@ -1549,3 +1549,207 @@ class TestLogWorkToolWiring:
         assert len(logged) == 1
         if started:
             assert logged[0][2]["started"].date() == date(2026, 11, 10)
+
+
+def _actions_call_mismatches() -> list[str]:
+    """Every eggs tool calls Actions with keyword names Actions accepts."""
+    import ast
+    import inspect
+    from pathlib import Path
+
+    from mcp_atlassian.eggs import tools as tools_mod
+    from mcp_atlassian.eggs.actions import Actions
+
+    tree = ast.parse(Path(tools_mod.__file__).read_text(encoding="utf-8"))
+    problems: list[str] = []
+    for fn in ast.walk(tree):
+        if not (isinstance(fn, ast.AsyncFunctionDef) and fn.name.startswith("eggs_")):
+            continue
+        for call in ast.walk(fn):
+            if not isinstance(call, ast.Call):
+                continue
+            func, args = call.func, list(call.args)
+            target: str | None = None
+            if (
+                isinstance(func, ast.Attribute)
+                and func.attr == "to_thread"
+                and args
+                and isinstance(args[0], ast.Attribute)
+                and isinstance(args[0].value, ast.Name)
+                and args[0].value.id == "actions"
+            ):
+                target, n_pos = args[0].attr, len(args) - 1
+            elif (
+                isinstance(func, ast.Attribute)
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "actions"
+            ):
+                target, n_pos = func.attr, len(args)
+            if target is None:
+                continue
+            method = getattr(Actions, target, None)
+            if method is None:
+                problems.append(f"{fn.name}: Actions.{target} does not exist")
+                continue
+            sig = inspect.signature(method)
+            kwargs = {k.arg: None for k in call.keywords if k.arg}
+            try:
+                sig.bind(None, *([None] * n_pos), **kwargs)
+            except TypeError as e:
+                problems.append(f"{fn.name} -> Actions.{target}: {e}")
+    return problems
+
+
+def test_every_tool_calls_actions_with_matching_arguments():
+    assert _actions_call_mismatches() == []
+
+
+class TestBrokenWrappersFixed:
+    """B15–B17 (11/11): tools crashed on argument names before reaching Jira."""
+
+    @staticmethod
+    async def _call(cfg: EggsConfig, name: str, args: dict[str, Any], issues: dict):
+        server = FastMCP("test_jira")
+        register_eggs_tools(server, force=True)
+        members = ["lead1"]
+        bot = FakeGateway(
+            user="eggsbot",
+            role_members={
+                "RFID": {
+                    "Business Analysts": members,
+                    "Testers": members,
+                    "Developers": members,
+                }
+            },
+        )
+        user = FakeGateway(user="lead1", issues=issues)
+        with (
+            patch("mcp_atlassian.eggs.tools.load_config", return_value=cfg),
+            patch(
+                "mcp_atlassian.eggs.tools.get_user_gateway",
+                AsyncMock(return_value=user),
+            ),
+            patch("mcp_atlassian.eggs.tools.get_roles_reader", return_value=bot),
+            patch("mcp_atlassian.eggs.tools.build_agenda", return_value=[]),
+        ):
+            res = await server.call_tool(name, args)
+        return json.loads(res.content[0].text)
+
+    @pytest.mark.asyncio
+    async def test_triage_close_accepts_bug_target_and_real_verdicts(self, cfg):
+        report = {
+            "key": "RFID-50",
+            "fields": {
+                "issuetype": {"name": "User Report"},
+                "summary": "Khách báo lỗi",
+                "status": {"name": "Analyzed"},
+                "project": {"key": "RFID"},
+            },
+        }
+        data = await self._call(
+            cfg,
+            "eggs_triage_close",
+            {
+                "key": "RFID-50",
+                "verdict": "guidance",
+                "note": "Hướng dẫn sử dụng",
+                "time_spent": "10m",
+                "dry_run": True,
+            },
+            {"RFID-50": report},
+        )
+        assert "ok" in data, data
+
+    @pytest.mark.asyncio
+    async def test_decide_reschedule_maps_approved_and_reason(self, cfg):
+        data = await self._call(
+            cfg,
+            "eggs_decide_reschedule",
+            {"key": "RFID-10", "approved": False, "reason": "", "dry_run": True},
+            {
+                "RFID-10": {
+                    "key": "RFID-10",
+                    "fields": {
+                        "issuetype": {"name": "Dev Task"},
+                        "summary": "T",
+                        "status": {"name": "Dev In Progress"},
+                        "project": {"key": "RFID"},
+                    },
+                }
+            },
+        )
+        assert data["ok"] is False
+        assert "chờ duyệt" in data["message"]
+
+    @pytest.mark.asyncio
+    async def test_uat_maps_epic_and_stories(self, cfg):
+        data = await self._call(
+            cfg,
+            "eggs_uat",
+            {
+                "epic": "RFID-1",
+                "actor": "KH",
+                "action": "fail",
+                "note": "",
+                "stories": ["RFID-2"],
+                "bugs": {"RFID-2": ["Sai tổng tiền"]},
+                "dry_run": True,
+            },
+            {},
+        )
+        assert data["ok"] is False
+        assert "bắt buộc" in data["message"]
+
+    @pytest.mark.asyncio
+    async def test_schedule_parses_dates_and_has_no_assignee(self, cfg):
+        data = await self._call(
+            cfg,
+            "eggs_schedule",
+            {
+                "key": "RFID-10",
+                "start": "11/11/2026",
+                "end": "2026-11-12",
+                "estimate": "4h",
+                "dry_run": True,
+            },
+            {},
+        )
+        assert data["ok"] is False
+        assert "YYYY-MM-DD" in data["message"]
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("2026-11-11 09:30", "2026-11-11T09:30:00+07:00"),
+        ("2026-11-11T09:30:00+07:00", "2026-11-11T09:30:00+07:00"),
+        ("2026-11-11T09:30:00.000+0700", "2026-11-11T09:30:00+07:00"),
+        ("11/11/2026 09:30", "2026-11-11T09:30:00+07:00"),
+    ],
+)
+def test_parse_reported_at_formats(text: str, expected: str):
+    from mcp_atlassian.eggs.tools import _parse_reported_at
+
+    got = _parse_reported_at(text, "Asia/Ho_Chi_Minh")
+    assert got is not None
+    assert got.isoformat() == expected
+
+
+def test_parse_reported_at_rejects_garbage_and_blank():
+    from mcp_atlassian.eggs.tools import _parse_reported_at
+
+    assert _parse_reported_at("  ", "Asia/Ho_Chi_Minh") is None
+    with pytest.raises(ValueError):
+        _parse_reported_at("hôm qua", "Asia/Ho_Chi_Minh")
+
+
+def test_triage_open_refuses_without_source_or_reporter(cfg: EggsConfig):
+    from mcp_atlassian.eggs.actions import Actions
+
+    gw = FakeGateway(user="qc.rfid")
+    res = Actions(gw, cfg, WorkCalendar(cfg.holidays)).triage_open(
+        project="RFID", text="Lỗi in hóa đơn", source_url=" ", reported_by=""
+    )
+    assert res.ok is False
+    assert res.missing == ["source_url", "reported_by"]
+    assert not [c for c in gw.calls if c[0] in ("create_issue", "search")]

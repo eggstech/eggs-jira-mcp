@@ -2182,6 +2182,7 @@ class Actions:
         *,
         approve: bool,
         note: str,
+        new_end: date | None = None,
         dry_run: bool = False,
     ) -> ActionResult:
         issue = self._get_issue(key)
@@ -2225,11 +2226,20 @@ class Actions:
         if not matched:
             return self._unavailable_result(key, trans_logical, avail)
 
+        override_end = (
+            new_end if approve and new_end and new_end != issue.proposed_end else None
+        )
         if approve:
             changes = [
                 f"Phê duyệt dời lịch cho {key}",
-                f"Cập nhật hạn mới = {issue.proposed_end}",
+                f"Cập nhật hạn mới = {override_end or issue.proposed_end}",
             ]
+            if override_end:
+                changes.insert(
+                    1,
+                    f"Đổi ngày đề xuất {issue.proposed_end} → {override_end} "
+                    "trước khi duyệt",
+                )
         else:
             changes = [f"Từ chối dời lịch cho {key}"]
 
@@ -2242,6 +2252,11 @@ class Actions:
             )
 
         if approve:
+            if override_end:
+                # Approve Reschedule copies Proposed End into Planned End.
+                self.gateway.update_fields(
+                    key, issue_fields_for_write(self.cfg, proposed_end=override_end)
+                )
             err = self._do_transition(
                 key,
                 matched,
@@ -2314,6 +2329,25 @@ class Actions:
         *,
         dry_run: bool = False,
     ) -> ActionResult:
+        missing = [
+            name
+            for name, value in (
+                ("source_url", source_url),
+                ("reported_by", reported_by),
+            )
+            if not value or not str(value).strip()
+        ]
+        if missing:
+            return ActionResult(
+                ok=False,
+                message=(
+                    "Phản ánh cần link tin nhắn gốc (source_url) và tên người báo "
+                    "(reported_by) để truy lại và trả lời khách."
+                ),
+                changes=[],
+                next_actions=[],
+                missing=missing,
+            )
         expected_summary = self.cfg.ops_epic_summary.format(
             month=self._today().month, year=self._today().year
         )
