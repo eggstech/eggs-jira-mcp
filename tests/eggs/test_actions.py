@@ -5633,3 +5633,93 @@ class TestDryRunChanges:
 
         assert res.ok is True, (name, res.message)
         assert res.changes, f"{name} dry-run returned ok without any change line"
+
+
+class TestDecideRescheduleNewEnd:
+    """Approve with a different date writes Proposed End, then transitions."""
+
+    @staticmethod
+    def _actions_with_pending(cfg, cal, user: str = "other.approver"):
+        data = _base_fixtures(cfg)
+        gw = FakeGateway(
+            issues=data["issues"], transitions=data["transitions"], user=user
+        )
+        return _make_actions(gw, cfg, cal), gw
+
+    def test_dry_run_lists_the_date_change(self, cfg, cal):
+        actions, gw = self._actions_with_pending(cfg, cal)
+        old_end = date(2026, 11, 25)
+        new_end = date(2026, 11, 28)
+
+        res = actions.decide_reschedule(
+            "HMKPOS-101",
+            approve=True,
+            note="Dời thêm 3 ngày",
+            new_end=new_end,
+            dry_run=True,
+        )
+
+        assert res.ok is True
+        assert any(
+            str(old_end) in change and str(new_end) in change for change in res.changes
+        ), res.changes
+        assert not [
+            c
+            for c in gw.calls
+            if c[0] in ("update_fields", "transition", "add_comment")
+        ]
+
+    def test_real_run_updates_proposed_end_before_the_transition(self, cfg, cal):
+        actions, gw = self._actions_with_pending(cfg, cal)
+
+        res = actions.decide_reschedule(
+            "HMKPOS-101",
+            approve=True,
+            note="Dời thêm 3 ngày",
+            new_end=date(2026, 11, 28),
+        )
+
+        assert res.ok is True
+        call_names = [c[0] for c in gw.calls]
+        assert call_names == [
+            "get_issue",
+            "current_user",
+            "get_transitions",
+            "update_fields",
+            "transition",
+        ]
+        update_call = gw.calls[3]
+        assert update_call[1][0] == "HMKPOS-101"
+        assert update_call[1][1] == {
+            cfg.fields["proposed_end"]: "2026-11-28",
+        }
+        assert gw.calls[4][1] == ("HMKPOS-101", "Approve Reschedule")
+
+    def test_reject_ignores_new_end(self, cfg, cal):
+        actions, gw = self._actions_with_pending(cfg, cal)
+
+        res = actions.decide_reschedule(
+            "HMKPOS-101",
+            approve=False,
+            note="Chưa hợp lý",
+            new_end=date(2026, 11, 28),
+        )
+
+        assert res.ok is True
+        assert not [c for c in gw.calls if c[0] == "update_fields"]
+        assert not any("2026-11-28" in change for change in res.changes)
+        assert gw.calls[-1][1] == ("HMKPOS-101", "Reject Reschedule")
+
+    def test_requester_cannot_approve_own_request_with_a_new_end(self, cfg, cal):
+        actions, gw = self._actions_with_pending(cfg, cal, user="requester.user")
+
+        res = actions.decide_reschedule(
+            "HMKPOS-101",
+            approve=True,
+            note="Tự duyệt",
+            new_end=date(2026, 11, 28),
+        )
+
+        assert res.ok is False
+        assert "Người yêu cầu không được tự duyệt" in res.message
+        assert not [c for c in gw.calls if c[0] in ("update_fields", "transition")]
