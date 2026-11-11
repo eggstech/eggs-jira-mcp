@@ -495,8 +495,8 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
             "17:00; sớm hơn vẫn được nhưng có cảnh báo).\n"
             "4. **Chốt chặn Lead-BA**: Duyệt dời lịch, ký UAT, dời hạn Story.\n"
             "5. **Người duyệt khác người đề xuất**: Không tự duyệt dời lịch của mình.\n"
-            "6. **Remaining Estimate**: Jira tự trừ theo giờ đã log (về 0 khi "
-            "log vượt). EGGS chỉ dùng Original Estimate.\n"
+            "6. **Remaining Estimate**: Eggs chỉ dùng Original Estimate; log "
+            "giờ không làm đổi Remaining Estimate (Jira giữ nguyên).\n"
         )
 
     @server.tool(

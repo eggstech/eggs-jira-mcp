@@ -367,6 +367,18 @@ def test_add_worklog_requires_aware_datetime(mock_client):
         gateway.add_worklog("PROJ-1", "1h", "did work", started=naive_dt)
 
 
+def test_add_worklog_leaves_remaining_estimate(mock_client):
+    """B5: Jira's adjustEstimate=auto would drop Remaining Estimate to 0."""
+    gateway = AtlassianGateway(mock_client)
+    gateway.add_worklog("PROJ-1", "2h", "did work")
+
+    mock_client.post.assert_called_once_with(
+        "rest/api/2/issue/PROJ-1/worklog",
+        data={"timeSpent": "2h", "comment": "did work"},
+        params={"adjustEstimate": "leave"},
+    )
+
+
 def test_worklogs_since_pagination_and_chunking(mock_client):
     gateway = AtlassianGateway(mock_client)
 

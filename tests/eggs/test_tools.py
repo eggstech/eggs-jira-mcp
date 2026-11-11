@@ -176,6 +176,16 @@ class TestEggsToolsRegistration:
 
 class TestEggsToolBehavior:
     @pytest.mark.asyncio
+    async def test_eggs_rules_says_remaining_estimate_unchanged(self):
+        server = FastMCP("test_jira")
+        register_eggs_tools(server, force=True)
+
+        res = await server.call_tool("eggs_rules", {})
+        text = res.content[0].text
+        assert "Remaining Estimate" in text
+        assert "không làm đổi Remaining Estimate" in text
+
+    @pytest.mark.asyncio
     async def test_eggs_uat_reaches_actions_uat(self, cfg: EggsConfig):
         server = FastMCP("test_jira")
         register_eggs_tools(server, force=True)

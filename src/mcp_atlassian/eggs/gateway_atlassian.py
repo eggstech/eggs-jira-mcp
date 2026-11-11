@@ -242,7 +242,13 @@ class AtlassianGateway(JiraGateway):
         }
         if started:
             payload["started"] = started.strftime("%Y-%m-%dT%H:%M:%S.000%z")
-        self.client.post(f"rest/api/2/issue/{key}/worklog", data=payload)
+        # Eggs uses Original Estimate only: Jira's default adjustEstimate=auto
+        # would drop Remaining Estimate to 0 on every logged hour.
+        self.client.post(
+            f"rest/api/2/issue/{key}/worklog",
+            data=payload,
+            params={"adjustEstimate": "leave"},
+        )
 
     def create_issue(self, fields: dict) -> str:
         """Create a new issue and return its key."""

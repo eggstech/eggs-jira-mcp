@@ -1486,7 +1486,7 @@ def test_dry_run_makes_no_writes(cfg, cal, method_name, kwargs):
             "summary": "Task",
             "project": {"key": "HMKPOS"},
             "issuetype": {"name": "Dev Task", "subtask": True},
-            "status": {"name": "DEV To Do"},
+            "status": {"name": "Test In Progress"},
             "customfield_10108": "2026-11-18",
             "customfield_10109": "2026-11-20",
             "customfield_baseline_end": "2026-11-20",
@@ -1823,6 +1823,7 @@ def test_actions_never_call_update_fields(cfg, cal):
     # 11. qc_start
     actions.qc_start("HMKPOS-101")
     # 12. qc_pass
+    data["issues"]["HMKPOS-101"]["fields"]["status"]["name"] = "Test In Progress"
     actions.qc_pass("HMKPOS-101", time_spent="1h", note="Pass")
     # 13. qc_fail
     actions.qc_fail("HMKPOS-101", time_spent="1h", reason="Bug")
@@ -2147,6 +2148,7 @@ def test_happy_path_exact_call_sequence_qc_start(cfg, cal):
 
 def test_happy_path_exact_call_sequence_qc_pass(cfg, cal):
     data = _base_fixtures(cfg)
+    data["issues"]["HMKPOS-101"]["fields"]["status"]["name"] = "Test In Progress"
     gw = FakeGateway(issues=data["issues"], transitions=data["transitions"])
     actions = _make_actions(gw, cfg, cal)
     res = actions.qc_pass("HMKPOS-101", time_spent="1h", note="All tests pass")
@@ -3001,6 +3003,7 @@ def test_empty_or_whitespace_comment_refused(cfg, cal):
     assert actions.cancel("HMKPOS-101", reason="").ok is False
 
     # qc_pass requires non-empty note
+    data["issues"]["HMKPOS-101"]["fields"]["status"]["name"] = "Test In Progress"
     assert actions.qc_pass("HMKPOS-101", time_spent="1h", note="   ").ok is False
     assert actions.qc_pass("HMKPOS-101", time_spent="1h", note="").ok is False
 
@@ -5417,3 +5420,99 @@ def test_ac_heading_needs_text_on_the_same_line_and_ignores_numbered_items():
     assert not has_ac_heading("h2.\nAcceptance Criteria")
     assert not has_ac_heading("# Acceptance Criteria đã chốt")
     assert has_ac_heading("h3. Acceptance Criteria (bản 2)")
+
+
+class TestBlockComment:
+    """B6: the block reason must survive after Unblock clears Block Reason."""
+
+    def test_block_dry_run_lists_the_comment_and_writes_nothing(self, cfg, cal):
+        data = _base_fixtures(cfg)
+        gw = FakeGateway(issues=data["issues"], transitions=data["transitions"])
+        actions = _make_actions(gw, cfg, cal)
+
+        res = actions.block(
+            "HMKPOS-101",
+            reason="Chờ API đối tác",
+            blocked_by="Bên thứ ba",
+            dry_run=True,
+        )
+
+        assert res.ok is True
+        assert any("Block (Bên thứ ba): Chờ API đối tác" in c for c in res.changes)
+        write_calls = [
+            c
+            for c in gw.calls
+            if c[0] in ("transition", "add_comment", "update_fields")
+        ]
+        assert write_calls == []
+
+    def test_block_writes_the_reason_as_a_comment(self, cfg, cal):
+        data = _base_fixtures(cfg)
+        gw = FakeGateway(issues=data["issues"], transitions=data["transitions"])
+        actions = _make_actions(gw, cfg, cal)
+
+        res = actions.block(
+            "HMKPOS-101", reason="Chờ API đối tác", blocked_by="Bên thứ ba"
+        )
+
+        assert res.ok is True
+        comments = gw.get_comments("HMKPOS-101")
+        bodies = [c["body"] for c in comments]
+        assert "Block (Bên thứ ba): Chờ API đối tác" in bodies
+        block_call = next(c for c in gw.calls if c[0] == "transition")
+        assert block_call[1] == ("HMKPOS-101", "Block")
+        assert block_call[2]["comment"] == "Block (Bên thứ ba): Chờ API đối tác"
+
+
+class TestQcPassStateOrder:
+    """B11: say the state problem before asking for a note or checking subtasks."""
+
+    @staticmethod
+    def _gateway(cfg, status: str) -> FakeGateway:
+        return FakeGateway(
+            issues={
+                "HMKPOS-101": {
+                    "key": "HMKPOS-101",
+                    "fields": {
+                        "summary": "Task",
+                        "project": {"key": "HMKPOS"},
+                        "issuetype": {"name": "Dev Task", "subtask": True},
+                        "status": {"name": status},
+                    },
+                }
+            },
+            transitions={"HMKPOS-101": ["QC Pass"]},
+        )
+
+    def test_done_issue_is_reported_before_the_missing_note(self, cfg, cal):
+        gw = self._gateway(cfg, "Done")
+        res = _make_actions(gw, cfg, cal).qc_pass("HMKPOS-101", note="")
+
+        assert res.ok is False
+        assert res.message == "HMKPOS-101 đã Done rồi."
+        assert [c[0] for c in gw.calls] == ["get_issue"]
+
+    def test_cancelled_issue_is_reported_before_the_missing_note(self, cfg, cal):
+        gw = self._gateway(cfg, "Cancelled")
+        res = _make_actions(gw, cfg, cal).qc_pass("HMKPOS-101", note="")
+
+        assert res.ok is False
+        assert res.message == "HMKPOS-101 đã Cancelled rồi."
+
+    def test_issue_not_in_test_state_asks_dev_to_submit_qc(self, cfg, cal):
+        gw = self._gateway(cfg, "Dev In Progress")
+        res = _make_actions(gw, cfg, cal).qc_pass("HMKPOS-101", note="")
+
+        assert res.ok is False
+        assert res.message == (
+            "HMKPOS-101 chưa tới bước test (đang Dev In Progress); "
+            "Dev cần Submit QC trước."
+        )
+        assert [c[0] for c in gw.calls] == ["get_issue"]
+
+    def test_note_is_checked_once_the_issue_is_in_test(self, cfg, cal):
+        gw = self._gateway(cfg, "Test In Progress")
+        res = _make_actions(gw, cfg, cal).qc_pass("HMKPOS-101", note="  ")
+
+        assert res.ok is False
+        assert "Comment (ghi chú) bắt buộc" in res.message

@@ -722,6 +722,7 @@ class Actions:
             "Chuyển trạng thái Block",
             f"Set Blocked By = {blocked_by}",
             f"Set Block Reason = {reason}",
+            f'Ghi comment "Block ({blocked_by}): {reason}"',
         ]
         if dry_run:
             return ActionResult(
@@ -736,7 +737,12 @@ class Actions:
             blocked_by=blocked_by,
             block_reason=reason,
         )
-        err = self._do_transition(key, matched, fields=payload)
+        err = self._do_transition(
+            key,
+            matched,
+            fields=payload,
+            comment=f"Block ({blocked_by}): {reason}",
+        )
         if err:
             return err
 
@@ -1193,6 +1199,27 @@ class Actions:
         *,
         dry_run: bool = False,
     ) -> ActionResult:
+        raw, issue = self._get_raw_and_issue(key)
+        if issue.status in ("done", "cancelled"):
+            status_display = self.cfg.statuses.get(issue.status, issue.status.title())
+            return ActionResult(
+                ok=False,
+                message=f"{key} đã {status_display} rồi.",
+                changes=[],
+                next_actions=[],
+            )
+        if issue.status != "testing":
+            status_display = self.cfg.statuses.get(issue.status, issue.status.title())
+            return ActionResult(
+                ok=False,
+                message=(
+                    f"{key} chưa tới bước test (đang {status_display}); "
+                    "Dev cần Submit QC trước."
+                ),
+                changes=[],
+                next_actions=[],
+            )
+
         if not note or not note.strip():
             return ActionResult(
                 ok=False,
@@ -1201,7 +1228,6 @@ class Actions:
                 next_actions=[],
             )
 
-        raw, issue = self._get_raw_and_issue(key)
         if issue.type in ("story", "adhoc"):
             subtasks = raw.get("fields", {}).get("subtasks")
             if subtasks is None and issue.type == "adhoc":
