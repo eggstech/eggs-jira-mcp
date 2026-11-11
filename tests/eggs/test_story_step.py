@@ -16,6 +16,13 @@ from tests.eggs.fakes import FakeGateway
 
 TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
+BA = Identity(
+    username="ba.rfid",
+    display_name="BA RFID",
+    roles={"RFID": {"lead_ba"}},
+    is_lead=False,
+)
+
 
 @pytest.fixture
 def base_cfg():
@@ -132,10 +139,7 @@ def test_unknown_step_refused(base_cfg, cal):
         default_transitions=["Analysis Done"],
     )
     actions = Actions(gw, base_cfg, cal)
-    res = actions.story_step(
-        key="RFID-1",
-        step="invalid_step",
-    )
+    res = actions.story_step(key="RFID-1", step="invalid_step", identity=BA)
     assert res.ok is False
     assert "Chỉ chấp nhận một trong 4 bước" in res.message
     assert "analysis_done" in res.message
@@ -197,7 +201,7 @@ def test_wrong_status_message_names_fitting_step(base_cfg, cal):
         default_transitions=["Ready For Dev", "Reopen Analysis"],
     )
     actions = Actions(gw, base_cfg, cal)
-    res = actions.story_step(key="RFID-1", step="analysis_done")
+    res = actions.story_step(key="RFID-1", step="analysis_done", identity=BA)
     assert res.ok is False
     assert "đã Analyzed; bước tiếp là ready_for_dev hoặc reopen_analysis" in res.message
 
@@ -207,12 +211,14 @@ def test_wrong_status_message_names_fitting_step(base_cfg, cal):
         default_transitions=["Analysis Done"],
     )
     actions_open = Actions(gw_open, base_cfg, cal)
-    res_rfd = actions_open.story_step(key="RFID-2", step="ready_for_dev")
+    res_rfd = actions_open.story_step(key="RFID-2", step="ready_for_dev", identity=BA)
     assert res_rfd.ok is False
     assert "bước tiếp là analysis_done" in res_rfd.message
 
     # Story in Open asked reopen_analysis -> bước tiếp là analysis_done
-    res_reopen = actions_open.story_step(key="RFID-2", step="reopen_analysis")
+    res_reopen = actions_open.story_step(
+        key="RFID-2", step="reopen_analysis", identity=BA
+    )
     assert res_reopen.ok is False
     assert "bước tiếp là analysis_done" in res_reopen.message
 
@@ -221,7 +227,7 @@ def test_wrong_status_message_names_fitting_step(base_cfg, cal):
         issues={"RFID-100": _make_epic(status="Done")},
     )
     actions_epic = Actions(gw_epic, base_cfg, cal)
-    res_close = actions_epic.story_step(key="RFID-100", step="close_epic")
+    res_close = actions_epic.story_step(key="RFID-100", step="close_epic", identity=BA)
     assert res_close.ok is False
     assert "chỉ áp dụng khi Epic ở trạng thái Dev In Progress" in res_close.message
 
@@ -240,7 +246,7 @@ def test_analysis_done_gaps_all_listed(base_cfg, cal):
         default_transitions=["Analysis Done"],
     )
     actions = Actions(gw, base_cfg, cal)
-    res = actions.story_step(key="RFID-1", step="analysis_done")
+    res = actions.story_step(key="RFID-1", step="analysis_done", identity=BA)
 
     assert res.ok is False
     assert "component" in res.missing
@@ -267,7 +273,7 @@ def test_analysis_done_with_two_components_refused(base_cfg, cal):
         default_transitions=["Analysis Done"],
     )
     actions = Actions(gw, base_cfg, cal)
-    res = actions.story_step(key="RFID-1", step="analysis_done")
+    res = actions.story_step(key="RFID-1", step="analysis_done", identity=BA)
 
     assert res.ok is False
     assert "component" in res.missing
@@ -289,7 +295,7 @@ def test_analysis_done_without_ac_heading_warns_and_proceeds(base_cfg, cal):
         default_transitions=["Analysis Done"],
     )
     actions = Actions(gw, base_cfg, cal)
-    res = actions.story_step(key="RFID-1", step="analysis_done")
+    res = actions.story_step(key="RFID-1", step="analysis_done", identity=BA)
 
     assert res.ok is True
     assert "Open → Analyzed (Analysis Done)" in res.changes
@@ -313,7 +319,9 @@ def test_reopen_analysis_requires_comment_and_passes_it(base_cfg, cal):
     actions = Actions(gw, base_cfg, cal)
 
     # Without comment
-    res_no_com = actions.story_step(key="RFID-1", step="reopen_analysis", comment=None)
+    res_no_com = actions.story_step(
+        key="RFID-1", step="reopen_analysis", comment=None, identity=BA
+    )
     assert res_no_com.ok is False
     assert "comment" in res_no_com.missing
     assert "Comment" in res_no_com.message
@@ -322,7 +330,7 @@ def test_reopen_analysis_requires_comment_and_passes_it(base_cfg, cal):
     # With comment
     reason = "Thiếu phân tích chi tiết API đối tác"
     res_with_com = actions.story_step(
-        key="RFID-1", step="reopen_analysis", comment=reason
+        key="RFID-1", step="reopen_analysis", comment=reason, identity=BA
     )
     assert res_with_com.ok is True
     assert "Analyzed → Open (Reopen Analysis)" in res_with_com.changes
@@ -346,7 +354,7 @@ def test_ready_for_dev_checks_and_happy_path(base_cfg, cal):
         default_transitions=["Ready For Dev"],
     )
     actions = Actions(gw, base_cfg, cal)
-    res = actions.story_step(key="RFID-1", step="ready_for_dev")
+    res = actions.story_step(key="RFID-1", step="ready_for_dev", identity=BA)
     assert res.ok is False
     assert "due_date" in res.missing
     assert "dev_task" in res.missing
@@ -390,7 +398,7 @@ def test_ready_for_dev_checks_and_happy_path(base_cfg, cal):
         default_transitions=["Ready For Dev"],
     )
     actions2 = Actions(gw2, base_cfg, cal)
-    res2 = actions2.story_step(key="RFID-1", step="ready_for_dev")
+    res2 = actions2.story_step(key="RFID-1", step="ready_for_dev", identity=BA)
     assert res2.ok is False
     assert "RFID-2" in res2.missing
     assert "RFID-3" in res2.missing
@@ -414,7 +422,7 @@ def test_ready_for_dev_checks_and_happy_path(base_cfg, cal):
         default_transitions=["Ready For Dev"],
     )
     actions3 = Actions(gw3, base_cfg, cal)
-    res3 = actions3.story_step(key="RFID-1", step="ready_for_dev")
+    res3 = actions3.story_step(key="RFID-1", step="ready_for_dev", identity=BA)
     assert res3.ok is False
     assert "dev_task" in res3.missing
 
@@ -438,7 +446,9 @@ def test_ready_for_dev_checks_and_happy_path(base_cfg, cal):
         default_transitions=["Ready For Dev"],
     )
     actions_happy = Actions(gw_happy, base_cfg, cal)
-    res_happy = actions_happy.story_step(key="RFID-1", step="ready_for_dev")
+    res_happy = actions_happy.story_step(
+        key="RFID-1", step="ready_for_dev", identity=BA
+    )
     assert res_happy.ok is True
     assert "Analyzed → Ready For Dev (Ready For Dev)" in res_happy.changes
     assert res_happy.next_actions == []
@@ -467,7 +477,7 @@ def test_close_epic_open_issues_listed_cap_10_and_happy_path(base_cfg, cal):
         default_transitions=["Close Epic"],
     )
     actions = Actions(gw, base_cfg, cal)
-    res = actions.story_step(key="RFID-100", step="close_epic")
+    res = actions.story_step(key="RFID-100", step="close_epic", identity=BA)
 
     assert res.ok is False
     assert "RFID-1 (Dev In Progress)" in res.message
@@ -486,7 +496,7 @@ def test_close_epic_open_issues_listed_cap_10_and_happy_path(base_cfg, cal):
         default_transitions=["Close Epic"],
     )
     actions_happy = Actions(gw_happy, base_cfg, cal)
-    res_happy = actions_happy.story_step(key="RFID-100", step="close_epic")
+    res_happy = actions_happy.story_step(key="RFID-100", step="close_epic", identity=BA)
     assert res_happy.ok is True
     assert "Dev In Progress → Done (Close Epic)" in res_happy.changes
     assert res_happy.next_actions == []
@@ -509,7 +519,9 @@ def test_dry_run_makes_no_write(base_cfg, cal):
         default_transitions=["Analysis Done"],
     )
     actions = Actions(gw, base_cfg, cal)
-    res = actions.story_step(key="RFID-1", step="analysis_done", dry_run=True)
+    res = actions.story_step(
+        key="RFID-1", step="analysis_done", dry_run=True, identity=BA
+    )
 
     assert res.ok is True
     assert "[DRY-RUN]" in res.message
@@ -560,3 +572,23 @@ async def test_eggs_story_step_fastmcp_tool_execution(base_cfg):
         assert "[DRY-RUN]" in data["message"]
         assert "Open → Analyzed (Analysis Done)" in data["changes"]
         assert data["next_actions"] == ["ready_for_dev"]
+
+
+def test_missing_identity_is_refused(base_cfg, cal):
+    gw = FakeGateway(
+        issues={"RFID-1": _make_story()}, default_transitions=["Analysis Done"]
+    )
+    res = Actions(gw, base_cfg, cal).story_step(key="RFID-1", step="analysis_done")
+    assert res.ok is False
+    assert res.message == "Bước này do BA hoặc Lead làm."
+    assert not [c for c in gw.calls if c[0] == "transition"]
+
+
+def test_status_with_no_ba_step_says_so(base_cfg, cal):
+    gw = FakeGateway(issues={"RFID-1": _make_story(status="Done")})
+    res = Actions(gw, base_cfg, cal).story_step(
+        key="RFID-1", step="analysis_done", identity=BA
+    )
+    assert res.ok is False
+    assert res.message.endswith("không có bước BA nào áp dụng ở trạng thái này.")
+    assert "bước tiếp là" not in res.message

@@ -765,3 +765,136 @@ async def test_eggs_worklog_report_fastmcp_tool_execution(base_cfg):
         assert "message" in data
         assert len(data["people"]) == 1
         assert data["people"][0]["username"] == "henry"
+
+
+def _snap(issues: dict[str, Issue], wls: list[Worklog]) -> Snapshot:
+    return Snapshot(
+        issues=issues,
+        flags={},
+        escalations={},
+        flows={},
+        epics={},
+        not_updated=[],
+        today=date(2026, 11, 11),
+        worklogs=wls,
+    )
+
+
+def _wl(key: str, author: str, hours: float) -> Worklog:
+    return Worklog(
+        issue_key=key,
+        author=author,
+        started=datetime(2026, 11, 11, 9, 0, tzinfo=TZ),
+        seconds=int(hours * 3600),
+    )
+
+
+_BA_RFID = Identity(
+    username="ba_rfid",
+    display_name="BA RFID",
+    roles={"RFID": {"lead_ba"}},
+    is_lead=False,
+)
+
+
+def _report(snap, cfg, cal, ident, **kw):
+    return compute_worklog_report(
+        snap,
+        cfg,
+        cal,
+        ident,
+        date_from=date(2026, 11, 11),
+        date_to=date(2026, 11, 11),
+        now=datetime(2026, 11, 11, 10, 0, tzinfo=TZ),
+        **kw,
+    )
+
+
+def test_ba_viewing_person_sees_only_projects_they_lead(base_cfg, cal):
+    snap = _snap(
+        {
+            "RFID-1": _make_issue(key="RFID-1", assignee="charlie"),
+            "HH-1": _make_issue(key="HH-1", assignee="charlie"),
+        },
+        [
+            _wl("RFID-1", "charlie", 2),
+            _wl("HH-1", "charlie", 5),
+            _wl("OLD-9", "charlie", 1),  # issue outside the snapshot
+        ],
+    )
+    result = _report(snap, base_cfg, cal, _BA_RFID, person="charlie")
+    assert result["ok"] is True
+    assert [p["username"] for p in result["people"]] == ["charlie"]
+    assert result["people"][0]["total_hours"] == 2.0
+    assert [i["key"] for i in result["people"][0]["top_issues"]] == ["RFID-1"]
+
+
+def test_own_view_and_lead_count_hours_outside_snapshot(base_cfg, cal):
+    snap = _snap(
+        {"HH-1": _make_issue(key="HH-1", assignee="charlie")},
+        [_wl("HH-1", "charlie", 5), _wl("OLD-9", "charlie", 1)],
+    )
+    me = Identity(
+        username="charlie", display_name="C", roles={"HH": {"dev"}}, is_lead=False
+    )
+    lead = Identity(username="cuong.huynh", display_name="L", roles={}, is_lead=True)
+    assert _report(snap, base_cfg, cal, me)["people"][0]["total_hours"] == 6.0
+    by_lead = _report(snap, base_cfg, cal, lead, person="charlie")
+    assert by_lead["people"][0]["total_hours"] == 6.0
+    # With a project, only that project's hours.
+    in_hh = _report(snap, base_cfg, cal, me, project="HH")
+    assert in_hh["people"][0]["total_hours"] == 5.0
+
+
+def test_idle_ignores_case_and_non_work_items_and_respects_person(base_cfg, cal):
+    snap = _snap(
+        {
+            "RFID-1": _make_issue(key="RFID-1", assignee="Bob"),
+            "RFID-2": _make_issue(key="RFID-2", assignee="carol"),
+            "RFID-3": _make_issue(key="RFID-3", issue_type="story", assignee="erin"),
+        },
+        [_wl("RFID-1", "bob", 3)],
+    )
+    team = _report(snap, base_cfg, cal, _BA_RFID, project="RFID")
+    assert team["idle_with_work_in_progress"] == ["carol"]
+    one = _report(snap, base_cfg, cal, _BA_RFID, project="RFID", person="carol")
+    assert one["idle_with_work_in_progress"] == ["carol"]
+    other = _report(snap, base_cfg, cal, _BA_RFID, project="RFID", person="bob")
+    assert other["idle_with_work_in_progress"] == []
+
+
+def test_fill_worklog_issues_fetches_issues_outside_snapshot(base_cfg):
+    from mcp_atlassian.eggs.report import fill_worklog_issues
+
+    raw = {
+        "key": "HH-9",
+        "fields": {
+            "summary": "Closed long ago",
+            "project": {"key": "HH", "name": "HH"},
+            "issuetype": {"name": "Dev Task"},
+            "status": {"name": "Done"},
+        },
+    }
+    gw = FakeGateway(issues={"HH-9": raw})
+    snap = _snap(
+        {},
+        [
+            _wl("HH-9", "charlie", 2),
+            Worklog(
+                issue_key="HH-8",
+                author="charlie",
+                started=datetime(2026, 10, 1, 9, 0, tzinfo=TZ),
+                seconds=3600,
+            ),
+        ],
+    )
+    out = fill_worklog_issues(gw, base_cfg, snap, date(2026, 11, 9), date(2026, 11, 11))
+    assert out.issues["HH-9"].project == "HH"
+    assert gw.jql_queries == ["key in (HH-9)"]
+    # Nothing missing → no search.
+    gw2 = FakeGateway()
+    assert (
+        fill_worklog_issues(gw2, base_cfg, out, date(2026, 11, 9), date(2026, 11, 11))
+        is out
+    )
+    assert gw2.jql_queries == []

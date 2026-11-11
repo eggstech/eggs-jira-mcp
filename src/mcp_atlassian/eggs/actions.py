@@ -36,6 +36,13 @@ class EndDayEntry:
     move_to: Literal["ready_for_qc", "done"] | None = None
 
 
+def _next_ba_step(fitting: str) -> str:
+    """Sentence telling the BA which story step fits the current status."""
+    if not fitting:
+        return "không có bước BA nào áp dụng ở trạng thái này."
+    return f"bước tiếp là {fitting}."
+
+
 def _build_bug_sub_summary(parent: Issue, text: str) -> str:
     if parent.type == "story":
         code = parent.actor_code or "FLOW"
@@ -1615,16 +1622,15 @@ class Actions:
 
         raw, issue = self._get_raw_and_issue(key)
 
-        if identity is not None:
-            proj = issue.project.upper()
-            user_roles = identity.roles.get(proj, set())
-            if not identity.is_lead and "lead_ba" not in user_roles:
-                return ActionResult(
-                    ok=False,
-                    message="Bước này do BA hoặc Lead làm.",
-                    changes=[],
-                    next_actions=[],
-                )
+        proj = issue.project.upper()
+        user_roles = identity.roles.get(proj, set()) if identity else set()
+        if identity is None or (not identity.is_lead and "lead_ba" not in user_roles):
+            return ActionResult(
+                ok=False,
+                message="Bước này do BA hoặc Lead làm.",
+                changes=[],
+                next_actions=[],
+            )
 
         if step == "analysis_done":
             if issue.type != "story":
@@ -1644,10 +1650,11 @@ class Actions:
                 if issue.status == "analyzing":
                     fitting = "ready_for_dev hoặc reopen_analysis"
                 else:
-                    fitting = "không có bước BA phù hợp"
+                    fitting = ""
                 return ActionResult(
                     ok=False,
-                    message=f"Story {key} đã {status_display}; bước tiếp là {fitting}.",
+                    message=f"Story {key} đã {status_display}; "
+                    + _next_ba_step(fitting),
                     changes=[],
                     next_actions=[],
                 )
@@ -1709,12 +1716,12 @@ class Actions:
                 if issue.status == "open":
                     fitting = "analysis_done"
                 else:
-                    fitting = "không có bước BA phù hợp"
+                    fitting = ""
                 return ActionResult(
                     ok=False,
                     message=(
                         f"Story {key} đang ở trạng thái {status_display}; "
-                        f"bước tiếp là {fitting}."
+                        + _next_ba_step(fitting)
                     ),
                     changes=[],
                     next_actions=[],
@@ -1750,12 +1757,12 @@ class Actions:
                 if issue.status == "open":
                     fitting = "analysis_done"
                 else:
-                    fitting = "không có bước BA phù hợp"
+                    fitting = ""
                 return ActionResult(
                     ok=False,
                     message=(
                         f"Story {key} đang ở trạng thái {status_display}; "
-                        f"bước tiếp là {fitting}."
+                        + _next_ba_step(fitting)
                     ),
                     changes=[],
                     next_actions=[],

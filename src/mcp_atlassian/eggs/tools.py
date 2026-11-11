@@ -43,6 +43,7 @@ from mcp_atlassian.eggs.report import (
     Snapshot,
     build_snapshot,
     compute_worklog_report,
+    fill_worklog_issues,
     render_pending_approvals,
     render_report,
     render_workstream,
@@ -699,6 +700,9 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
             today=today,
             now=now,
             worklog_since=eff_from,
+        )
+        snapshot = await asyncio.to_thread(
+            fill_worklog_issues, user_gw, cfg, snapshot, eff_from, eff_to
         )
         report = await asyncio.to_thread(
             compute_worklog_report,

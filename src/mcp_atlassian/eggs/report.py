@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
@@ -16,6 +17,8 @@ from .health import compute_flags, detect_interruptions, people_not_updated
 from .identity import Identity
 from .mapping import issue_from_json
 from .model import Issue, Worklog
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -555,6 +558,52 @@ def _fmt_hours(h: float) -> str:
     return f"{h:g}h"
 
 
+_WORKLOG_ISSUE_CHUNK = 50
+
+
+def fill_worklog_issues(
+    gateway: JiraGateway,
+    cfg: EggsConfig,
+    snapshot: Snapshot,
+    date_from: date,
+    date_to: date,
+) -> Snapshot:
+    """Add issues that have worklogs in the range but are not in the snapshot.
+
+    The snapshot only holds open issues and those resolved in the last 7 days,
+    so hours logged on an issue closed earlier would lose their project.
+    Fetch those issues by key; on a search error they stay unknown.
+    """
+    tz = ZoneInfo(cfg.timezone)
+    missing = sorted(
+        {
+            wl.issue_key
+            for wl in snapshot.worklogs
+            if wl.issue_key not in snapshot.issues
+            and date_from <= wl.started.astimezone(tz).date() <= date_to
+        }
+    )
+    if not missing:
+        return snapshot
+    issues = dict(snapshot.issues)
+    fields = ["summary", "project", "issuetype", "status", "assignee", "resolution"]
+    for i in range(0, len(missing), _WORKLOG_ISSUE_CHUNK):
+        chunk = missing[i : i + _WORKLOG_ISSUE_CHUNK]
+        try:
+            raws = gateway.search(f"key in ({', '.join(chunk)})", fields=fields)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Could not fetch %d worklog issues: %s", len(chunk), e)
+            continue
+        for raw in raws:
+            try:
+                iss = issue_from_json(raw, cfg)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Could not map worklog issue: %s", e)
+                continue
+            issues.setdefault(iss.key, iss)
+    return replace(snapshot, issues=issues)
+
+
 def compute_worklog_report(
     snapshot: Snapshot,
     cfg: EggsConfig,
@@ -623,28 +672,32 @@ def compute_worklog_report(
                 "people": [],
                 "idle_with_work_in_progress": [],
             }
-        target_person = identity.username
+        target_person: str | None = identity.username
+        is_team_view = False
+    elif norm_person is not None:
+        target_person = person.strip() if person else None
         is_team_view = False
     else:
-        if norm_person is not None:
-            target_person = person.strip()
-            is_team_view = False
-        else:
-            target_person = None
-            is_team_view = True
+        target_person = None
+        is_team_view = True
 
-    # Allowed projects for issues:
+    own_view = not is_team_view and (
+        target_person is None or target_person.lower() == norm_caller
+    )
+
+    # Allowed projects for issues. Own view: every project of the caller.
+    # BA/Lead looking at a team or another person: only projects they lead.
     if proj:
         allowed_projects: set[str] | None = {proj}
-    elif not is_team_view:
+    elif own_view or identity.is_lead:
         allowed_projects = None
     else:
-        if identity.is_lead:
-            allowed_projects = None
-        else:
-            allowed_projects = {
-                p for p, roles in identity.roles.items() if "lead_ba" in roles
-            }
+        allowed_projects = {
+            p for p, roles in identity.roles.items() if "lead_ba" in roles
+        }
+    # Worklogs on issues outside the snapshot ("khác") are counted only when
+    # the caller may see every project: their own hours or the Lead.
+    include_other = proj is None and not is_team_view and (own_view or identity.is_lead)
 
     def round_to_quarter(hours: float) -> float:
         return round(round(hours * 4.0) / 4.0, 2)
@@ -663,18 +716,12 @@ def compute_worklog_report(
         else:
             wl_project = "khác"
 
-        if is_team_view:
-            if allowed_projects is not None and wl_project not in allowed_projects:
+        if wl_project == "khác":
+            if not include_other:
                 continue
-            if wl_project == "khác":
-                continue
-        else:
-            if allowed_projects is not None:
-                if (
-                    "khác" not in allowed_projects
-                    and wl_project not in allowed_projects
-                ):
-                    continue
+        elif allowed_projects is not None and wl_project not in allowed_projects:
+            continue
+        if not is_team_view:
             wl_author_norm = wl.author.strip().lower()
             expected_user = target_person.lower() if target_person else norm_caller
             if wl_author_norm != expected_user:
@@ -795,19 +842,28 @@ def compute_worklog_report(
 
     # Idle with work in progress:
     idle_people = []
-    if is_team_view:
-        in_progress_assignees = set()
+    if has_team_access and not own_view:
+        hours_by_user = {u.strip().lower(): h for u, h in user_hours_map.items()}
+        target_norm = target_person.lower() if target_person else None
+        in_progress_assignees: dict[str, str] = {}
         for iss in snapshot.issues.values():
             if (
                 iss.status == "in_progress"
+                and iss.is_work_item
                 and iss.assignee
                 and not iss.is_resolved
                 and not iss.frozen
+                and (
+                    allowed_projects is None or iss.project.upper() in allowed_projects
+                )
             ):
-                if allowed_projects is None or iss.project.upper() in allowed_projects:
-                    in_progress_assignees.add(iss.assignee)
+                a_norm = iss.assignee.strip().lower()
+                if target_norm is None or a_norm == target_norm:
+                    in_progress_assignees.setdefault(a_norm, iss.assignee)
         idle_people = sorted(
-            u for u in in_progress_assignees if user_hours_map.get(u, 0.0) == 0.0
+            name
+            for a_norm, name in in_progress_assignees.items()
+            if hours_by_user.get(a_norm, 0.0) == 0.0
         )
 
     message_lines = []
