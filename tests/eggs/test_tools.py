@@ -1908,6 +1908,48 @@ class TestStructuredErrors:
         assert data["next_actions"] == []
 
 
+class TestStructuredErrorsKeepAuthErrors:
+    """Auth/config failures must stay ToolError, not look like bad input."""
+
+    @staticmethod
+    async def _call_with_user_gateway(cfg: EggsConfig, user_gw: Any):
+        from fastmcp.exceptions import ToolError
+
+        server = FastMCP("test_jira")
+        register_eggs_tools(server, force=True)
+        with (
+            patch("mcp_atlassian.eggs.tools.load_config", return_value=cfg),
+            patch("mcp_atlassian.eggs.tools.get_user_gateway", user_gw),
+            pytest.raises(ToolError) as info,
+        ):
+            await server.call_tool("eggs_qc_start", {"key": "RFID-1"})
+        return str(info.value)
+
+    @pytest.mark.asyncio
+    async def test_invalid_token_value_error_stays_tool_error(self, cfg: EggsConfig):
+        err = ValueError("Invalid user Jira token or configuration")
+        text = await self._call_with_user_gateway(cfg, AsyncMock(side_effect=err))
+        assert "token" in text
+
+    @pytest.mark.asyncio
+    async def test_jira_401_stays_tool_error(self, cfg: EggsConfig):
+        from mcp_atlassian.eggs.gateway import JiraError
+
+        err = JiraError("Unauthorized", status_code=401)
+        text = await self._call_with_user_gateway(cfg, AsyncMock(side_effect=err))
+        assert "token" in text
+
+    @pytest.mark.asyncio
+    async def test_flow_reschedule_missing_story_names_the_story(self, cfg: EggsConfig):
+        data = await TestStructuredErrors._call(
+            cfg,
+            "eggs_flow_reschedule",
+            {"story_key": "RFID-999", "new_due": "2026-12-01", "reason": "x"},
+        )
+        assert data["ok"] is False
+        assert data["message"] == TestStructuredErrors.MISSING
+
+
 class TestNextMatchedIntents:
     """B12: eggs_next ranks the intents that match what the person wrote."""
 

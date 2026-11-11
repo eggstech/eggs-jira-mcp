@@ -343,6 +343,7 @@ def intents_for(identity: Identity) -> list[Intent]:
 
 _STOPWORDS = frozenset(
     {
+        "eggs",
         "a",
         "an",
         "ban",
@@ -412,7 +413,7 @@ def match_intents(
     """
     if not text or not text.strip():
         return []
-    text_fold = _fold(text)
+    text_fold = f" {_fold(text)} "
     tokens = _tokens(text)
     scored: list[tuple[int, int, str]] = []
     for index, intent in enumerate(intents):
@@ -422,10 +423,10 @@ def match_intents(
             words |= _tokens(intent.tool.replace("_", " "))
         score = 2 * len(tokens & words)
         name_phrase = _fold(name_text)
-        if name_phrase and name_phrase in text_fold:
+        if name_phrase and f" {name_phrase} " in text_fold:
             score += 3
         if any(
-            _fold(example) and _fold(example) in text_fold
+            _fold(example) and f" {_fold(example)} " in text_fold
             for example in intent.examples
         ):
             score += 5

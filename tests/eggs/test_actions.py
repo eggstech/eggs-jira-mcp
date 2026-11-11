@@ -5514,6 +5514,14 @@ class TestQcPassStateOrder:
         )
         assert [c[0] for c in gw.calls] == ["get_issue"]
 
+    def test_issue_waiting_for_qc_asks_qc_to_start(self, cfg, cal):
+        gw = self._gateway(cfg, "QC TO DO")
+        res = _make_actions(gw, cfg, cal).qc_pass("HMKPOS-101", note="")
+
+        assert res.ok is False
+        assert "eggs_qc_start" in res.message
+        assert "Dev cần Submit QC" not in res.message
+
     def test_note_is_checked_once_the_issue_is_in_test(self, cfg, cal):
         gw = self._gateway(cfg, "Test In Progress")
         res = _make_actions(gw, cfg, cal).qc_pass("HMKPOS-101", note="  ")

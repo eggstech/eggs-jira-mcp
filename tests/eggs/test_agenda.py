@@ -1897,3 +1897,15 @@ def test_lead_ba_sees_prompt_to_schedule_and_ready_for_dev(cfg, cal):
         == "EGGSBOX-60 đã đủ Dev Task và estimate: chốt Due Date rồi Ready For Dev"
     )
     assert it.actions == []
+
+
+def test_match_intents_needs_whole_words_and_ignores_eggs():
+    from mcp_atlassian.eggs.agenda import Intent, match_intents
+
+    intents = [
+        Intent("start", frozenset(), ["start"], "eggs_start", []),
+        Intent("book", frozenset(), ["ok"], "eggs_book", []),
+    ]
+    assert match_intents("restart booking", intents) == []
+    assert match_intents("eggs", intents) == []
+    assert match_intents("start RFID-1", intents) == ["start"]

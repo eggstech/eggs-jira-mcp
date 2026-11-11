@@ -273,11 +273,22 @@ def eggs_check_write_access(func: Any) -> Any:
 
 _ISSUE_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]+-\d+$")
 _AUTH_ERROR_PREFIX = "Thao tác ghi yêu cầu token cá nhân"
+# ValueErrors from auth/config setup (get_jira_fetcher, get_roles_reader):
+# these are not bad input and must reach the person as ToolError.
+_SETUP_ERROR_MARKERS = (
+    _AUTH_ERROR_PREFIX.lower(),
+    "token",
+    "pat ",
+    "configuration",
+    "thiếu eggs_",
+    "thiếu jira_",
+)
+_ISSUE_ARG_NAMES = ("key", "epic", "epic_key", "story_key", "link_key", "parent")
 
 
 def _call_issue_key(args: tuple[Any, ...], kwargs: dict[str, Any]) -> str | None:
     """Find the issue key a failing tool call was working on."""
-    for name in ("key", "epic", "epic_key"):
+    for name in _ISSUE_ARG_NAMES:
         value = kwargs.get(name)
         if isinstance(value, str) and _ISSUE_KEY_RE.match(value.strip().upper()):
             return value.strip().upper()
@@ -325,6 +336,10 @@ def eggs_structured_errors(func: Any) -> Any:
                 f" ({key})" if key else "",
                 _safe_exception_text(exc),
             )
+            if exc.status_code in (401, 403):
+                raise ToolError(
+                    "Jira từ chối quyền truy cập (token hết hạn hoặc thiếu quyền)."
+                ) from exc
             text = str(exc).lower()
             missing = exc.status_code == 404 or any(
                 marker in text
@@ -341,13 +356,16 @@ def eggs_structured_errors(func: Any) -> Any:
             return _structured_error("Jira báo lỗi. Kiểm tra lại dữ liệu rồi thử lại.")
         except (KeyError, ValueError) as exc:
             detail = str(exc)
+            if isinstance(exc, ValueError) and any(
+                marker in detail.lower() for marker in _SETUP_ERROR_MARKERS
+            ):
+                raise ToolError(_safe_exception_text(exc)) from exc
             logger.error(
                 "Eggs tool '%s' lỗi dữ liệu: %s",
                 tool_name,
                 _safe_exception_text(exc),
+                exc_info=True,
             )
-            if detail.startswith(_AUTH_ERROR_PREFIX):
-                raise ToolError(detail) from exc
             return _structured_error(
                 "Dữ liệu nhập không hợp lệ. Kiểm tra lại tham số rồi thử lại."
             )

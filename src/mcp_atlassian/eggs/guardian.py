@@ -348,7 +348,9 @@ def post_escalation_alerts(
         try:
             post_to_chat(webhook, text, http_post=http_post, project_key=proj)
         except Exception as e:  # noqa: BLE001
-            logger.error("Gửi leo thang %s thất bại: %s", proj or "Lead", e)
+            # Jira already holds the new level, so the next run will not
+            # alert again: keep the text in the log so it can be re-sent.
+            logger.error("Gửi leo thang %s thất bại: %s\n%s", proj or "Lead", e, text)
             failures += 1
     return failures
 
@@ -1627,8 +1629,6 @@ def main(
             dry_run=args.dry_run,
             http_post=http_post,
         )
-        if alert_failures:
-            return 1
         issue_count = getattr(res, "issue_count", len({c.split(":")[0] for c in res}))
         field_count = getattr(res, "field_count", 0)
         logger.info(
@@ -1636,6 +1636,8 @@ def main(
             issue_count,
             field_count,
         )
+        if alert_failures:
+            return 1
         return getattr(res, "exit_code", 0)
     elif args.subcommand == "report":
         return run_report(

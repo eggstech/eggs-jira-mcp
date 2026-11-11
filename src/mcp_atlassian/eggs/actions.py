@@ -1214,7 +1214,11 @@ class Actions:
                 ok=False,
                 message=(
                     f"{key} chưa tới bước test (đang {status_display}); "
-                    "Dev cần Submit QC trước."
+                    + (
+                        "QC cần bắt đầu test trước (eggs_qc_start)."
+                        if issue.status == "ready_for_qc"
+                        else "Dev cần Submit QC trước."
+                    )
                 ),
                 changes=[],
                 next_actions=[],
