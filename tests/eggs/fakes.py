@@ -35,6 +35,7 @@ class FakeGateway(JiraGateway):
         allowed_field_values: dict[tuple[str, str, str], list[str]] | None = None,
         default_transitions: list[str] | None = None,
         errors_on_search: dict[str, JiraError] | None = None,
+        errors_on_get_property: dict[tuple[str, str], JiraError] | None = None,
     ) -> None:
         self.issues = dict(issues or {})
         self.worklogs = list(worklogs or [])
@@ -55,6 +56,7 @@ class FakeGateway(JiraGateway):
         )
         self.allowed_field_values = dict(allowed_field_values or {})
         self.errors_on_search = dict(errors_on_search or {})
+        self.errors_on_get_property = dict(errors_on_get_property or {})
         self.issue_properties: dict[tuple[str, str], Any] = {}
         self.links: list[tuple[str, str, str]] = []
         self.calls: list[tuple[str, tuple, dict[str, Any]]] = []
@@ -511,4 +513,7 @@ class FakeGateway(JiraGateway):
 
     def get_issue_property(self, key: str, name: str) -> Any:
         self._record("get_issue_property", key, name)
+        err = self.errors_on_get_property.get((key, name))
+        if err is not None:
+            raise err
         return self.issue_properties.get((key, name))

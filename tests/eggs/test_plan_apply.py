@@ -1295,3 +1295,343 @@ def test_original_plan_without_codes_applied_twice_creates_nothing():
         if c[0]
         in {"create_issue", "update_fields", "transition", "link", "set_issue_property"}
     ] == []
+
+
+# --- Batch T review fixes (C1, I1-I5, M3, M4) ---
+
+
+def test_dev_task_error_keeps_that_story_out_of_ready_for_dev():
+    cfg = make_cfg()
+    gateway = FakeGateway(
+        components_map={"HMK": ["CH - CỬA HÀNG"]},
+        issues={
+            "HMK-1": _epic(),
+            "HMK-10": _story(
+                "HMK-10",
+                "[CH-01] One",
+                customfield_10100="HMK-1",
+                customfield_10110={"name": "qc.user"},
+                duedate="2026-11-25",
+                description="h2. Acceptance Criteria\n- AC 1",
+                status={"name": "Analyzing"},
+            ),
+            "HMK-11": _story(
+                "HMK-11",
+                "[CH-02] Two",
+                customfield_10100="HMK-1",
+                customfield_10110={"name": "qc.user"},
+                duedate="2026-11-25",
+                description="h2. Acceptance Criteria\n- AC 1",
+                status={"name": "Analyzing"},
+            ),
+        },
+        default_transitions=DEFAULT_FLOW_TRANSITIONS,
+        status_after=READY_STATUSES,
+    )
+    gateway.allowed_field_values = {("HMK", "Dev Task", "customfield_10701"): ["BE"]}
+    original_create = gateway.create_issue
+
+    def fail_dev_task_for_first_story(fields):
+        if (
+            fields.get("issuetype", {}).get("name") == "Dev Task"
+            and fields.get("parent", {}).get("key") == "HMK-10"
+        ):
+            raise JiraError("Dev Task create failed")
+        return original_create(fields)
+
+    gateway.create_issue = fail_dev_task_for_first_story
+
+    plan = Plan(
+        project="HMK",
+        epic=PlanEpic(existing="HMK-1"),
+        flows=[
+            _flow("CH-01", "One", key="HMK-10"),
+            _flow("CH-02", "Two", key="HMK-11"),
+        ],
+    )
+    ctx = load_plan_context(gateway, cfg, plan, today=date(2026, 11, 10))
+    res = apply_plan(gateway, cfg, plan, ctx, dry_run=False)
+
+    assert not res.ok
+    assert any(e["code"] == "CH-01" for e in res.errors)
+    trans10 = [
+        args[1]
+        for name, args, _ in gateway.calls
+        if name == "transition" and args[0] == "HMK-10"
+    ]
+    trans11 = [
+        args[1]
+        for name, args, _ in gateway.calls
+        if name == "transition" and args[0] == "HMK-11"
+    ]
+    assert "Ready For Dev" not in trans10
+    assert "Ready For Dev" in trans11
+
+
+def test_existing_open_story_is_analyzed_on_rerun_after_transition_failure():
+    cfg = make_cfg()
+    gateway = FakeGateway(
+        components_map={"HMK": ["CH - CỬA HÀNG"]},
+        issues={
+            "HMK-1": _epic(),
+            "HMK-10": _story(
+                "HMK-10",
+                "[CH-01] One",
+                customfield_10100="HMK-1",
+                customfield_10110={"name": "qc.user"},
+                duedate="2026-11-25",
+                description="h2. Acceptance Criteria\n- AC 1",
+                components=[{"name": "CH - CỬA HÀNG"}],
+                status={"name": "Open"},
+            ),
+        },
+        default_transitions=DEFAULT_FLOW_TRANSITIONS,
+        status_after=READY_STATUSES,
+    )
+    gateway.allowed_field_values = {("HMK", "Dev Task", "customfield_10701"): ["BE"]}
+    original_transition = gateway.transition
+    failed = False
+
+    def flaky_analysis(key, transition_name, fields=None, comment=None):
+        nonlocal failed
+        if key == "HMK-10" and transition_name == "Analysis Done" and not failed:
+            failed = True
+            raise JiraError("validator blocked")
+        return original_transition(key, transition_name, fields=fields, comment=comment)
+
+    gateway.transition = flaky_analysis
+    plan = Plan(
+        project="HMK",
+        epic=PlanEpic(existing="HMK-1"),
+        flows=[_flow("CH-01", "One", key="HMK-10")],
+    )
+    ctx1 = load_plan_context(gateway, cfg, plan, today=date(2026, 11, 10))
+    res1 = apply_plan(gateway, cfg, plan, ctx1, dry_run=False)
+
+    assert not res1.ok
+    assert any(e["code"] == "CH-01" for e in res1.errors)
+    assert gateway.issues["HMK-10"]["fields"]["status"]["name"] == "Open"
+    assert not any(
+        args[1] == "Ready For Dev"
+        for name, args, _ in gateway.calls
+        if name == "transition" and args[0] == "HMK-10"
+    )
+
+    gateway.transition = original_transition
+    mark = len(gateway.calls)
+    ctx2 = load_plan_context(gateway, cfg, res1.plan, today=date(2026, 11, 10))
+    res2 = apply_plan(gateway, cfg, res1.plan, ctx2, dry_run=False)
+
+    assert res2.ok
+    transitions = [
+        args[1]
+        for name, args, _ in gateway.calls[mark:]
+        if name == "transition" and args[0] == "HMK-10"
+    ]
+    assert "Analysis Done" in transitions
+    assert "Ready For Dev" in transitions
+
+
+def test_dev_task_estimate_compares_seconds_not_strings():
+    cfg = make_cfg()
+    gateway = FakeGateway(
+        components_map={"HMK": ["CH - CỬA HÀNG"]},
+        issues={
+            "HMK-1": _epic(),
+            "HMK-10": _story(
+                "HMK-10",
+                "[CH-01] One",
+                customfield_10100="HMK-1",
+                status={"name": "Dev In Progress"},
+            ),
+            "HMK-101": {
+                "key": "HMK-101",
+                "fields": {
+                    "summary": "[BE] One",
+                    "issuetype": {"name": "Dev Task"},
+                    "parent": {"key": "HMK-10"},
+                    "customfield_10701": {"value": "BE"},
+                    "assignee": {"name": "dev.user"},
+                    "timeoriginalestimate": 28800,
+                },
+            },
+        },
+        default_transitions=DEFAULT_FLOW_TRANSITIONS,
+    )
+    gateway.allowed_field_values = {("HMK", "Dev Task", "customfield_10701"): ["BE"]}
+    plan = Plan(
+        project="HMK",
+        epic=PlanEpic(existing="HMK-1"),
+        flows=[
+            _flow(
+                "CH-01",
+                "One",
+                key="HMK-10",
+                parts=[PlanPart(part="BE", assignee="dev.user", estimate="8h")],
+            )
+        ],
+    )
+    ctx = load_plan_context(gateway, cfg, plan, today=date(2026, 11, 10))
+    res = apply_plan(gateway, cfg, plan, ctx, dry_run=False)
+
+    assert res.ok
+    assert not any(
+        c[0] == "update_fields" and c[1][0] == "HMK-101" for c in gateway.calls
+    )
+
+
+def test_part_key_not_found_in_story_dev_tasks_is_an_error():
+    from mcp_atlassian.eggs.plan_validate import PlanContext
+
+    cfg = make_cfg()
+    story = _story(
+        "HMK-10",
+        "[CH-01] One",
+        status={"name": "Dev In Progress"},
+    )
+    gateway = FakeGateway(
+        components_map={"HMK": ["CH - CỬA HÀNG"]},
+        issues={"HMK-1": _epic(), "HMK-10": story},
+        default_transitions=DEFAULT_FLOW_TRANSITIONS,
+    )
+    gateway.allowed_field_values = {("HMK", "Dev Task", "customfield_10701"): ["BE"]}
+    plan = Plan(
+        project="HMK",
+        epic=PlanEpic(existing="HMK-1"),
+        flows=[
+            _flow(
+                "CH-01",
+                "One",
+                key="HMK-10",
+                parts=[
+                    PlanPart(
+                        part="BE", assignee="dev.user", estimate="1d", key="HMK-999"
+                    )
+                ],
+            )
+        ],
+    )
+    ctx = PlanContext(
+        today=date(2026, 11, 10),
+        components={"CH": "CH - CỬA HÀNG"},
+        part_options=["BE"],
+        epic_issue=_epic(),
+        epic_stories=[_epic(), story],
+        known_users={"ba.user", "qc.user", "dev.user"},
+        unknown_users=set(),
+        story_dev_task_keys={"HMK-10": {"HMK-999"}},
+    )
+    res = apply_plan(gateway, cfg, plan, ctx, dry_run=False)
+
+    assert not res.ok
+    assert any(e["code"] == "CH-01" and "HMK-999" in e["error"] for e in res.errors)
+    assert [c for c in gateway.calls if c[0] == "create_issue"] == []
+
+
+def test_property_read_error_in_apply_is_recorded_and_not_written():
+    cfg = make_cfg()
+    gateway = FakeGateway(
+        components_map={"HMK": ["CH - CỬA HÀNG"]},
+        issues={
+            "HMK-1": _epic(),
+            "HMK-10": _story(
+                "HMK-10",
+                "[CH-01] One",
+                customfield_10100="HMK-1",
+                customfield_10110={"name": "qc.user"},
+                duedate="2026-11-25",
+                status={"name": "Analyzing"},
+            ),
+        },
+        default_transitions=DEFAULT_FLOW_TRANSITIONS,
+    )
+    gateway.allowed_field_values = {("HMK", "Dev Task", "customfield_10701"): ["BE"]}
+    plan = Plan(
+        project="HMK",
+        epic=PlanEpic(existing="HMK-1"),
+        flows=[_flow("CH-01", "One", key="HMK-10", parts=[])],
+    )
+    ctx = load_plan_context(gateway, cfg, plan, today=date(2026, 11, 10))
+    gateway.errors_on_get_property[("HMK-10", "eggs.flowCode")] = JiraError(
+        "property read failed"
+    )
+    res = apply_plan(gateway, cfg, plan, ctx, dry_run=False)
+
+    assert not res.ok
+    assert any("property read failed" in e["error"] for e in res.errors)
+    assert [c for c in gateway.calls if c[0] == "set_issue_property"] == []
+
+
+def test_property_write_is_listed_in_dry_run_changes():
+    cfg = make_cfg()
+    gateway = FakeGateway(
+        components_map={"HMK": ["CH - CỬA HÀNG"]},
+        issues={
+            "HMK-1": _epic(),
+            "HMK-10": _story(
+                "HMK-10",
+                "[CH-01] One",
+                customfield_10100="HMK-1",
+                status={"name": "Dev In Progress"},
+            ),
+        },
+        default_transitions=DEFAULT_FLOW_TRANSITIONS,
+    )
+    gateway.allowed_field_values = {("HMK", "Dev Task", "customfield_10701"): ["BE"]}
+    plan = Plan(
+        project="HMK",
+        epic=PlanEpic(existing="HMK-1"),
+        flows=[_flow("CH-01", "One", key="HMK-10", parts=[])],
+    )
+    ctx = load_plan_context(gateway, cfg, plan, today=date(2026, 11, 10))
+    res = apply_plan(gateway, cfg, plan, ctx, dry_run=True)
+
+    assert res.ok
+    assert any("eggs.flowCode" in change for change in res.changes)
+    assert [c for c in gateway.calls if c[0] == "set_issue_property"] == []
+
+
+def test_part_without_assignee_warns_when_only_part_could_match():
+    cfg = make_cfg()
+    gateway = FakeGateway(
+        components_map={"HMK": ["CH - CỬA HÀNG"]},
+        issues={
+            "HMK-1": _epic(),
+            "HMK-10": _story(
+                "HMK-10",
+                "[CH-01] One",
+                customfield_10100="HMK-1",
+                status={"name": "Dev In Progress"},
+            ),
+            "HMK-101": {
+                "key": "HMK-101",
+                "fields": {
+                    "summary": "[BE] One",
+                    "issuetype": {"name": "Dev Task"},
+                    "parent": {"key": "HMK-10"},
+                    "customfield_10701": {"value": "BE"},
+                    "assignee": {"name": "dev.user"},
+                    "timetracking": {"originalEstimate": "1d"},
+                },
+            },
+        },
+        default_transitions=DEFAULT_FLOW_TRANSITIONS,
+    )
+    gateway.allowed_field_values = {("HMK", "Dev Task", "customfield_10701"): ["BE"]}
+    plan = Plan(
+        project="HMK",
+        epic=PlanEpic(existing="HMK-1"),
+        flows=[
+            _flow(
+                "CH-01",
+                "One",
+                key="HMK-10",
+                parts=[PlanPart(part="BE", assignee=None, estimate="1d")],
+            )
+        ],
+    )
+    ctx = load_plan_context(gateway, cfg, plan, today=date(2026, 11, 10))
+    res = apply_plan(gateway, cfg, plan, ctx, dry_run=False)
+
+    assert res.ok
+    assert any("HMK-101" in w and "assignee" in w and "BE" in w for w in res.warnings)

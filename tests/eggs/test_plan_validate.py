@@ -877,3 +877,144 @@ def test_unkeyed_flow_resolves_to_existing_story_and_does_not_duplicate_code():
     report = validate_plan(plan, ctx, cfg)
     assert report.ok
     assert report.plan.flows[0].key == "HMK-10"
+
+
+# --- Batch T review fixes (I5, I6, M1, M2) ---
+
+
+def test_property_read_error_on_unresolved_flow_is_an_error():
+    cfg = make_cfg()
+    gateway = FakeGateway(
+        components_map={"HMK": ["CH - CỬA HÀNG"]},
+        issues={
+            "HMK-1": _epic_issue(),
+            "HMK-10": {
+                "key": "HMK-10",
+                "fields": {
+                    "summary": "[CH-01] Something else",
+                    "issuetype": {"name": "Story"},
+                    "components": [{"name": "CH - CỬA HÀNG"}],
+                    "customfield_10100": "HMK-1",
+                },
+            },
+        },
+        errors_on_get_property={
+            ("HMK-10", "eggs.flowCode"): JiraError("property read failed")
+        },
+    )
+    gateway.allowed_field_values = {("HMK", "Dev Task", "customfield_10701"): ["BE"]}
+    plan = Plan(
+        project="HMK",
+        epic=PlanEpic(existing="HMK-1"),
+        flows=[
+            PlanFlow(
+                code="CH-09",
+                actor="CH",
+                summary="Đăng nhập",
+                ac=["AC 1"],
+                parts=[PlanPart(part="BE", estimate="1d")],
+            )
+        ],
+    )
+    ctx = load_plan_context(gateway, cfg, plan, today=date(2026, 11, 10))
+    report = validate_plan(plan, ctx, cfg)
+
+    assert not report.ok
+    assert any(
+        f.path == "flows[0].key"
+        and "eggs.flowCode" in f.message
+        and "property read failed" in f.message
+        for f in report.findings
+    )
+
+
+def test_title_match_with_a_different_code_is_a_validation_error():
+    cfg = make_cfg()
+    gateway = FakeGateway(
+        components_map={"HMK": ["CH - CỬA HÀNG"]},
+        issues={
+            "HMK-1": _epic_issue(),
+            "HMK-10": {
+                "key": "HMK-10",
+                "fields": {
+                    "summary": "[CH-01] Đăng nhập",
+                    "issuetype": {"name": "Story"},
+                    "components": [{"name": "CH - CỬA HÀNG"}],
+                    "customfield_10100": "HMK-1",
+                },
+            },
+        },
+    )
+    gateway.allowed_field_values = {("HMK", "Dev Task", "customfield_10701"): ["BE"]}
+    plan = Plan(
+        project="HMK",
+        epic=PlanEpic(existing="HMK-1"),
+        flows=[
+            PlanFlow(
+                code="CH-09",
+                actor="CH",
+                summary="Đăng nhập",
+                ac=["AC 1"],
+                parts=[PlanPart(part="BE", estimate="1d")],
+            )
+        ],
+    )
+    ctx = load_plan_context(gateway, cfg, plan, today=date(2026, 11, 10))
+    assert 0 not in ctx.resolved_flow_keys
+    report = validate_plan(plan, ctx, cfg)
+
+    assert not report.ok
+    conflict = next(f for f in report.findings if f.path == "flows[0].key")
+    assert "CH-09" in conflict.message
+    assert "CH-01" in conflict.message
+    assert "HMK-10" in conflict.message
+
+
+def test_mobile_title_is_not_a_platform_error():
+    cfg = make_cfg()
+    ctx = make_context()
+    plan = Plan(
+        project="HMK",
+        epic=PlanEpic(summary="Epic", due=date(2026, 11, 20), owner="ba.user"),
+        flows=[
+            PlanFlow(
+                code="CH-01",
+                actor="CH",
+                summary="Mobile check-in",
+                ac=["AC 1"],
+                parts=[PlanPart(part="BE", estimate="1d")],
+            )
+        ],
+    )
+    report = validate_plan(plan, ctx, cfg)
+    assert report.ok
+    assert not any(f.path == "flows[0].summary" for f in report.findings)
+
+
+def test_epic_key_still_checks_issue_type_and_project():
+    cfg = make_cfg()
+    ctx = make_context(
+        epic_issue={
+            "key": "HMK-1",
+            "fields": {
+                "issuetype": {"name": "Story"},
+                "project": {"key": "OTHER"},
+            },
+        }
+    )
+    plan = Plan(
+        project="HMK",
+        epic=PlanEpic(
+            key="HMK-1",
+            summary="Epic",
+            due=date(2026, 11, 20),
+            owner="ba.user",
+        ),
+        flows=[],
+    )
+    report = validate_plan(plan, ctx, cfg)
+
+    assert not report.ok
+    messages = " | ".join(f.message for f in report.findings if f.level == "error")
+    assert "không phải là Epic" in messages
+    assert "không thuộc dự án" in messages

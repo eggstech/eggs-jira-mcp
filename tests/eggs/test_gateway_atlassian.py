@@ -567,13 +567,22 @@ def test_get_changelog_null_total_does_not_crash(mock_client):
     assert gateway.get_changelog("PROJ-1") == [{"id": "1"}]
 
 
-def test_set_issue_property_sends_json_string(mock_client):
-    gateway = AtlassianGateway(mock_client)
+def test_set_issue_property_sends_plain_json_string_on_the_wire():
+    from atlassian import Jira
+
+    jira = Jira(url="https://jira.example.com", username="u", password="p")
+    response = MagicMock()
+    response.status_code = 204
+    session = MagicMock()
+    session.request.return_value = response
+    jira._session = session
+
+    gateway = AtlassianGateway(jira)
     gateway.set_issue_property("PROJ-1", "eggs.flowCode", "CH-01")
 
-    mock_client.put.assert_called_once_with(
-        "rest/api/2/issue/PROJ-1/properties/eggs.flowCode", data='"CH-01"'
-    )
+    kwargs = session.request.call_args.kwargs
+    assert kwargs["data"] == '"CH-01"'
+    assert kwargs["url"].endswith("rest/api/2/issue/PROJ-1/properties/eggs.flowCode")
 
 
 def test_get_issue_property_returns_value_or_none(mock_client):

@@ -133,6 +133,39 @@ def _story_update_fields(
     return upd
 
 
+_DURATION_UNITS = {"w": 5 * 8 * 3600, "d": 8 * 3600, "h": 3600, "m": 60}
+
+
+def _duration_seconds(value: str | None) -> int | None:
+    """Parse a Jira duration ("1d 4h") with 8h/day and 5d/week."""
+    if not value:
+        return None
+    matches = re.findall(r"(\d+)\s*([wdhm])", value.lower())
+    if not matches:
+        return None
+    return sum(int(num) * _DURATION_UNITS[unit] for num, unit in matches)
+
+
+def _jira_seconds(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int | float):
+        return int(value)
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return None
+
+
+def _dev_task_part(candidate: dict[str, Any], cfg: EggsConfig, part_field: str) -> Any:
+    fields = _fields(candidate)
+    candidate_type = fields.get("issuetype", {}).get("name")
+    dev_task_types = set(cfg.issue_types.get("dev_task", ["Dev Task"]))
+    if candidate_type and candidate_type not in dev_task_types:
+        return None
+    raw_part = fields.get(part_field)
+    return raw_part.get("value") if isinstance(raw_part, dict) else raw_part
+
+
 def _match_dev_task(
     part: PlanPart,
     candidates: list[dict[str, Any]],
@@ -260,23 +293,25 @@ def apply_plan(
     property_cache: dict[str, str] = dict(ctx.flow_codes)
     flow_states: dict[int, dict[str, Any]] = {}
 
-    def current_property_code(key: str) -> str:
+    def current_property_code(key: str) -> tuple[str, str | None]:
+        """Return (flowCode, read error); never turn a failure into "unset"."""
         if key in property_cache:
-            return property_cache[key]
+            return property_cache[key], None
         getter = getattr(gateway, "get_issue_property", None)
         value = ""
         if getter is not None:
             try:
                 raw = getter(key, "eggs.flowCode")
-            except Exception:  # noqa: BLE001
-                raw = None
+            except Exception as exc:  # noqa: BLE001
+                return value, str(exc)
             if isinstance(raw, str):
                 value = raw
         property_cache[key] = value
-        return value
+        return value, None
 
     # 4. Flows
     for flow_index, flow in enumerate(working_plan.flows):
+        flow_errors_start = len(errors)
         story_key = flow.key
         matched_story: dict[str, Any] | None = None
         if story_key:
@@ -294,6 +329,7 @@ def apply_plan(
         created_now = False
         analyzed = False
         current_status = "Open"
+        raw_status = ""
 
         try:
             if story_key and matched_story is None and not dry_run:
@@ -307,7 +343,8 @@ def apply_plan(
             flow.key = story_key
             if flow.code:
                 code_to_key[flow.code] = story_key
-            current_status = _status_name(matched_story) or "Open"
+            raw_status = _status_name(matched_story)
+            current_status = raw_status or "Open"
         else:
             # Create the Story
             if dry_run:
@@ -384,14 +421,28 @@ def apply_plan(
         # 4b. eggs.flowCode property (skip when already equal)
         if flow.code and story_key:
             try:
-                if current_property_code(story_key) != flow.code and not dry_run:
-                    gateway.set_issue_property(story_key, "eggs.flowCode", flow.code)
-                    property_cache[story_key] = flow.code
+                current_code, read_error = current_property_code(story_key)
+                if read_error:
+                    msg = f"Không đọc được eggs.flowCode của {story_key}: {read_error}"
+                    raise JiraError(msg)
+                if current_code != flow.code:
+                    if dry_run:
+                        changes.append(
+                            f"[Dry-run] Ghi eggs.flowCode cho {story_key} = {flow.code}"
+                        )
+                    else:
+                        gateway.set_issue_property(
+                            story_key, "eggs.flowCode", flow.code
+                        )
+                        property_cache[story_key] = flow.code
+                        changes.append(
+                            f"Ghi eggs.flowCode cho {story_key} = {flow.code}"
+                        )
             except Exception as exc:  # noqa: BLE001
                 record_error(flow, story_key, exc)
 
-        # 4c. Start Analysis for a Story created in this run
-        if created_now:
+        # 4c. Start Analysis for a new Story or an existing Open Story
+        if created_now or (matched_story is not None and raw_status.lower() == "open"):
             has_comp = bool(flow.actor and flow.actor in ctx.components)
             has_qc = bool(flow.qc)
             has_ac = bool(flow.ac)
@@ -475,12 +526,36 @@ def apply_plan(
                         "assignee",
                         part_field_id,
                         "timetracking",
+                        "timeoriginalestimate",
                     ],
                 )
             for part in flow.parts:
                 matched_dt = _match_dev_task(
                     part, candidates, claimed_dev_tasks, cfg, part_field_id
                 )
+                if part.key and matched_dt is None:
+                    msg = (
+                        f"Dev Task {part.key} không thuộc Story {story_key}; "
+                        "không tạo Dev Task mới cho part có key"
+                    )
+                    raise JiraError(msg)
+                if matched_dt is None and part.part and not part.assignee:
+                    part_only = next(
+                        (
+                            candidate
+                            for candidate in candidates
+                            if _dev_task_part(candidate, cfg, part_field_id)
+                            == part.part
+                            and candidate.get("key") not in claimed_dev_tasks
+                        ),
+                        None,
+                    )
+                    if part_only is not None:
+                        warnings.append(
+                            f"Luồng '{flow.code or flow.summary}' ({story_key}): "
+                            f"phần việc {part.part} thiếu assignee nên không ghép "
+                            f"được Dev Task {part_only.get('key')}; sẽ tạo Dev Task mới"
+                        )
                 if matched_dt is not None:
                     part_key = matched_dt.get("key")
                     if part_key and part_key in claimed_dev_tasks:
@@ -503,15 +578,28 @@ def apply_plan(
                         if isinstance(tt, dict)
                         else ""
                     )
+                    dt_seconds = _jira_seconds(dt_fields.get("timeoriginalestimate"))
+                    if dt_seconds is None and dt_est:
+                        dt_seconds = _duration_seconds(dt_est)
+                    plan_seconds = (
+                        _duration_seconds(part.estimate) if part.estimate else None
+                    )
 
                     upd_part: dict[str, Any] = {}
                     if part.part and dt_part != part.part:
                         upd_part[part_field_id] = {"value": part.part}
                     if part.assignee and dt_assignee != part.assignee:
                         upd_part["assignee"] = {"name": part.assignee}
-                    if part.estimate and dt_est.strip() != part.estimate.strip():
+                    estimate_differs = False
+                    plan_estimate = part.estimate
+                    if plan_estimate:
+                        if plan_seconds is not None and dt_seconds is not None:
+                            estimate_differs = plan_seconds != dt_seconds
+                        else:
+                            estimate_differs = dt_est.strip() != plan_estimate.strip()
+                    if plan_estimate and estimate_differs:
                         upd_part["timetracking"] = {
-                            "originalEstimate": part.estimate.strip()
+                            "originalEstimate": plan_estimate.strip()
                         }
                     if not upd_part:
                         continue
@@ -571,6 +659,7 @@ def apply_plan(
             "created": created_now,
             "analyzed": analyzed,
             "story_ready": True,
+            "ready_ok": len(errors) == flow_errors_start,
         }
 
     # 5. Tech tasks (Ad-hoc Tasks in the Epic)
@@ -681,7 +770,7 @@ def apply_plan(
     # 7. Ready For Dev for every Story currently Analyzing
     for flow_index, flow in enumerate(working_plan.flows):
         state = flow_states.get(flow_index)
-        if not state or not state.get("story_ready"):
+        if not state or not state.get("story_ready") or not state.get("ready_ok"):
             continue
         status = str(state.get("status") or "")
         if status.lower() != "analyzing":

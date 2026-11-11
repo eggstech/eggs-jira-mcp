@@ -14,9 +14,7 @@ from .plan import Plan, split_codes, split_codes_exact
 
 logger = logging.getLogger(__name__)
 
-_PLATFORM_TITLE_RE = re.compile(
-    r"^(FE|BE|APP|WEB|API|CMS|POS|Backend|Frontend|Mobile)\b"
-)
+_PLATFORM_TITLE_RE = re.compile(r"^(FE|BE|APP|WEB|API)\b")
 
 
 @dataclass
@@ -36,6 +34,10 @@ class PlanContext:
     # Story key -> Dev Task keys, only populated when a plan part carries a key
     story_dev_task_keys: dict[str, set[str]] = field(default_factory=dict)
     story_dev_task_errors: dict[str, str] = field(default_factory=dict)
+    # Story key -> error message when its eggs.flowCode could not be read
+    flow_code_errors: dict[str, str] = field(default_factory=dict)
+    # flow index -> (Story key, its codes) for a title match with another code
+    title_conflicts: dict[int, dict[str, Any]] = field(default_factory=dict)
 
 
 @dataclass
@@ -113,15 +115,16 @@ def _child_search_fields(cfg: EggsConfig) -> list[str]:
     return fields
 
 
-def _read_flow_code(gateway: JiraGateway, key: str) -> str | None:
+def _read_flow_code(gateway: JiraGateway, key: str) -> tuple[str | None, str | None]:
+    """Return (eggs.flowCode, read error) so errors are never read as "unset"."""
     getter = getattr(gateway, "get_issue_property", None)
     if getter is None:
-        return None
+        return None, None
     try:
         value = getter(key, "eggs.flowCode")
-    except Exception:  # noqa: BLE001
-        return None
-    return value if isinstance(value, str) and value else None
+    except Exception as exc:  # noqa: BLE001
+        return None, str(exc)
+    return (value if isinstance(value, str) and value else None), None
 
 
 def _resolve_unkeyed_flows(
@@ -130,8 +133,12 @@ def _resolve_unkeyed_flows(
     components: dict[str, str],
     flow_codes: dict[str, str],
     cfg: EggsConfig,
-) -> dict[int, str]:
-    """Match unkeyed flows to existing Epic Stories (item 5)."""
+) -> tuple[dict[int, str], dict[int, dict[str, Any]]]:
+    """Match unkeyed flows to existing Epic Stories (item 5).
+
+    Returns the resolved keys and any title matches rejected because the
+    candidate carries a different flow code (I6).
+    """
     story_children = [
         child
         for child in ctx_children
@@ -140,6 +147,7 @@ def _resolve_unkeyed_flows(
     ]
     claimed = {flow.key for flow in plan.flows if flow.key}
     resolved: dict[int, str] = {}
+    conflicts: dict[int, dict[str, Any]] = {}
 
     for idx, flow in enumerate(plan.flows):
         if flow.key:
@@ -165,7 +173,7 @@ def _resolve_unkeyed_flows(
                 key = candidate.get("key", "")
                 if key in claimed:
                     continue
-                _, candidate_title = split_codes_exact(
+                candidate_codes, candidate_title = split_codes_exact(
                     candidate.get("fields", {}).get("summary", "")
                 )
                 if candidate_title != flow_title:
@@ -176,6 +184,10 @@ def _resolve_unkeyed_flows(
                     continue
                 if not actor_component and _component_names(candidate):
                     continue
+                # Rule 5(c) must not re-identify a Story under another code.
+                if flow.code and candidate_codes and flow.code not in candidate_codes:
+                    conflicts.setdefault(idx, {"key": key, "codes": candidate_codes})
+                    continue
                 child = candidate
                 break
 
@@ -183,7 +195,7 @@ def _resolve_unkeyed_flows(
             resolved[idx] = child.get("key", "")
             claimed.add(child.get("key", ""))
 
-    return resolved
+    return resolved, conflicts
 
 
 def load_plan_context(
@@ -228,6 +240,7 @@ def load_plan_context(
                 epic_children = []
 
     flow_codes: dict[str, str] = {}
+    flow_code_errors: dict[str, str] = {}
     if any(not flow.key for flow in plan.flows):
         story_types = set(cfg.issue_types.get("story", ["Story"]))
         for child in epic_children:
@@ -237,11 +250,15 @@ def load_plan_context(
             child_key = child.get("key")
             if not child_key:
                 continue
-            flow_code = _read_flow_code(gateway, child_key)
+            flow_code, read_error = _read_flow_code(gateway, child_key)
             if flow_code:
                 flow_codes[child_key] = flow_code
+            if read_error:
+                flow_code_errors[child_key] = read_error
 
-    resolved = _resolve_unkeyed_flows(plan, epic_children, components, flow_codes, cfg)
+    resolved, title_conflicts = _resolve_unkeyed_flows(
+        plan, epic_children, components, flow_codes, cfg
+    )
 
     story_dev_task_keys: dict[str, set[str]] = {}
     story_dev_task_errors: dict[str, str] = {}
@@ -305,6 +322,8 @@ def load_plan_context(
         epic_children_error=children_error,
         resolved_flow_keys=resolved,
         flow_codes=flow_codes,
+        flow_code_errors=flow_code_errors,
+        title_conflicts=title_conflicts,
         story_dev_task_keys=story_dev_task_keys,
         story_dev_task_errors=story_dev_task_errors,
     )
@@ -397,6 +416,26 @@ def validate_plan(plan: Plan, ctx: PlanContext, cfg: EggsConfig) -> ValidationRe
             msg = "Epic mới bắt buộc phải có người phụ trách (owner)"
             findings.append(Finding("error", "epic.owner", msg))
 
+        # A plan that only carries epic.key still points at a real Epic (M2).
+        if new_plan.epic.key and ctx.epic_issue is not None:
+            it_name = ctx.epic_issue.get("fields", {}).get("issuetype", {}).get("name")
+            epic_types = cfg.issue_types.get("epic", ["Epic"])
+            if it_name and it_name not in epic_types:
+                msg = (
+                    f"Issue {new_plan.epic.key} có loại '{it_name}', không phải là Epic"
+                )
+                findings.append(Finding("error", "epic.key", msg))
+            raw_project = ctx.epic_issue.get("fields", {}).get("project")
+            project_key = (
+                raw_project.get("key") if isinstance(raw_project, dict) else None
+            )
+            key_prefix = new_plan.epic.key.split("-")[0]
+            if key_prefix.upper() != new_plan.project.upper() or (
+                project_key and project_key.upper() != new_plan.project.upper()
+            ):
+                msg = f"Epic {new_plan.epic.key} không thuộc dự án {new_plan.project}"
+                findings.append(Finding("error", "epic.project", msg))
+
     if new_plan.epic.owner and new_plan.epic.owner in ctx.unknown_users:
         msg = f"User '{new_plan.epic.owner}' không tồn tại trên Jira"
         findings.append(Finding("error", "epic.owner", msg))
@@ -423,6 +462,30 @@ def validate_plan(plan: Plan, ctx: PlanContext, cfg: EggsConfig) -> ValidationRe
                     flow.codes = child_codes
                     flow.code = child_codes[0]
                 break
+
+    for i, flow in enumerate(new_plan.flows):
+        if flow.key:
+            continue
+        conflict = ctx.title_conflicts.get(i)
+        if conflict:
+            codes_str = ", ".join(conflict["codes"])
+            msg = (
+                f"Luồng '{flow.code or flow.summary}': Story {conflict['key']} "
+                f"có mã [{codes_str}] khác với mã luồng '{flow.code}'. "
+                "Hãy sửa code hoặc đặt key cho luồng."
+            )
+            findings.append(Finding("error", f"flows[{i}].key", msg))
+            continue
+        if ctx.flow_code_errors:
+            detail = "; ".join(
+                f"{key}: {error}" for key, error in ctx.flow_code_errors.items()
+            )
+            msg = (
+                f"Luồng '{flow.code or flow.summary}': không đọc được thuộc tính "
+                f"eggs.flowCode của Story trong Epic ({detail}), không thể xác định "
+                "luồng đã tồn tại hay chưa."
+            )
+            findings.append(Finding("error", f"flows[{i}].key", msg))
 
     max_nn: dict[str, int] = {}
     for story in story_children:

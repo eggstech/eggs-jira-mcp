@@ -22,6 +22,17 @@ NOW_WED = datetime(2026, 11, 18, 10, 0, tzinfo=TZ)
 TODAY_WED = date(2026, 11, 18)
 
 
+def _yaml_safe(value):
+    """Turn frozensets (lead_users, holidays) into YAML-safe lists."""
+    if isinstance(value, dict):
+        return {key: _yaml_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_yaml_safe(item) for item in value]
+    if isinstance(value, (set, frozenset)):
+        return sorted(_yaml_safe(item) for item in value)
+    return value
+
+
 @pytest.fixture
 def cfg() -> EggsConfig:
     return EggsConfig(
@@ -459,7 +470,9 @@ def test_main_evaluate_exits_1_on_write_failure(
     cfg: EggsConfig, monkeypatch: pytest.MonkeyPatch, tmp_path, caplog
 ):
     config_file = tmp_path / "eggs.yaml"
-    config_file.write_text(yaml.safe_dump(dataclasses.asdict(cfg), allow_unicode=True))
+    config_file.write_text(
+        yaml.safe_dump(_yaml_safe(dataclasses.asdict(cfg)), allow_unicode=True)
+    )
 
     monkeypatch.setenv("JIRA_URL", cfg.jira_url)
     monkeypatch.setenv("EGGS_BOT_TOKEN", "dummy_token")
@@ -508,7 +521,9 @@ def test_guardian_main_evaluate_logs_only_counts_no_issue_content(
     cfg: EggsConfig, monkeypatch: pytest.MonkeyPatch, tmp_path, caplog
 ):
     config_file = tmp_path / "eggs.yaml"
-    config_file.write_text(yaml.safe_dump(dataclasses.asdict(cfg), allow_unicode=True))
+    config_file.write_text(
+        yaml.safe_dump(_yaml_safe(dataclasses.asdict(cfg)), allow_unicode=True)
+    )
 
     monkeypatch.setenv("JIRA_URL", cfg.jira_url)
     monkeypatch.setenv("EGGS_BOT_TOKEN", "dummy_token")
@@ -616,7 +631,9 @@ def test_report_posts_lead_and_project_webhooks(
     cfg: EggsConfig, monkeypatch: pytest.MonkeyPatch, tmp_path
 ):
     config_file = tmp_path / "eggs.yaml"
-    config_file.write_text(yaml.safe_dump(dataclasses.asdict(cfg), allow_unicode=True))
+    config_file.write_text(
+        yaml.safe_dump(_yaml_safe(dataclasses.asdict(cfg)), allow_unicode=True)
+    )
 
     monkeypatch.setenv("JIRA_URL", cfg.jira_url)
     monkeypatch.setenv("EGGS_BOT_TOKEN", "dummy_token")
@@ -657,7 +674,9 @@ def test_report_continues_on_failure_and_returns_1(
     cfg: EggsConfig, monkeypatch: pytest.MonkeyPatch, tmp_path
 ):
     config_file = tmp_path / "eggs.yaml"
-    config_file.write_text(yaml.safe_dump(dataclasses.asdict(cfg), allow_unicode=True))
+    config_file.write_text(
+        yaml.safe_dump(_yaml_safe(dataclasses.asdict(cfg)), allow_unicode=True)
+    )
 
     monkeypatch.setenv("JIRA_URL", cfg.jira_url)
     monkeypatch.setenv("EGGS_BOT_TOKEN", "dummy_token")
@@ -697,7 +716,9 @@ def test_report_unknown_project_stderr_and_exit_1(
     cfg: EggsConfig, monkeypatch: pytest.MonkeyPatch, tmp_path, capsys
 ):
     config_file = tmp_path / "eggs.yaml"
-    config_file.write_text(yaml.safe_dump(dataclasses.asdict(cfg), allow_unicode=True))
+    config_file.write_text(
+        yaml.safe_dump(_yaml_safe(dataclasses.asdict(cfg)), allow_unicode=True)
+    )
 
     monkeypatch.setenv("JIRA_URL", cfg.jira_url)
     monkeypatch.setenv("EGGS_BOT_TOKEN", "dummy_token")
@@ -726,7 +747,7 @@ def test_report_frozen_project_stderr_and_exit_1(
     cfg: EggsConfig, monkeypatch: pytest.MonkeyPatch, tmp_path, capsys
 ):
     # Create config with a frozen project
-    cfg_data = dataclasses.asdict(cfg)
+    cfg_data = _yaml_safe(dataclasses.asdict(cfg))
     cfg_data["projects"]["RFID"]["frozen"] = True
     config_file = tmp_path / "eggs.yaml"
     config_file.write_text(yaml.safe_dump(cfg_data, allow_unicode=True))
@@ -758,7 +779,9 @@ def test_remind_continues_on_failure_and_returns_1(
     cfg: EggsConfig, monkeypatch: pytest.MonkeyPatch, tmp_path
 ):
     config_file = tmp_path / "eggs.yaml"
-    config_file.write_text(yaml.safe_dump(dataclasses.asdict(cfg), allow_unicode=True))
+    config_file.write_text(
+        yaml.safe_dump(_yaml_safe(dataclasses.asdict(cfg)), allow_unicode=True)
+    )
 
     monkeypatch.setenv("JIRA_URL", cfg.jira_url)
     monkeypatch.setenv("EGGS_BOT_TOKEN", "dummy_token")
@@ -821,7 +844,9 @@ def test_remind_does_not_send_lead_message_when_nothing_missing(
     cfg: EggsConfig, monkeypatch: pytest.MonkeyPatch, tmp_path
 ):
     config_file = tmp_path / "eggs.yaml"
-    config_file.write_text(yaml.safe_dump(dataclasses.asdict(cfg), allow_unicode=True))
+    config_file.write_text(
+        yaml.safe_dump(_yaml_safe(dataclasses.asdict(cfg)), allow_unicode=True)
+    )
 
     monkeypatch.setenv("JIRA_URL", cfg.jira_url)
     monkeypatch.setenv("EGGS_BOT_TOKEN", "dummy_token")
@@ -858,7 +883,9 @@ def test_remind_lists_workers_without_role(
     cfg: EggsConfig, monkeypatch: pytest.MonkeyPatch, tmp_path
 ):
     config_file = tmp_path / "eggs.yaml"
-    config_file.write_text(yaml.safe_dump(dataclasses.asdict(cfg), allow_unicode=True))
+    config_file.write_text(
+        yaml.safe_dump(_yaml_safe(dataclasses.asdict(cfg)), allow_unicode=True)
+    )
 
     monkeypatch.setenv("JIRA_URL", cfg.jira_url)
     monkeypatch.setenv("EGGS_BOT_TOKEN", "dummy_token")
@@ -911,7 +938,9 @@ def test_skip_on_non_working_day(
     cfg: EggsConfig, monkeypatch: pytest.MonkeyPatch, tmp_path
 ):
     config_file = tmp_path / "eggs.yaml"
-    config_file.write_text(yaml.safe_dump(dataclasses.asdict(cfg), allow_unicode=True))
+    config_file.write_text(
+        yaml.safe_dump(_yaml_safe(dataclasses.asdict(cfg)), allow_unicode=True)
+    )
 
     monkeypatch.setenv("JIRA_URL", cfg.jira_url)
     monkeypatch.setenv("EGGS_BOT_TOKEN", "dummy_token")
@@ -1226,7 +1255,9 @@ def test_backfill_qc_owner_missing_config_or_project_exits_2(
     cfg: EggsConfig, monkeypatch: pytest.MonkeyPatch, tmp_path
 ):
     config_file = tmp_path / "eggs.yaml"
-    config_file.write_text(yaml.safe_dump(dataclasses.asdict(cfg), allow_unicode=True))
+    config_file.write_text(
+        yaml.safe_dump(_yaml_safe(dataclasses.asdict(cfg)), allow_unicode=True)
+    )
 
     monkeypatch.setenv("JIRA_URL", cfg.jira_url)
     monkeypatch.setenv("EGGS_BOT_TOKEN", "dummy_token")
@@ -1245,7 +1276,7 @@ def test_backfill_qc_owner_missing_config_or_project_exits_2(
         cfg, fields={k: v for k, v in cfg.fields.items() if k != "qc_owner"}
     )
     config_file.write_text(
-        yaml.safe_dump(dataclasses.asdict(cfg_no_qc), allow_unicode=True)
+        yaml.safe_dump(_yaml_safe(dataclasses.asdict(cfg_no_qc)), allow_unicode=True)
     )
     with pytest.raises(SystemExit) as exc2:
         main(["backfill-qc-owner", "--project", "RFID"], gateway=gw)
@@ -1257,7 +1288,9 @@ def test_backfill_qc_owner_runs_on_non_working_day(
     cfg: EggsConfig, monkeypatch: pytest.MonkeyPatch, tmp_path
 ):
     config_file = tmp_path / "eggs.yaml"
-    config_file.write_text(yaml.safe_dump(dataclasses.asdict(cfg), allow_unicode=True))
+    config_file.write_text(
+        yaml.safe_dump(_yaml_safe(dataclasses.asdict(cfg)), allow_unicode=True)
+    )
 
     monkeypatch.setenv("JIRA_URL", cfg.jira_url)
     monkeypatch.setenv("EGGS_BOT_TOKEN", "dummy_token")
@@ -1435,7 +1468,9 @@ def test_backfill_qc_owner_search_error_reported_separately(
     cfg: EggsConfig, monkeypatch: pytest.MonkeyPatch, tmp_path, capsys
 ):
     config_file = tmp_path / "eggs.yaml"
-    config_file.write_text(yaml.safe_dump(dataclasses.asdict(cfg), allow_unicode=True))
+    config_file.write_text(
+        yaml.safe_dump(_yaml_safe(dataclasses.asdict(cfg)), allow_unicode=True)
+    )
 
     monkeypatch.setenv("JIRA_URL", cfg.jira_url)
     monkeypatch.setenv("EGGS_BOT_TOKEN", "dummy_token")
@@ -1863,7 +1898,9 @@ def test_freeze_legacy_runs_on_non_working_day(
     cfg: EggsConfig, monkeypatch: pytest.MonkeyPatch, tmp_path
 ):
     config_file = tmp_path / "eggs.yaml"
-    config_file.write_text(yaml.safe_dump(dataclasses.asdict(cfg), allow_unicode=True))
+    config_file.write_text(
+        yaml.safe_dump(_yaml_safe(dataclasses.asdict(cfg)), allow_unicode=True)
+    )
 
     monkeypatch.setenv("JIRA_URL", cfg.jira_url)
     monkeypatch.setenv("EGGS_BOT_TOKEN", "dummy_token")
@@ -3277,7 +3314,9 @@ def test_backfill_qc_owner_skips_issue_with_no_issuetype_name(
 # --- 11/11: chat-test sends one test message to every configured group -------
 def _chat_test_env(cfg, monkeypatch, tmp_path):
     config_file = tmp_path / "eggs.yaml"
-    config_file.write_text(yaml.safe_dump(dataclasses.asdict(cfg), allow_unicode=True))
+    config_file.write_text(
+        yaml.safe_dump(_yaml_safe(dataclasses.asdict(cfg)), allow_unicode=True)
+    )
     monkeypatch.setenv("JIRA_URL", cfg.jira_url)
     monkeypatch.setenv("EGGS_BOT_TOKEN", "dummy_token")
     monkeypatch.setenv("EGGS_CONFIG", str(config_file))

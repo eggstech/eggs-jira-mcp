@@ -327,13 +327,14 @@ def test_export_apply_round_trip_noop():
         },
     )
     gateway.allowed_field_values = {("HMK", "Dev Task", "customfield_10701"): ["BE"]}
+    gateway.issue_properties[("HMK-10", "eggs.flowCode")] = "CH-01"
 
     plan = export_epic(gateway, cfg, "HMK-1")
     ctx = load_plan_context(gateway, cfg, plan, today=date(2026, 11, 10))
     res = apply_plan(gateway, cfg, plan, ctx, dry_run=True)
 
     assert res.ok
-    # Dry run should report no changes because fields and subtasks are already matching
+    # Dry run should report no changes because fields, property and subtasks match
     assert res.changes == []
 
 
@@ -435,6 +436,7 @@ def test_export_round_trip_keeps_multicode_multicomponent_and_spacing():
         },
     )
     gateway.allowed_field_values = {("HMK", "Dev Task", "customfield_10701"): ["BE"]}
+    gateway.issue_properties[("HMK-10", "eggs.flowCode")] = "CH-04"
 
     plan = export_epic(gateway, cfg, "HMK-1")
     flow = plan.flows[0]

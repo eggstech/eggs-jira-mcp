@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 from datetime import datetime
 from typing import Any
@@ -646,9 +645,10 @@ class AtlassianGateway(JiraGateway):
         The value is sent as a JSON document (a code becomes `"CH-01"`).
         """
         try:
+            # atlassian-python-api already json.dumps() the body.
             self.client.put(
                 f"rest/api/2/issue/{key}/properties/{name}",
-                data=json.dumps(value),
+                data=value,
             )
         except HTTPError as e:
             raise _handle_http_error(e) from e
