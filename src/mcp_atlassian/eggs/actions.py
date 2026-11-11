@@ -65,6 +65,50 @@ class Actions:
     def _today(self) -> date:
         return self.today_fn()
 
+    def _parse_worklog_started(
+        self, started: str | datetime | None
+    ) -> tuple[datetime | None, ActionResult | None]:
+        """Parse a worklog start: a date (logged at 09:00 local) or a datetime.
+
+        Today's bare date returns None so Jira uses the current time.
+        """
+        if started is None or (isinstance(started, str) and not started.strip()):
+            return None, None
+        tz = ZoneInfo(self.cfg.timezone)
+        bad = ActionResult(
+            ok=False,
+            message=(
+                f"Thời điểm bắt đầu không hợp lệ: {started}. "
+                "Dùng YYYY-MM-DD hoặc YYYY-MM-DDTHH:MM."
+            ),
+            changes=[],
+            next_actions=[],
+        )
+        if isinstance(started, datetime):
+            dt = started
+        else:
+            text = started.strip()
+            try:
+                if len(text) == 10:
+                    d = date.fromisoformat(text)
+                    if d == self._today():
+                        return None, None
+                    dt = datetime(d.year, d.month, d.day, 9, 0, tzinfo=tz)
+                else:
+                    dt = datetime.fromisoformat(text)
+            except ValueError:
+                return None, bad
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=tz)
+        if dt.astimezone(tz).date() > self._today():
+            return None, ActionResult(
+                ok=False,
+                message=f"Không log giờ cho ngày trong tương lai ({started}).",
+                changes=[],
+                next_actions=[],
+            )
+        return dt, None
+
     def _get_raw_and_issue(self, key: str) -> tuple[dict, Issue]:
         raw = self.gateway.get_issue(key)
         return raw, issue_from_json(raw, self.cfg)
@@ -373,7 +417,7 @@ class Actions:
         key: str,
         time_spent: str,
         note: str,
-        kind: Literal["dev", "qc", "ba"] = "dev",
+        started: str | datetime | None = None,
         *,
         dry_run: bool = False,
     ) -> ActionResult:
@@ -384,6 +428,9 @@ class Actions:
                 changes=[],
                 next_actions=[],
             )
+        started_dt, started_err = self._parse_worklog_started(started)
+        if started_err:
+            return started_err
 
         try:
             issue = self._get_issue(key)
@@ -403,7 +450,10 @@ class Actions:
                 next_actions=[],
             )
 
-        changes = [f"Ghi nhận {time_spent} ({kind}): {note}"]
+        day_str = (
+            f" ngày {started_dt.strftime('%d/%m')}" if started_dt is not None else ""
+        )
+        changes = [f"Ghi nhận {time_spent}{day_str}: {note}"]
         if dry_run:
             return ActionResult(
                 ok=True,
@@ -412,7 +462,9 @@ class Actions:
                 next_actions=[],
             )
 
-        self.gateway.add_worklog(key, time_spent=time_spent, comment=note)
+        self.gateway.add_worklog(
+            key, time_spent=time_spent, comment=note, started=started_dt
+        )
         return ActionResult(
             ok=True,
             message=f"Đã log {time_spent} cho {key}.",

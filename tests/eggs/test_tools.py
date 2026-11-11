@@ -1489,3 +1489,58 @@ open_questions: []
             assert "due" in migrate_json["missing"]
             assert "qc" in migrate_json["missing"]
             assert "other_issues" in migrate_json
+
+
+class TestLogWorkToolWiring:
+    """W1 (11/11): eggs_log_work crashed on every call (`started` kwarg)."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("started", [None, "2026-11-10"])
+    async def test_eggs_log_work_reaches_gateway_without_mocking_actions(
+        self, cfg: EggsConfig, started: str | None
+    ):
+        server = FastMCP("test_jira")
+        register_eggs_tools(server, force=True)
+        bot_gateway = FakeGateway(
+            user="eggsbot", role_members={"RFID": {"Developers": ["dev1"]}}
+        )
+        user_gateway = FakeGateway(
+            user="dev1",
+            issues={
+                "RFID-10": {
+                    "key": "RFID-10",
+                    "fields": {
+                        "issuetype": {"name": "Dev Task"},
+                        "summary": "Task 1",
+                        "status": {"name": "Dev In Progress"},
+                        "assignee": {"name": "dev1", "displayName": "Dev One"},
+                    },
+                }
+            },
+        )
+        args: dict[str, Any] = {
+            "key": "RFID-10",
+            "time_spent": "2h",
+            "note": "code",
+            "dry_run": False,
+        }
+        if started:
+            args["started"] = started
+        with (
+            patch("mcp_atlassian.eggs.tools.load_config", return_value=cfg),
+            patch(
+                "mcp_atlassian.eggs.tools.get_user_gateway",
+                AsyncMock(return_value=user_gateway),
+            ),
+            patch(
+                "mcp_atlassian.eggs.tools.get_roles_reader", return_value=bot_gateway
+            ),
+            patch("mcp_atlassian.eggs.tools.build_agenda", return_value=[]),
+        ):
+            res = await server.call_tool("eggs_log_work", args)
+        data = json.loads(res.content[0].text)
+        assert data["ok"] is True, data
+        logged = [c for c in user_gateway.calls if c[0] == "add_worklog"]
+        assert len(logged) == 1
+        if started:
+            assert logged[0][2]["started"].date() == date(2026, 11, 10)

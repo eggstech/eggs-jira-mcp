@@ -5178,3 +5178,62 @@ def test_create_bug_lead_without_qc_role_must_name_qc_owner(cfg, cal):
     )
     assert res.ok is False
     assert "qc_owner" in res.missing
+
+
+# --- W1 (11/11): log_work `started` and no role label --------------------------
+_VN = ZoneInfo("Asia/Ho_Chi_Minh")
+
+
+def test_log_work_started_date_logs_at_nine_local(cfg, cal):
+    data = _base_fixtures(cfg)
+    gw = FakeGateway(issues=data["issues"], transitions=data["transitions"])
+    res = _make_actions(gw, cfg, cal).log_work(
+        "HMKPOS-101", time_spent="2h", note="Hôm qua", started="2026-11-17"
+    )
+    assert res.ok is True
+    call = [c for c in gw.calls if c[0] == "add_worklog"][0]
+    assert call[2]["started"] == datetime(2026, 11, 17, 9, 0, tzinfo=_VN)
+    assert any("17/11" in line for line in res.changes)
+
+
+def test_log_work_started_naive_datetime_uses_config_timezone(cfg, cal):
+    data = _base_fixtures(cfg)
+    gw = FakeGateway(issues=data["issues"], transitions=data["transitions"])
+    res = _make_actions(gw, cfg, cal).log_work(
+        "HMKPOS-101", time_spent="1h", note="x", started="2026-11-18T08:30"
+    )
+    assert res.ok is True
+    call = [c for c in gw.calls if c[0] == "add_worklog"][0]
+    assert call[2]["started"] == datetime(2026, 11, 18, 8, 30, tzinfo=_VN)
+
+
+def test_log_work_started_today_date_leaves_started_to_jira(cfg, cal):
+    data = _base_fixtures(cfg)
+    gw = FakeGateway(issues=data["issues"], transitions=data["transitions"])
+    res = _make_actions(gw, cfg, cal).log_work(
+        "HMKPOS-101", time_spent="1h", note="x", started="2026-11-18"
+    )
+    assert res.ok is True
+    call = [c for c in gw.calls if c[0] == "add_worklog"][0]
+    assert call[2]["started"] is None
+
+
+@pytest.mark.parametrize("bad", ["2026-11-19", "18/11/2026", "hôm qua"])
+def test_log_work_started_future_or_invalid_refused_without_write(cfg, cal, bad):
+    data = _base_fixtures(cfg)
+    gw = FakeGateway(issues=data["issues"], transitions=data["transitions"])
+    res = _make_actions(gw, cfg, cal).log_work(
+        "HMKPOS-101", time_spent="1h", note="x", started=bad
+    )
+    assert res.ok is False
+    assert not [c for c in gw.calls if c[0] == "add_worklog"]
+
+
+def test_log_work_changes_have_no_role_label(cfg, cal):
+    data = _base_fixtures(cfg)
+    gw = FakeGateway(issues=data["issues"], transitions=data["transitions"])
+    res = _make_actions(gw, cfg, cal).log_work(
+        "HMKPOS-101", time_spent="1h", note="QC test", dry_run=True
+    )
+    assert res.ok is True
+    assert res.changes and "(dev)" not in res.changes[0]

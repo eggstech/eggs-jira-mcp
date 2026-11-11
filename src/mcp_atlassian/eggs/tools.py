@@ -844,7 +844,14 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         ],
         note: Annotated[str, Field(description="Nội dung công việc đã làm")],
         started: Annotated[
-            str | None, Field(description="Thời điểm bắt đầu", default=None)
+            str | None,
+            Field(
+                description=(
+                    "Ngày làm việc YYYY-MM-DD (ghi lúc 09:00) hoặc "
+                    "YYYY-MM-DDTHH:MM; bỏ trống = bây giờ. Không nhận ngày tương lai"
+                ),
+                default=None,
+            ),
         ] = None,
         *,
         dry_run: Annotated[
