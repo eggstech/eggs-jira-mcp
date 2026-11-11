@@ -2356,6 +2356,7 @@ class Actions:
         source_url: str,
         reported_by: str,
         reported_at: datetime | None = None,
+        assignee: str | None = None,
         *,
         dry_run: bool = False,
     ) -> ActionResult:
@@ -2412,11 +2413,20 @@ class Actions:
                 changes=[],
                 next_actions=[],
             )
-        triage_owner = proj_cfg.triage_owner
+        assignee = (assignee or "").strip() or None
+        if assignee and hasattr(self.gateway, "user_exists"):
+            if not self.gateway.user_exists(assignee):
+                return ActionResult(
+                    ok=False,
+                    message=f"User {assignee} không tồn tại trên Jira.",
+                    changes=[],
+                    next_actions=[],
+                )
 
+        assign_changes = [f"Gán Assignee = {assignee}"] if assignee else []
         changes = [
             f"Tạo User Report trong Epic {ops_epic.key}",
-            f"Gán Assignee = {triage_owner}",
+            *assign_changes,
             "Chuyển trạng thái Start Triage",
         ]
         if dry_run:
@@ -2432,8 +2442,9 @@ class Actions:
             "project": {"key": project},
             "issuetype": {"name": report_type_name},
             "summary": text,
-            "assignee": {"name": triage_owner},
         }
+        if assignee:
+            create_fields["assignee"] = {"name": assignee}
         if self.cfg.fields.get("epic_link"):
             create_fields[self.cfg.fields["epic_link"]] = ops_epic.key
         if self.cfg.fields.get("report_source"):
@@ -2462,7 +2473,7 @@ class Actions:
                 message=warn_msg,
                 changes=[
                     f"Tạo User Report trong Epic {ops_epic.key}",
-                    f"Gán Assignee = {triage_owner}",
+                    *assign_changes,
                 ],
                 next_actions=["triage_close"],
             )

@@ -2093,6 +2093,16 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
                 default=None,
             ),
         ] = None,
+        assignee: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "Người nhận xử lý phản ánh (username Jira). "
+                    "Hỏi người dùng; không ai nhận thì để trống."
+                ),
+                default=None,
+            ),
+        ] = None,
         *,
         dry_run: Annotated[
             bool, Field(description="Chạy thử nghiệm", default=False)
@@ -2141,6 +2151,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
             source_url=source_url,
             reported_by=reported_by,
             reported_at=rep_dt,
+            assignee=assignee,
             dry_run=dry_run,
         )
         if res.ok and not dry_run:

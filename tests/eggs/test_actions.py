@@ -834,7 +834,7 @@ def test_uat_signoff_refuses_when_actor_story_not_in_uat(cfg, cal):
     assert "chưa" in res.message.lower() or "wait for review" in res.message.lower()
 
 
-def test_triage_open_creates_report_in_ops_epic_assigned_to_triage_owner(cfg, cal):
+def test_triage_open_creates_report_in_ops_epic_assigned_to_receiver(cfg, cal):
     # Current month OPS epic
     ops_epic = {
         "key": "HMKPOS-OPS",
@@ -856,15 +856,17 @@ def test_triage_open_creates_report_in_ops_epic_assigned_to_triage_owner(cfg, ca
         text="Cannot login with OTP",
         source_url="https://chat.google.com/room/123",
         reported_by="Store Manager",
+        assignee="nguoi.nhan",
     )
     assert res.ok is True
+    assert "Gán Assignee = nguoi.nhan" in res.changes
 
     # Assert created issue
     created_calls = [c for c in gateway.calls if c[0] == "create_issue"]
     assert len(created_calls) == 1
     fields = created_calls[0][1][0]
     assert fields["summary"] == "Cannot login with OTP"
-    assert fields["assignee"]["name"] == "triage.qc"
+    assert fields["assignee"]["name"] == "nguoi.nhan"
     assert fields["customfield_epic_link"] == "HMKPOS-OPS"
     assert fields["customfield_report_source"] == "https://chat.google.com/room/123"
     assert fields["customfield_reported_by"] == "Store Manager"
@@ -873,6 +875,76 @@ def test_triage_open_creates_report_in_ops_epic_assigned_to_triage_owner(cfg, ca
     trans_calls = [c for c in gateway.calls if c[0] == "transition"]
     assert len(trans_calls) == 1
     assert trans_calls[0][1][1] == "Start Triage"
+
+
+def _ops_epic_gateway(cfg, **kw):
+    ops_epic = {
+        "key": "HMKPOS-OPS",
+        "fields": {
+            "summary": cfg.ops_epic_summary.format(month=TODAY.month, year=TODAY.year),
+            "project": {"key": "HMKPOS"},
+            "issuetype": {"name": "Epic", "subtask": False},
+            "status": {"name": "Dev In Progress"},
+        },
+    }
+    return FakeGateway(
+        issues={"HMKPOS-OPS": ops_epic},
+        transitions={"HMKPOS-1001": ["Start Triage"]},
+        **kw,
+    )
+
+
+def test_triage_open_without_assignee_leaves_unassigned_ignoring_triage_owner(cfg, cal):
+    gateway = _ops_epic_gateway(cfg)
+    actions = _make_actions(gateway, cfg, cal)
+    assert cfg.projects["HMKPOS"].triage_owner == "triage.qc"
+
+    kwargs = {
+        "project": "HMKPOS",
+        "text": "Cannot login",
+        "source_url": "https://chat.google.com/room/1",
+        "reported_by": "Store Manager",
+    }
+    dry = actions.triage_open(**kwargs, dry_run=True)
+    assert dry.ok is True
+    assert not any("Assignee" in c for c in dry.changes)
+
+    res = actions.triage_open(**kwargs)
+    assert res.ok is True
+    assert not any("Assignee" in c for c in res.changes)
+    fields = [c for c in gateway.calls if c[0] == "create_issue"][0][1][0]
+    assert "assignee" not in fields
+
+
+def test_triage_open_dry_run_with_assignee_lists_change_and_writes_nothing(cfg, cal):
+    gateway = _ops_epic_gateway(cfg)
+    actions = _make_actions(gateway, cfg, cal)
+    res = actions.triage_open(
+        project="HMKPOS",
+        text="x",
+        source_url="https://chat.google.com/room/1",
+        reported_by="SM",
+        assignee="nguoi.nhan",
+        dry_run=True,
+    )
+    assert res.ok is True
+    assert "Gán Assignee = nguoi.nhan" in res.changes
+    assert not [c for c in gateway.calls if c[0] == "create_issue"]
+
+
+def test_triage_open_unknown_assignee_is_refused(cfg, cal):
+    gateway = _ops_epic_gateway(cfg, existing_users={"someone.else"})
+    actions = _make_actions(gateway, cfg, cal)
+    res = actions.triage_open(
+        project="HMKPOS",
+        text="x",
+        source_url="https://chat.google.com/room/1",
+        reported_by="SM",
+        assignee="ghost",
+    )
+    assert res.ok is False
+    assert "ghost" in res.message
+    assert not [c for c in gateway.calls if c[0] == "create_issue"]
 
 
 def test_triage_close_bug_under_story_links_and_resolves(cfg, cal):

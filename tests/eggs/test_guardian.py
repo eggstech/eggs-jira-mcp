@@ -1152,6 +1152,22 @@ def test_backfill_qc_owner_default_user_is_triage_owner(cfg: EggsConfig):
     assert update_calls[0][2] == {"notify_users": False}
 
 
+def test_backfill_qc_owner_without_triage_owner_or_flag_errors(cfg: EggsConfig):
+    from mcp_atlassian.eggs.guardian import backfill_qc_owner
+
+    cfg_none = dataclasses.replace(
+        cfg,
+        projects={
+            k: dataclasses.replace(v, triage_owner=None)
+            for k, v in cfg.projects.items()
+        },
+    )
+    gw = FakeGateway()
+    with pytest.raises(ValueError, match="triage_owner"):
+        backfill_qc_owner(gw, cfg_none, "RFID")
+    assert not [c for c in gw.calls if c[0] == "update_fields"]
+
+
 def test_backfill_qc_owner_qc_owner_flag_overrides(cfg: EggsConfig):
     from mcp_atlassian.eggs.guardian import backfill_qc_owner
 

@@ -1786,6 +1786,39 @@ def test_triage_open_refuses_without_source_or_reporter(cfg: EggsConfig):
 
 
 @pytest.mark.asyncio
+async def test_triage_open_tool_passes_assignee(cfg: EggsConfig):
+    from mcp_atlassian.eggs.actions import ActionResult, Actions
+
+    seen: dict[str, Any] = {}
+
+    def fake_open(self, **kwargs):
+        seen.update(kwargs)
+        return ActionResult(ok=True, message="ok", changes=[], next_actions=[])
+
+    with patch.object(Actions, "triage_open", fake_open):
+        for args, expected in (
+            ({"assignee": "nguoi.nhan"}, "nguoi.nhan"),
+            ({}, None),
+        ):
+            seen.clear()
+            data = await TestBrokenWrappersFixed._call(
+                cfg,
+                "eggs_triage_open",
+                {
+                    "project": "RFID",
+                    "text": "Lỗi",
+                    "source_url": "https://chat.google.com/x",
+                    "reported_by": "KH",
+                    "dry_run": True,
+                    **args,
+                },
+                {},
+            )
+            assert data["ok"] is True, data
+            assert seen["assignee"] == expected
+
+
+@pytest.mark.asyncio
 async def test_start_with_dates_reaches_actions_as_dates(cfg: EggsConfig):
     data = await TestBrokenWrappersFixed._call(
         cfg,

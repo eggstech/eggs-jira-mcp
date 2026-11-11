@@ -37,7 +37,7 @@ class Thresholds:
 class ProjectConfig:
     key: str
     default_lead_ba: str
-    triage_owner: str
+    triage_owner: str | None = None
     chat_webhook: str | None = field(default=None, repr=False)
     frozen: bool = False
 
@@ -315,14 +315,11 @@ def load_config(path: str | None = None) -> EggsConfig:
             if "default_lead_ba" not in pdata or not pdata["default_lead_ba"]:
                 msg = f"Missing required 'default_lead_ba' for project '{key}'"
                 raise ValueError(msg)
-            if "triage_owner" not in pdata or not pdata["triage_owner"]:
-                msg = f"Missing required 'triage_owner' for project '{key}'"
-                raise ValueError(msg)
             frozen = bool(pdata.get("frozen", False))
             projects[key] = ProjectConfig(
                 key=pdata.get("key", key),
                 default_lead_ba=pdata["default_lead_ba"],
-                triage_owner=pdata["triage_owner"],
+                triage_owner=pdata.get("triage_owner") or None,
                 chat_webhook=pdata.get("chat_webhook"),
                 frozen=frozen,
             )

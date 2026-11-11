@@ -457,7 +457,7 @@ projects:
         load_config(str(cfg_file))
 
 
-def test_load_config_requires_project_triage_owner(tmp_path):
+def test_load_config_project_triage_owner_is_optional(tmp_path):
     yaml_content = """
 lead_user: cuong.huynh
 jira_url: https://jira.eggstech.io.vn
@@ -473,8 +473,11 @@ projects:
     cfg_file = tmp_path / "config.yaml"
     cfg_file.write_text(yaml_content)
 
-    with pytest.raises(ValueError, match="triage_owner"):
-        load_config(str(cfg_file))
+    cfg = load_config(str(cfg_file))
+    assert cfg.projects["PROJ"].triage_owner is None
+
+    cfg_file.write_text(yaml_content + '    triage_owner: ""\n')
+    assert load_config(str(cfg_file)).projects["PROJ"].triage_owner is None
 
 
 def test_load_config_requires_link_types(tmp_path):
