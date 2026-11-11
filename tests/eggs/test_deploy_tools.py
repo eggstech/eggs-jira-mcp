@@ -80,16 +80,20 @@ class TestDeployToolFiltering:
         # 2. Exposed tool list contains every safe write
         assert DEPLOY_RAW_SAFE_WRITE_TOOLS.issubset(exposed_names)
 
-        # 3. Contains no other tool tagged write except eggs tools
-        tools_by_name = {t.name: t for t in exposed_tools}
-        for name, t in tools_by_name.items():
-            tags = getattr(t, "tags", set()) or set()
-            if "write" in tags:
-                is_eggs = name.startswith("eggs_") or name.startswith("jira_eggs_")
-                is_safe_write = name in DEPLOY_RAW_SAFE_WRITE_TOOLS
-                assert is_eggs or is_safe_write, (
-                    f"Unauthorized write tool exposed: {name}"
-                )
+        # 3. Allowed write set is exactly these eight safe write tools plus eggs tools
+        raw_writes_exposed = raw_jira_exposed - DEPLOY_RAW_READ_TOOLS
+        assert raw_writes_exposed == DEPLOY_RAW_SAFE_WRITE_TOOLS
+        assert len(DEPLOY_RAW_SAFE_WRITE_TOOLS) == 8
+        assert DEPLOY_RAW_SAFE_WRITE_TOOLS == {
+            "jira_add_comment",
+            "jira_edit_comment",
+            "jira_add_watcher",
+            "jira_remove_watcher",
+            "jira_create_issue_link",
+            "jira_create_remote_issue_link",
+            "jira_remove_issue_link",
+            "jira_link_to_epic",
+        }
 
         # 4. Contains required read tools: jira_get_user_profile, jira_get_project_components, jira_download_attachments
         assert {
@@ -99,6 +103,7 @@ class TestDeployToolFiltering:
         }.issubset(exposed_names)
 
         # 5. Contains no cloud_only tool
+        tools_by_name = {t.name: t for t in exposed_tools}
         for name, t in tools_by_name.items():
             tags = getattr(t, "tags", set()) or set()
             assert "cloud_only" not in tags, f"cloud_only tool exposed: {name}"
@@ -127,6 +132,19 @@ class TestDeployToolFiltering:
             "jira_create_component",
         }
         assert not (exposed_names & forbidden_raw_writes)
+
+    def test_deploy_raw_safe_write_tools_has_exact_eight_tools(self):
+        expected = {
+            "jira_add_comment",
+            "jira_edit_comment",
+            "jira_add_watcher",
+            "jira_remove_watcher",
+            "jira_create_issue_link",
+            "jira_create_remote_issue_link",
+            "jira_remove_issue_link",
+            "jira_link_to_epic",
+        }
+        assert DEPLOY_RAW_SAFE_WRITE_TOOLS == expected
 
     @pytest.mark.asyncio
     async def test_raw_jira_write_tool_is_not_authorized(

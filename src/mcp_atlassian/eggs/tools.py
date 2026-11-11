@@ -108,6 +108,8 @@ DEPLOY_RAW_SAFE_WRITE_TOOLS = frozenset(
         "jira_remove_watcher",
         "jira_create_issue_link",
         "jira_create_remote_issue_link",
+        "jira_remove_issue_link",
+        "jira_link_to_epic",
     }
 )
 
