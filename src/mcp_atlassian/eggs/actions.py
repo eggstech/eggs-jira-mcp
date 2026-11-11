@@ -451,7 +451,9 @@ class Actions:
             )
 
         day_str = (
-            f" ngày {started_dt.strftime('%d/%m')}" if started_dt is not None else ""
+            f" ngày {started_dt.astimezone(ZoneInfo(self.cfg.timezone)):%d/%m}"
+            if started_dt is not None
+            else ""
         )
         changes = [f"Ghi nhận {time_spent}{day_str}: {note}"]
         if dry_run:
@@ -3236,8 +3238,14 @@ AC_HEADING = "h2. Acceptance Criteria"
 # before 11/11 used the markdown "## Acceptance Criteria", which Jira shows as
 # a numbered list item; both are still recognised when reading.
 _AC_HEADING_RE = re.compile(
-    r"^(?:h[1-6]\.|#{1,3})\s*Acceptance Criteria\b", re.IGNORECASE | re.MULTILINE
+    r"^(h[1-6]\.|##)[ \t]+Acceptance Criteria\b[^\n]*$",
+    re.IGNORECASE | re.MULTILINE,
 )
+# A wiki section ends at the next wiki heading; nested numbered items
+# ("## sub", "# b") stay inside. A legacy markdown section ends at the next
+# markdown heading or wiki heading.
+_WIKI_SECTION_END = re.compile(r"^h[1-6]\.[ \t]", re.MULTILINE)
+_LEGACY_SECTION_END = re.compile(r"^(?:#{1,2}[ \t]|h[1-6]\.[ \t])", re.MULTILINE)
 
 
 def has_ac_heading(description: str | None) -> bool:
@@ -3254,20 +3262,18 @@ def update_ac_section(description: str, new_ac: str) -> str:
         clean_ac = rest.strip()
     ac_block = f"{AC_HEADING}\n{clean_ac}" if clean_ac else AC_HEADING
 
-    # The section ends at the next wiki heading or legacy "## " heading; a
-    # single "# " line is a wiki numbered-list item and stays inside.
-    pattern = re.compile(
-        r"(^(?:h[1-6]\.|#{1,3})\s*Acceptance Criteria[^\n]*\n?)(.*?)"
-        r"(?=(?:^h[1-6]\.\s|^##\s|\Z))",
-        re.MULTILINE | re.DOTALL | re.IGNORECASE,
-    )
-    m = pattern.search(norm_desc)
+    m = _AC_HEADING_RE.search(norm_desc)
     if m:
+        body_start = (
+            m.end() + 1 if norm_desc[m.end() : m.end() + 1] == "\n" else m.end()
+        )
+        end_re = _LEGACY_SECTION_END if m.group(1) == "##" else _WIKI_SECTION_END
+        end_m = end_re.search(norm_desc, body_start)
+        section_end = end_m.start() if end_m else len(norm_desc)
         before = norm_desc[: m.start()]
-        after = norm_desc[m.end() :]
-        after_clean = after.lstrip("\n")
+        after = norm_desc[section_end:]
         if after:
-            return f"{before}{ac_block}\n\n{after_clean}"
+            return f"{before}{ac_block}\n\n{after.lstrip(chr(10))}"
         return f"{before}{ac_block}\n"
 
     if not norm_desc.strip():

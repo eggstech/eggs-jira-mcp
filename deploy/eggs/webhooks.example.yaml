@@ -1,5 +1,5 @@
 # Google Chat webhooks for eggs-guardian (internal groups only).
-# Copy to webhooks.yaml next to config.yaml; never commit the real file.
+# Copy to deploy/eggs/chat/webhooks.yaml (mounted read-only); never commit it.
 # The guardian reads it on every run: edits apply from the next run, no restart.
 # Check with: docker compose exec guardian eggs-guardian chat-test [--project KEY]
 #

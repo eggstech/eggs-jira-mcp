@@ -35,7 +35,7 @@ MANIFEST
 !deploy/eggs/.env.example
 deploy/eggs/.env
 deploy/eggs/config.yaml
-deploy/eggs/webhooks.yaml
+deploy/eggs/chat/
 .venv
 env/
 venv/

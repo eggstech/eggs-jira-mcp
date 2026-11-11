@@ -632,6 +632,36 @@ def test_webhooks_file_ignores_non_google_urls_and_unknown_projects(
     assert "evil.example" not in caplog.text
 
 
+def test_webhooks_empty_value_keeps_config_value(tmp_path, monkeypatch):
+    monkeypatch.delenv("EGGS_WEBHOOKS", raising=False)
+    cfg = load_config(_write(tmp_path, "lead: ''\nprojects:\n  ROCKY: ''\n"))
+    assert cfg.projects["ROCKY"].chat_webhook.startswith(_G + "OLD")
+
+
+def test_webhooks_bad_yaml_is_skipped_without_logging_the_url(
+    tmp_path, monkeypatch, caplog
+):
+    monkeypatch.delenv("EGGS_WEBHOOKS", raising=False)
+    secret = _G + "SECRET/messages?key=s&token=t"
+    cfg = load_config(_write(tmp_path, f"lead: {secret}\nprojects: [\n  {secret}"))
+    assert cfg.lead_chat_webhook is None
+    assert "SECRET" not in caplog.text
+    assert "webhooks.yaml" in caplog.text
+
+
+def test_webhooks_projects_as_list_is_skipped(tmp_path, monkeypatch):
+    monkeypatch.delenv("EGGS_WEBHOOKS", raising=False)
+    cfg = load_config(_write(tmp_path, f"projects:\n  - {_G}X\n"))
+    assert cfg.projects["EGGSBOX"].chat_webhook is None
+
+
+def test_webhooks_env_path_missing_or_directory_warns(tmp_path, monkeypatch, caplog):
+    (tmp_path / "chat").mkdir()
+    monkeypatch.setenv("EGGS_WEBHOOKS", str(tmp_path / "chat"))
+    load_config(_write(tmp_path, None))
+    assert "không gửi Google Chat" in caplog.text
+
+
 def test_webhooks_path_from_env(tmp_path, monkeypatch):
     other = tmp_path / "elsewhere.yaml"
     other.write_text(f"lead: {_G}ENV/messages?key=e\n")

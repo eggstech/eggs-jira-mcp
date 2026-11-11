@@ -35,6 +35,11 @@ def _handle_http_error(e: HTTPError) -> JiraError:
     )
 
 
+def _norm_text(text: str) -> str:
+    """Collapse whitespace and line endings for comment comparison."""
+    return " ".join(text.replace("\r\n", "\n").split())
+
+
 class AtlassianGateway(JiraGateway):
     """Adapter implementing JiraGateway on top of the upstream Jira client."""
 
@@ -109,30 +114,57 @@ class AtlassianGateway(JiraGateway):
         payload: dict[str, Any] = {"transition": {"id": matched["id"]}}
         if fields:
             payload["fields"] = fields
+        before_ids: set[str] | None = None
         if comment:
             payload["update"] = {"comment": [{"add": {"body": comment}}]}
+            before_ids = self._comment_ids(key)
 
         try:
             self.client.post(f"rest/api/2/issue/{key}/transitions", data=payload)
         except HTTPError as e:
             raise _handle_http_error(e) from e
         if comment:
-            self._ensure_comment_kept(key, comment)
+            self._ensure_comment_kept(key, comment, before_ids)
 
-    def _ensure_comment_kept(self, key: str, comment: str) -> None:
+    def _comment_ids(self, key: str) -> set[str] | None:
+        try:
+            return {str(c.get("id")) for c in self.get_comments(key)}
+        except Exception:  # noqa: BLE001
+            logger.warning("Issue %s: không đọc được comment để kiểm tra", key)
+            return None
+
+    def _ensure_comment_kept(
+        self, key: str, comment: str, before_ids: set[str] | None
+    ) -> None:
         """Re-add a transition comment that Jira dropped.
 
         Jira DC silently ignores ``update.comment`` on a transition without a
-        screen (Unblock, Start, Finish...). It does not say which transitions
-        have one, so check the latest comments and post it when missing.
+        screen (Unblock, Start, Finish...) and its transitions API does not say
+        which ones have a screen. Compare the comments before and after: if no
+        new comment carries this text, post it. When the comments cannot be
+        read, post it (a duplicate note beats a lost one).
         """
-        try:
-            recent = self.get_comments(key)[-3:]
-            if any(str(c.get("body", "")).strip() == comment.strip() for c in recent):
+        after = None if before_ids is None else self._safe_comments(key)
+        if after is not None and before_ids is not None:
+            want = _norm_text(comment)
+            if any(
+                str(c.get("id")) not in before_ids
+                and _norm_text(str(c.get("body", ""))) == want
+                for c in after
+            ):
                 return
+        try:
+            self.add_comment(key, comment)
+        except Exception as exc:  # noqa: BLE001
+            # The transition already happened; do not report it as failed.
+            logger.error("Issue %s: không ghi lại được comment: %s", key, exc)
+
+    def _safe_comments(self, key: str) -> list[dict] | None:
+        try:
+            return self.get_comments(key)
         except Exception:  # noqa: BLE001
             logger.warning("Issue %s: không đọc được comment để kiểm tra", key)
-        self.add_comment(key, comment)
+            return None
 
     def update_fields(
         self,

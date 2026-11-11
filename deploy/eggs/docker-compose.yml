@@ -40,13 +40,14 @@ services:
       JIRA_URL: https://jira.eggstech.io.vn
       EGGS_BOT_TOKEN: ${EGGS_BOT_TOKEN}
       EGGS_CONFIG: /config/config.yaml
+      EGGS_WEBHOOKS: /config/chat/webhooks.yaml
       TZ: Asia/Ho_Chi_Minh
     volumes:
       - ./crontab:/deploy/crontab:ro
       - ./config.yaml:/config/config.yaml:ro
-      # Google Chat webhooks (secrets). Create it from webhooks.example.yaml before
-      # `up`, otherwise Docker creates a directory with this name.
-      - ./webhooks.yaml:/config/webhooks.yaml:ro
+      # Google Chat webhooks (secrets): chat/webhooks.yaml, from webhooks.example.yaml.
+      # A directory mount, so editors that replace the file are seen on the next run.
+      - ./chat:/config/chat:ro
     restart: unless-stopped
     depends_on:
       - mcp

@@ -183,10 +183,23 @@ def _apply_webhooks_file(
     env_path = os.getenv("EGGS_WEBHOOKS")
     wh_path = Path(env_path) if env_path else config_path.parent / "webhooks.yaml"
     if not wh_path.is_file():
+        if env_path or wh_path.exists():
+            logger.warning(
+                "Không đọc được %s (thiếu file hoặc là thư mục): không gửi Google Chat",
+                wh_path.name,
+            )
         return lead_chat_webhook, projects
-    raw = yaml.safe_load(wh_path.read_text(encoding="utf-8")) or {}
-    if not isinstance(raw, dict):
-        logger.warning("webhooks.yaml không đúng định dạng, bỏ qua")
+    try:
+        raw = yaml.safe_load(wh_path.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError:
+        # The parser error quotes the offending line, which may hold a secret URL.
+        logger.error(
+            "%s sai cú pháp YAML, bỏ qua (không gửi Google Chat)", wh_path.name
+        )
+        return lead_chat_webhook, projects
+    proj_raw = raw.get("projects") if isinstance(raw, dict) else None
+    if not isinstance(raw, dict) or not isinstance(proj_raw or {}, dict):
+        logger.warning("%s không đúng định dạng, bỏ qua", wh_path.name)
         return lead_chat_webhook, projects
 
     def _valid(target: str, url: Any) -> str | None:
@@ -197,14 +210,18 @@ def _apply_webhooks_file(
         logger.warning("webhooks.yaml: %s không phải URL Google Chat, bỏ qua", target)
         return None
 
-    if "lead" in raw:
+    # An empty value means "not set here": config.yaml's value (if any) stays.
+    if raw.get("lead"):
         lead_chat_webhook = _valid("lead", raw.get("lead"))
     new_projects = dict(projects)
-    for key, url in (raw.get("projects") or {}).items():
+    for key, url in (proj_raw or {}).items():
         if key not in new_projects:
             logger.warning("webhooks.yaml: dự án %s không có trong config, bỏ qua", key)
             continue
-        new_projects[key] = replace(new_projects[key], chat_webhook=_valid(key, url))
+        if url:
+            new_projects[key] = replace(
+                new_projects[key], chat_webhook=_valid(key, url)
+            )
     return lead_chat_webhook, new_projects
 
 

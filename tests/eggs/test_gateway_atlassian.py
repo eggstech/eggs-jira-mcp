@@ -153,44 +153,58 @@ def test_transition_looks_up_id_by_name(mock_client):
 _TRANSITIONS = {"transitions": [{"id": "11", "name": "Unblock"}]}
 
 
-def _get_router(comments: list[dict]):
+def _get_router(before: list[dict], after: list[dict]):
+    calls = {"n": 0}
+
     def _get(path: str, *args, **kwargs):
         if path.endswith("/transitions"):
             return _TRANSITIONS
         if path.endswith("/comment"):
-            return {"comments": comments}
+            calls["n"] += 1
+            return {"comments": before if calls["n"] == 1 else after}
         raise AssertionError(path)
 
     return _get
 
 
+def _comment_posts(mock_client):
+    return [
+        c for c in mock_client.post.call_args_list if c.args[0].endswith("/comment")
+    ]
+
+
 def test_transition_comment_kept_by_jira_is_not_posted_again(mock_client):
-    """A transition with a screen keeps the comment sent with it."""
+    """A transition with a screen keeps the comment (CRLF normalised by Jira)."""
     gateway = AtlassianGateway(mock_client)
     mock_client.get.side_effect = _get_router(
-        [{"body": "old"}, {"body": "gỡ block: đã có API"}]
+        [{"id": "1", "body": "old"}],
+        [{"id": "1", "body": "old"}, {"id": "2", "body": "gỡ block:\r\nđã có API"}],
     )
-
-    gateway.transition("PROJ-1", "Unblock", comment="gỡ block: đã có API")
-
-    posts = [c.args[0] for c in mock_client.post.call_args_list]
-    assert posts == ["rest/api/2/issue/PROJ-1/transitions"]
+    gateway.transition("PROJ-1", "Unblock", comment="gỡ block:\nđã có API")
+    assert _comment_posts(mock_client) == []
 
 
 def test_transition_comment_dropped_by_screenless_transition_is_added(mock_client):
     """W6 (11/11): Jira drops update.comment on a transition without a screen
     (Unblock, Start, Finish...), so the note was lost."""
     gateway = AtlassianGateway(mock_client)
-    mock_client.get.side_effect = _get_router([{"body": "old"}])
-
-    gateway.transition("PROJ-1", "Unblock", comment="gỡ block: đã có API")
-
-    assert mock_client.post.call_args_list[-1].args[0] == (
-        "rest/api/2/issue/PROJ-1/comment"
+    mock_client.get.side_effect = _get_router(
+        [{"id": "1", "body": "old"}], [{"id": "1", "body": "old"}]
     )
-    assert mock_client.post.call_args_list[-1].kwargs["data"] == {
-        "body": "gỡ block: đã có API"
-    }
+    gateway.transition("PROJ-1", "Unblock", comment="gỡ block: đã có API")
+    posts = _comment_posts(mock_client)
+    assert len(posts) == 1
+    assert posts[0].kwargs["data"] == {"body": "gỡ block: đã có API"}
+
+
+def test_transition_comment_same_text_as_an_older_comment_is_still_added(
+    mock_client,
+):
+    gateway = AtlassianGateway(mock_client)
+    same = [{"id": "1", "body": "chờ API"}]
+    mock_client.get.side_effect = _get_router(same, same)
+    gateway.transition("PROJ-1", "Unblock", comment="chờ API")
+    assert len(_comment_posts(mock_client)) == 1
 
 
 def test_transition_comment_check_failure_does_not_fail_transition(mock_client):
@@ -203,15 +217,25 @@ def test_transition_comment_check_failure_does_not_fail_transition(mock_client):
 
     mock_client.get.side_effect = _get
     gateway.transition("PROJ-1", "Unblock", comment="note")
-    assert mock_client.post.call_args_list[-1].args[0] == (
-        "rest/api/2/issue/PROJ-1/comment"
-    )
+    assert len(_comment_posts(mock_client)) == 1
+
+
+def test_transition_comment_readd_failure_does_not_raise(mock_client):
+    gateway = AtlassianGateway(mock_client)
+    mock_client.get.side_effect = _get_router([], [])
+
+    def _post(path: str, *args, **kwargs):
+        if path.endswith("/comment"):
+            raise RuntimeError("403")
+        return None
+
+    mock_client.post.side_effect = _post
+    gateway.transition("PROJ-1", "Unblock", comment="note")  # no exception
 
 
 def test_transition_sends_comment_in_update_payload(mock_client):
     gateway = AtlassianGateway(mock_client)
-    mock_client.get.side_effect = _get_router([{"body": "passed"}])
-    mock_client.get.return_value = None
+    mock_client.get.side_effect = _get_router([], [{"id": "9", "body": "passed"}])
     gateway.transition(
         "PROJ-123", "Unblock", fields={"customfield_1": "val"}, comment="passed"
     )

@@ -5405,3 +5405,15 @@ def test_end_day_dry_run_warns_before_end_day_hour(cfg, cal, hour, warned):
     assert res.ok is True
     has_warning = any("Chưa tới 17:00" in c for c in res.changes)
     assert has_warning is warned
+
+
+def test_update_ac_section_keeps_nested_numbered_items_inside_wiki_section():
+    desc = "h2. Acceptance Criteria\n# a\n## sub\n# b\nh2. Notes\nx"
+    out = update_ac_section(desc, "- c")
+    assert out == "h2. Acceptance Criteria\n- c\n\nh2. Notes\nx"
+
+
+def test_ac_heading_needs_text_on_the_same_line_and_ignores_numbered_items():
+    assert not has_ac_heading("h2.\nAcceptance Criteria")
+    assert not has_ac_heading("# Acceptance Criteria đã chốt")
+    assert has_ac_heading("h3. Acceptance Criteria (bản 2)")
