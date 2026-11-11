@@ -1819,3 +1819,90 @@ async def test_start_with_dates_reaches_actions_as_dates(cfg: EggsConfig):
     )
     assert bad["ok"] is False
     assert "YYYY-MM-DD" in bad["message"]
+
+
+class TestStructuredErrors:
+    """B7: a bad input gives a Vietnamese ActionResult, never a raw exception."""
+
+    MISSING = "Không tìm thấy issue RFID-999 hoặc bạn không có quyền xem."
+
+    @staticmethod
+    async def _call(cfg: EggsConfig, name: str, args: dict[str, Any]):
+        server = FastMCP("test_jira")
+        register_eggs_tools(server, force=True)
+        members = ["lead1"]
+        bot = FakeGateway(
+            user="eggsbot",
+            role_members={
+                "RFID": {
+                    "Business Analysts": members,
+                    "Testers": members,
+                    "Developers": members,
+                }
+            },
+        )
+        user = FakeGateway(user="lead1", issues={})
+        with (
+            patch("mcp_atlassian.eggs.tools.load_config", return_value=cfg),
+            patch(
+                "mcp_atlassian.eggs.tools.get_user_gateway",
+                AsyncMock(return_value=user),
+            ),
+            patch("mcp_atlassian.eggs.tools.get_roles_reader", return_value=bot),
+        ):
+            res = await server.call_tool(name, args)
+        return json.loads(res.content[0].text)
+
+    @pytest.mark.asyncio
+    async def test_qc_start_with_missing_key_returns_ok_false(self, cfg: EggsConfig):
+        data = await self._call(cfg, "eggs_qc_start", {"key": "RFID-999"})
+
+        assert data["ok"] is False
+        assert data["message"] == self.MISSING
+        assert data["changes"] == []
+        assert data["next_actions"] == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("name", "args"),
+        [
+            ("eggs_start", {"key": "RFID-999"}),
+            (
+                "eggs_schedule",
+                {
+                    "key": "RFID-999",
+                    "start": "2026-11-20",
+                    "end": "2026-11-21",
+                    "estimate": "1d",
+                },
+            ),
+            (
+                "eggs_log_work",
+                {"key": "RFID-999", "time_spent": "1h", "note": "code"},
+            ),
+            ("eggs_qc_pass", {"key": "RFID-999", "note": "pass"}),
+            (
+                "eggs_block",
+                {"key": "RFID-999", "reason": "Chờ API", "blocked_by": "Nội bộ"},
+            ),
+            ("eggs_unblock", {"key": "RFID-999"}),
+            ("eggs_cancel", {"key": "RFID-999", "reason": "Đổi yêu cầu"}),
+            (
+                "eggs_story_step",
+                {"key": "RFID-999", "step": "analysis_done"},
+            ),
+            (
+                "eggs_update_description",
+                {"key": "RFID-999", "text": "Mô tả mới"},
+            ),
+        ],
+    )
+    async def test_write_tools_with_unknown_key_return_structured_error(
+        self, cfg: EggsConfig, name: str, args: dict[str, Any]
+    ):
+        data = await self._call(cfg, name, args)
+
+        assert data["ok"] is False, data
+        assert data["message"] == self.MISSING
+        assert data["changes"] == []
+        assert data["next_actions"] == []

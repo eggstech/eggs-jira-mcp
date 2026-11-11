@@ -4837,9 +4837,12 @@ def test_create_component_and_components_summary(cfg, cal):
     )
     assert res_dry.ok is True
     assert res_dry.message == (
-        'Sẽ làm: tạo Component "KTM - KẾ TOÁN MỚI" trong EGGSBOX '
-        "(bot eggsbot, ghi người yêu cầu tuan.bui)."
+        '[Dry-run] Sẽ tạo Component "KTM - KẾ TOÁN MỚI" trong EGGSBOX.'
     )
+    assert res_dry.changes == [
+        'Tạo Component "KTM - KẾ TOÁN MỚI" trong EGGSBOX '
+        "(bot eggsbot, người yêu cầu tuan.bui)"
+    ]
     assert len([c for c in bot_gw.calls if c[0] == "create_component"]) == 1
 
     # 7. eggs_create_issue with unknown component refused with hint
@@ -5039,7 +5042,8 @@ def test_update_description(cfg, cal):
         dry_run=True,
     )
     assert res_dry.ok is True
-    assert "Sẽ làm: cập nhật mô tả EGGSBOX-11 (replace)" in res_dry.message
+    assert "[Dry-run] Sẽ cập nhật mô tả EGGSBOX-11 (replace)" in res_dry.message
+    assert res_dry.changes == ["Cập nhật mô tả EGGSBOX-11 (replace)"]
     assert "-Initial dev task note." in res_dry.message
     assert "+Dry run new text" in res_dry.message
     assert [
@@ -5516,3 +5520,116 @@ class TestQcPassStateOrder:
 
         assert res.ok is False
         assert "Comment (ghi chú) bắt buộc" in res.message
+
+
+class TestDryRunChanges:
+    """B8: an ok dry-run must say what will change in `changes`, not only message."""
+
+    @staticmethod
+    def _dry_run_result(cfg, cal, name):
+        from mcp_atlassian.eggs.identity import Identity
+
+        data = _base_fixtures(cfg)
+        issues = data["issues"]
+        transitions = dict(data["transitions"])
+        story_key = "HMKPOS-103"
+        issues[story_key] = {
+            "key": story_key,
+            "fields": {
+                "summary": "Story 103",
+                "project": {"key": "HMKPOS"},
+                "issuetype": {"name": "Story", "subtask": False},
+                "status": {"name": "Open"},
+                "components": [{"name": "CH - CỬA HÀNG"}],
+                cfg.fields["qc_owner"]: {"name": "qc.user"},
+                "description": "h2. Acceptance Criteria\n# Đăng nhập được",
+            },
+        }
+        transitions[story_key] = transitions["HMKPOS-101"] + ["Analysis Done"]
+        issues["HMKPOS-101"]["fields"]["status"]["name"] = "Test In Progress"
+
+        gw = FakeGateway(issues=issues, transitions=transitions)
+        actions = _make_actions(gw, cfg, cal)
+        ba = Identity(
+            username="ba.user",
+            display_name="BA",
+            roles={"HMKPOS": {"lead_ba"}},
+            is_lead=False,
+        )
+
+        calls = {
+            "create_component": lambda: actions.create_component(
+                project="HMKPOS",
+                code="KT",
+                name="Kế toán",
+                is_lead=True,
+                dry_run=True,
+            ),
+            "update_description": lambda: actions.update_description(
+                "HMKPOS-101",
+                "Mô tả mới",
+                is_lead=True,
+                dry_run=True,
+            ),
+            "schedule": lambda: actions.schedule(
+                "HMKPOS-102",
+                start=TODAY,
+                end=date(2026, 11, 20),
+                estimate="1d",
+                dry_run=True,
+            ),
+            "start": lambda: actions.start("HMKPOS-101", dry_run=True),
+            "log_work": lambda: actions.log_work(
+                "HMKPOS-101", time_spent="1h", note="code", dry_run=True
+            ),
+            "block": lambda: actions.block(
+                "HMKPOS-101",
+                reason="Chờ API",
+                blocked_by="Nội bộ",
+                dry_run=True,
+            ),
+            "unblock": lambda: actions.unblock(
+                "HMKPOS-101", note="Đã xong", dry_run=True
+            ),
+            "qc_start": lambda: actions.qc_start("HMKPOS-101", dry_run=True),
+            "qc_pass": lambda: actions.qc_pass(
+                "HMKPOS-101", time_spent="1h", note="Đạt", dry_run=True
+            ),
+            "cancel": lambda: actions.cancel(
+                "HMKPOS-101", reason="Đổi yêu cầu", dry_run=True
+            ),
+            "triage_open": lambda: actions.triage_open(
+                project="HMKPOS",
+                text="Lỗi in hóa đơn",
+                source_url="https://chat.example/1",
+                reported_by="Khách A",
+                dry_run=True,
+            ),
+            "story_step": lambda: actions.story_step(
+                story_key, step="analysis_done", dry_run=True, identity=ba
+            ),
+        }
+        return calls[name]()
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "create_component",
+            "update_description",
+            "schedule",
+            "start",
+            "log_work",
+            "block",
+            "unblock",
+            "qc_start",
+            "qc_pass",
+            "cancel",
+            "triage_open",
+            "story_step",
+        ],
+    )
+    def test_ok_dry_run_lists_at_least_one_change(self, cfg, cal, name):
+        res = self._dry_run_result(cfg, cal, name)
+
+        assert res.ok is True, (name, res.message)
+        assert res.changes, f"{name} dry-run returned ok without any change line"

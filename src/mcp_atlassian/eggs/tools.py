@@ -7,6 +7,7 @@ import dataclasses
 import json
 import logging
 import os
+import re
 import threading
 from datetime import date, datetime, timedelta
 from functools import wraps
@@ -33,7 +34,7 @@ from mcp_atlassian.eggs.agenda import (
 )
 from mcp_atlassian.eggs.calendar import WorkCalendar
 from mcp_atlassian.eggs.config import EggsConfig, load_config
-from mcp_atlassian.eggs.gateway import JiraGateway
+from mcp_atlassian.eggs.gateway import JiraError, JiraGateway
 from mcp_atlassian.eggs.gateway_atlassian import AtlassianGateway
 from mcp_atlassian.eggs.identity import Identity, IdentityCache, resolve_identity
 from mcp_atlassian.eggs.plan import PlanError, dump_plan, parse_plan
@@ -269,6 +270,90 @@ def eggs_check_write_access(func: Any) -> Any:
     return wrapper
 
 
+_ISSUE_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]+-\d+$")
+_AUTH_ERROR_PREFIX = "Thao tác ghi yêu cầu token cá nhân"
+
+
+def _call_issue_key(args: tuple[Any, ...], kwargs: dict[str, Any]) -> str | None:
+    """Find the issue key a failing tool call was working on."""
+    for name in ("key", "epic", "epic_key"):
+        value = kwargs.get(name)
+        if isinstance(value, str) and _ISSUE_KEY_RE.match(value.strip().upper()):
+            return value.strip().upper()
+    for value in args:
+        if isinstance(value, str) and _ISSUE_KEY_RE.match(value.strip().upper()):
+            return value.strip().upper()
+    return None
+
+
+def _structured_error(message: str) -> str:
+    return json.dumps(
+        {
+            "ok": False,
+            "message": message,
+            "changes": [],
+            "next_actions": [],
+        },
+        ensure_ascii=False,
+    )
+
+
+def _safe_exception_text(exc: BaseException) -> str:
+    """Exception text for logs, with URLs (and any secret in them) removed."""
+    text = str(exc).strip() or type(exc).__name__
+    return re.sub(r"https?://\S+", "<url>", text)
+
+
+def eggs_structured_errors(func: Any) -> Any:
+    """Turn Jira/parse exceptions into a Vietnamese ActionResult.
+
+    Every eggs_* tool goes through this so bad input never surfaces a raw
+    exception to the person. Write-access and auth errors stay ToolError.
+    """
+    tool_name = func.__name__
+
+    @wraps(func)
+    async def wrapper(ctx: Context, *args: Any, **kwargs: Any) -> Any:
+        try:
+            return await func(ctx, *args, **kwargs)
+        except JiraError as exc:
+            key = _call_issue_key(args, kwargs)
+            logger.error(
+                "Eggs tool '%s' lỗi Jira%s: %s",
+                tool_name,
+                f" ({key})" if key else "",
+                _safe_exception_text(exc),
+            )
+            text = str(exc).lower()
+            missing = exc.status_code == 404 or any(
+                marker in text
+                for marker in ("not found", "does not exist", "không tồn tại")
+            )
+            if key and missing:
+                return _structured_error(
+                    f"Không tìm thấy issue {key} hoặc bạn không có quyền xem."
+                )
+            if key:
+                return _structured_error(
+                    f"Jira báo lỗi khi xử lý {key}. Kiểm tra lại issue rồi thử lại."
+                )
+            return _structured_error("Jira báo lỗi. Kiểm tra lại dữ liệu rồi thử lại.")
+        except (KeyError, ValueError) as exc:
+            detail = str(exc)
+            logger.error(
+                "Eggs tool '%s' lỗi dữ liệu: %s",
+                tool_name,
+                _safe_exception_text(exc),
+            )
+            if detail.startswith(_AUTH_ERROR_PREFIX):
+                raise ToolError(detail) from exc
+            return _structured_error(
+                "Dữ liệu nhập không hợp lệ. Kiểm tra lại tham số rồi thử lại."
+            )
+
+    return wrapper
+
+
 def identity_to_dict(ident: Identity) -> dict[str, Any]:
     return {
         "username": ident.username,
@@ -468,6 +553,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         tags=read_tags,
         annotations={"title": "EGGS Version", "readOnlyHint": True},
     )
+    @eggs_structured_errors
     async def eggs_version(ctx: Context) -> str:
         """Kiểm tra phiên bản server EGGS Jira MCP và phiên bản kit tối thiểu."""
         cfg = await asyncio.to_thread(load_config)
@@ -481,6 +567,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         tags=read_tags,
         annotations={"title": "EGGS Rules", "readOnlyHint": True},
     )
+    @eggs_structured_errors
     async def eggs_rules(ctx: Context) -> str:
         """Xem tóm tắt quy trình và quy tắc làm việc EGGS trên Jira."""
         return (
@@ -503,6 +590,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         tags=read_tags,
         annotations={"title": "EGGS Who Am I", "readOnlyHint": True},
     )
+    @eggs_structured_errors
     async def eggs_whoami(ctx: Context) -> str:
         """Xác định danh tính người dùng hiện tại và vai trò theo từng dự án."""
         cfg = await asyncio.to_thread(load_config)
@@ -517,6 +605,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         tags=read_tags,
         annotations={"title": "EGGS Next", "readOnlyHint": True},
     )
+    @eggs_structured_errors
     async def eggs_next(
         ctx: Context,
         text: Annotated[
@@ -578,6 +667,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         tags=read_tags,
         annotations={"title": "EGGS Workstream Status", "readOnlyHint": True},
     )
+    @eggs_structured_errors
     async def eggs_workstream_status(
         ctx: Context,
         epic: Annotated[str | None, Field(description="Mã Epic", default=None)] = None,
@@ -623,6 +713,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         tags=read_tags,
         annotations={"title": "EGGS Daily Report", "readOnlyHint": True},
     )
+    @eggs_structured_errors
     async def eggs_daily_report(
         ctx: Context,
         project: Annotated[
@@ -644,6 +735,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         tags=read_tags,
         annotations={"title": "EGGS Worklog Report", "readOnlyHint": True},
     )
+    @eggs_structured_errors
     async def eggs_worklog_report(
         ctx: Context,
         project: Annotated[
@@ -762,6 +854,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         tags=read_tags,
         annotations={"title": "EGGS Pending Approvals", "readOnlyHint": True},
     )
+    @eggs_structured_errors
     async def eggs_pending_approvals(
         ctx: Context,
         project: Annotated[
@@ -789,6 +882,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         tags=read_tags,
         annotations={"title": "EGGS Plan Validate", "readOnlyHint": True},
     )
+    @eggs_structured_errors
     async def eggs_plan_validate(
         ctx: Context,
         plan_yaml: Annotated[
@@ -837,6 +931,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         tags=read_tags,
         annotations={"title": "EGGS Migrate Epic", "readOnlyHint": True},
     )
+    @eggs_structured_errors
     async def eggs_migrate_epic(
         ctx: Context,
         epic: Annotated[
@@ -906,6 +1001,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         tags=read_tags,
         annotations={"title": "EGGS Components", "readOnlyHint": True},
     )
+    @eggs_structured_errors
     async def eggs_components(
         ctx: Context,
         project: Annotated[str, Field(description="Mã dự án (ví dụ EGGSBOX)")],
@@ -920,6 +1016,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
 
     @server.tool(tags=write_tags, annotations={"title": "EGGS Schedule"})
     @eggs_check_write_access
+    @eggs_structured_errors
     async def eggs_schedule(
         ctx: Context,
         key: Annotated[str, Field(description="Mã issue cần lên lịch")],
@@ -972,6 +1069,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
 
     @server.tool(tags=write_tags, annotations={"title": "EGGS Start"})
     @eggs_check_write_access
+    @eggs_structured_errors
     async def eggs_start(
         ctx: Context,
         key: Annotated[str, Field(description="Mã issue cần bắt đầu")],
@@ -1028,6 +1126,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
 
     @server.tool(tags=write_tags, annotations={"title": "EGGS Log Work"})
     @eggs_check_write_access
+    @eggs_structured_errors
     async def eggs_log_work(
         ctx: Context,
         key: Annotated[str, Field(description="Mã issue ghi giờ")],
@@ -1086,6 +1185,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
 
     @server.tool(tags=write_tags, annotations={"title": "EGGS Submit QC"})
     @eggs_check_write_access
+    @eggs_structured_errors
     async def eggs_submit_qc(
         ctx: Context,
         key: Annotated[str, Field(description="Mã issue chuyển QC")],
@@ -1151,6 +1251,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
 
     @server.tool(tags=write_tags, annotations={"title": "EGGS Finish"})
     @eggs_check_write_access
+    @eggs_structured_errors
     async def eggs_finish(
         ctx: Context,
         key: Annotated[str, Field(description="Mã issue hoàn thành")],
@@ -1197,6 +1298,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
 
     @server.tool(tags=write_tags, annotations={"title": "EGGS QC Start"})
     @eggs_check_write_access
+    @eggs_structured_errors
     async def eggs_qc_start(
         ctx: Context,
         key: Annotated[str, Field(description="Mã issue hoặc Story bắt đầu kiểm thử")],
@@ -1232,6 +1334,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
 
     @server.tool(tags=write_tags, annotations={"title": "EGGS QC Pass"})
     @eggs_check_write_access
+    @eggs_structured_errors
     async def eggs_qc_pass(
         ctx: Context,
         key: Annotated[str, Field(description="Mã issue hoặc Story đã kiểm thử đạt")],
@@ -1280,6 +1383,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
 
     @server.tool(tags=write_tags, annotations={"title": "EGGS QC Fail"})
     @eggs_check_write_access
+    @eggs_structured_errors
     async def eggs_qc_fail(
         ctx: Context,
         key: Annotated[
@@ -1337,6 +1441,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
 
     @server.tool(tags=write_tags, annotations={"title": "EGGS Block"})
     @eggs_check_write_access
+    @eggs_structured_errors
     async def eggs_block(
         ctx: Context,
         key: Annotated[str, Field(description="Mã issue bị tắc nghẽn")],
@@ -1385,6 +1490,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
 
     @server.tool(tags=write_tags, annotations={"title": "EGGS Unblock"})
     @eggs_check_write_access
+    @eggs_structured_errors
     async def eggs_unblock(
         ctx: Context,
         key: Annotated[str, Field(description="Mã issue được gỡ tắc nghẽn")],
@@ -1425,6 +1531,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
 
     @server.tool(tags=write_tags, annotations={"title": "EGGS Request Reschedule"})
     @eggs_check_write_access
+    @eggs_structured_errors
     async def eggs_request_reschedule(
         ctx: Context,
         key: Annotated[str, Field(description="Mã issue cần dời lịch")],
@@ -1524,6 +1631,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
 
     @server.tool(tags=write_tags, annotations={"title": "EGGS Flow Reschedule"})
     @eggs_check_write_access
+    @eggs_structured_errors
     async def eggs_flow_reschedule(
         ctx: Context,
         story_key: Annotated[str, Field(description="Mã Story cần dời Due Date")],
@@ -1570,6 +1678,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
 
     @server.tool(tags=write_tags, annotations={"title": "EGGS Story Step"})
     @eggs_check_write_access
+    @eggs_structured_errors
     async def eggs_story_step(
         ctx: Context,
         key: Annotated[str, Field(description="Mã Story hoặc Epic")],
@@ -1618,6 +1727,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
 
     @server.tool(tags=write_tags, annotations={"title": "EGGS UAT"})
     @eggs_check_write_access
+    @eggs_structured_errors
     async def eggs_uat(
         ctx: Context,
         epic: Annotated[str, Field(description="Mã Epic")],
@@ -1683,6 +1793,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
 
     @server.tool(tags=write_tags, annotations={"title": "EGGS Decide Reschedule"})
     @eggs_check_write_access
+    @eggs_structured_errors
     async def eggs_decide_reschedule(
         ctx: Context,
         key: Annotated[str, Field(description="Mã issue chờ duyệt dời lịch")],
@@ -1740,6 +1851,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
 
     @server.tool(tags=write_tags, annotations={"title": "EGGS Cancel"})
     @eggs_check_write_access
+    @eggs_structured_errors
     async def eggs_cancel(
         ctx: Context,
         key: Annotated[str, Field(description="Mã issue cần hủy")],
@@ -1778,6 +1890,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
 
     @server.tool(tags=write_tags, annotations={"title": "EGGS End Day"})
     @eggs_check_write_access
+    @eggs_structured_errors
     async def eggs_end_day(
         ctx: Context,
         entries: Annotated[
@@ -1914,6 +2027,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
 
     @server.tool(tags=write_tags, annotations={"title": "EGGS Triage Open"})
     @eggs_check_write_access
+    @eggs_structured_errors
     async def eggs_triage_open(
         ctx: Context,
         project: Annotated[str, Field(description="Mã dự án tiếp nhận")],
@@ -1993,6 +2107,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
 
     @server.tool(tags=write_tags, annotations={"title": "EGGS Triage Close"})
     @eggs_check_write_access
+    @eggs_structured_errors
     async def eggs_triage_close(
         ctx: Context,
         key: Annotated[str, Field(description="Mã User Report cần đóng")],
@@ -2088,6 +2203,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
 
     @server.tool(tags=write_tags, annotations={"title": "EGGS Plan Apply"})
     @eggs_check_write_access
+    @eggs_structured_errors
     async def eggs_plan_apply(
         ctx: Context,
         plan_yaml: Annotated[
@@ -2159,6 +2275,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
 
     @server.tool(tags=write_tags, annotations={"title": "EGGS Create Issue"})
     @eggs_check_write_access
+    @eggs_structured_errors
     async def eggs_create_issue(
         ctx: Context,
         project: Annotated[str, Field(description="Mã dự án (ví dụ 'RFID')")],
@@ -2270,6 +2387,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
 
     @server.tool(tags=write_tags, annotations={"title": "EGGS Create Component"})
     @eggs_check_write_access
+    @eggs_structured_errors
     async def eggs_create_component(
         ctx: Context,
         project: Annotated[str, Field(description="Mã dự án (ví dụ EGGSBOX)")],
@@ -2324,6 +2442,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
 
     @server.tool(tags=write_tags, annotations={"title": "EGGS Update Description"})
     @eggs_check_write_access
+    @eggs_structured_errors
     async def eggs_update_description(
         ctx: Context,
         key: Annotated[

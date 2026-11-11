@@ -464,10 +464,10 @@ class Actions:
 
         try:
             issue = self._get_issue(key)
-        except (JiraError, KeyError, ValueError) as e:
+        except (JiraError, KeyError, ValueError):
             return ActionResult(
                 ok=False,
-                message=f"Issue {key} không tồn tại hoặc không thể truy cập: {e}",
+                message=f"Không tìm thấy issue {key} hoặc bạn không có quyền xem.",
                 changes=[],
                 next_actions=[],
             )
@@ -2632,11 +2632,11 @@ class Actions:
                 )
             try:
                 target_iss = self._get_issue(link_key)
-            except (JiraError, KeyError, ValueError) as e:
+            except (JiraError, KeyError, ValueError):
                 return ActionResult(
                     ok=False,
                     message=(
-                        f"Issue {link_key} không tồn tại hoặc không thể truy cập: {e}"
+                        f"Không tìm thấy issue {link_key} hoặc bạn không có quyền xem."
                     ),
                     changes=[],
                     next_actions=[],
@@ -3434,11 +3434,11 @@ class Actions:
         if dry_run:
             return ActionResult(
                 ok=True,
-                message=(
-                    f'Sẽ làm: tạo Component "{full_name}" trong {project} '
-                    f"(bot eggsbot, ghi người yêu cầu {user})."
-                ),
-                changes=[],
+                message=f'[Dry-run] Sẽ tạo Component "{full_name}" trong {project}.',
+                changes=[
+                    f'Tạo Component "{full_name}" trong {project} '
+                    f"(bot eggsbot, người yêu cầu {user})"
+                ],
                 next_actions=[],
             )
 
@@ -3510,10 +3510,10 @@ class Actions:
         """Cập nhật phần description của issue theo các chế độ replace, append, ac."""
         try:
             raw, issue = self._get_raw_and_issue(key)
-        except Exception as exc:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             return ActionResult(
                 ok=False,
-                message=f"Không tìm thấy issue {key}: {exc}",
+                message=f"Không tìm thấy issue {key} hoặc bạn không có quyền xem.",
                 changes=[],
                 next_actions=[],
             )
@@ -3605,13 +3605,13 @@ class Actions:
 
         if dry_run:
             diff_str = _make_diff_preview(curr_norm, new_norm)
-            msg = f"Sẽ làm: cập nhật mô tả {key} ({mode_clean})"
+            msg = f"[Dry-run] Sẽ cập nhật mô tả {key} ({mode_clean})"
             if diff_str:
                 msg = f"{msg}\n{diff_str}"
             return ActionResult(
                 ok=True,
                 message=msg,
-                changes=[],
+                changes=[f"Cập nhật mô tả {key} ({mode_clean})"],
                 next_actions=[],
             )
 
