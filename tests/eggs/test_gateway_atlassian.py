@@ -101,6 +101,26 @@ def test_get_changelog(mock_client):
     )
 
 
+def test_get_changelog_warns_when_total_greater_than_returned(mock_client, caplog):
+    import logging
+
+    gateway = AtlassianGateway(mock_client)
+    mock_client.get.return_value = {
+        "changelog": {
+            "total": 45,
+            "histories": [{"id": "h1"}, {"id": "h2"}],
+        }
+    }
+    with caplog.at_level(logging.WARNING):
+        res = gateway.get_changelog("PROJ-123")
+
+    assert len(res) == 2
+    assert any(
+        "PROJ-123" in r.message and "45" in r.message and "2" in r.message
+        for r in caplog.records
+    )
+
+
 def test_update_fields_default_notify_users(mock_client):
     gateway = AtlassianGateway(mock_client)
     gateway.update_fields("PROJ-123", {"summary": "Updated"})

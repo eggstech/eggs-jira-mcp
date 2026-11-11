@@ -27,6 +27,7 @@ thresholds:
   triage_working_days: 1
   end_day_hour: 17
   unfreeze_window_days: 4
+  freeze_days: 30
 
 roles:
   lead_ba:

@@ -29,6 +29,7 @@ class Thresholds:
     triage_working_days: int = 1
     end_day_hour: int = 17
     unfreeze_window_days: int = 4
+    freeze_days: int = 30
 
 
 @dataclass(frozen=True)
@@ -195,6 +196,7 @@ def load_config(path: str | None = None) -> EggsConfig:
         triage_working_days=thresholds_data.get("triage_working_days", 1),
         end_day_hour=thresholds_data.get("end_day_hour", 17),
         unfreeze_window_days=thresholds_data.get("unfreeze_window_days", 4),
+        freeze_days=thresholds_data.get("freeze_days", 30),
     )
 
     # Parse holidays

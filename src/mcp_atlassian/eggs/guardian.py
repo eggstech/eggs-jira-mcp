@@ -118,7 +118,9 @@ def evaluate(
     """
     # Auto-unfreeze runs before health evaluation so the issue is
     # evaluated normally in the same run
-    unfrozen_keys = unfreeze_stale_issues(gateway, cfg, now, dry_run=dry_run)
+    unfrozen_keys = unfreeze_stale_issues(
+        gateway, cfg, now, days=cfg.thresholds.freeze_days, dry_run=dry_run
+    )
 
     tz = ZoneInfo(cfg.timezone)
     today = now.astimezone(tz).date()
@@ -769,11 +771,13 @@ def freeze_legacy(
     gateway: JiraGateway,
     cfg: EggsConfig,
     project: str,
-    days: int = 30,
+    days: int | None = None,
     now: datetime | None = None,
     *,
     dry_run: bool = False,
 ) -> FreezeResult:
+    if days is None:
+        days = cfg.thresholds.freeze_days
     frozen_label = cfg.frozen_label
     jql = (
         f"project = {project} AND statusCategory != Done AND "
@@ -862,16 +866,20 @@ def freeze_legacy(
             try:
                 parent_issues = gateway.search(
                     parent_jql,
-                    fields=["key", "updated"],
+                    fields=["key", "updated", "labels"],
                 )
             except Exception as exc:
                 msg = f"Tìm kiếm active parents cho candidates thất bại: {exc}"
                 raise FreezeSearchError(msg) from exc
 
             for raw in parent_issues:
+                f_dict = raw.get("fields", {})
+                labels = f_dict.get("labels", [])
+                if frozen_label in labels:
+                    continue
                 p_key = raw.get("key") or str(raw.get("id"))
                 if p_key in chunk:
-                    u_str = raw.get("fields", {}).get("updated")
+                    u_str = f_dict.get("updated")
                     if u_str:
                         try:
                             u_dt = datetime.fromisoformat(u_str.replace("Z", "+00:00"))
@@ -892,7 +900,7 @@ def freeze_legacy(
             try:
                 sub_issues = gateway.search(
                     sub_jql,
-                    fields=["key", "parent", "updated"],
+                    fields=["key", "parent", "updated", "labels"],
                 )
             except Exception as exc:
                 msg = f"Tìm kiếm subtasks cho candidates thất bại: {exc}"
@@ -900,6 +908,9 @@ def freeze_legacy(
 
             for raw in sub_issues:
                 f = raw.get("fields", {})
+                labels = f.get("labels", [])
+                if frozen_label in labels:
+                    continue
                 parent_key = f.get("parent", {}).get("key")
                 if parent_key in chunk:
                     u_str = f.get("updated")
@@ -925,7 +936,7 @@ def freeze_legacy(
                 try:
                     child_issues = gateway.search(
                         epic_child_jql,
-                        fields=["key", epic_link_id, "updated"],
+                        fields=["key", epic_link_id, "updated", "labels"],
                     )
                 except Exception as exc:
                     msg = f"Tìm kiếm issues trong Epic thất bại: {exc}"
@@ -933,6 +944,9 @@ def freeze_legacy(
 
                 for raw in child_issues:
                     f = raw.get("fields", {})
+                    labels = f.get("labels", [])
+                    if frozen_label in labels:
+                        continue
                     e_val = f.get(epic_link_id)
                     parent_epic = (
                         e_val
@@ -1002,11 +1016,12 @@ def unfreeze_stale_issues(
     gateway: JiraGateway,
     cfg: EggsConfig,
     now: datetime,
-    days: int = 30,
+    days: int | None = None,
     *,
     dry_run: bool = False,
 ) -> list[str]:
     """Auto-unfreeze issues carrying legacy-frozen label if active after freeze."""
+    cutoff_days = days if days is not None else cfg.thresholds.freeze_days
     frozen_label = cfg.frozen_label
     window_days = cfg.thresholds.unfreeze_window_days
     jql = f'labels = "{frozen_label}" AND updated >= -{window_days}d'
@@ -1021,18 +1036,19 @@ def unfreeze_stale_issues(
         logger.warning("Tìm kiếm issues để unfreeze thất bại: %s", exc)
         return []
 
+    bot_user: str | None = None
     try:
         bot_info = gateway.myself() if hasattr(gateway, "myself") else {}
+        bot_user = (
+            (bot_info.get("name") if isinstance(bot_info, dict) else None)
+            or (bot_info.get("key") if isinstance(bot_info, dict) else None)
+            or (gateway.current_user() if hasattr(gateway, "current_user") else None)
+            or cfg.bot_user
+        )
     except Exception as exc:  # noqa: BLE001
-        logger.warning("Không thể lấy thông tin bot từ gateway.myself: %s", exc)
+        logger.warning("Không thể xác định danh tính bot user: %s", exc)
         return []
 
-    bot_user = (
-        (bot_info.get("name") if isinstance(bot_info, dict) else None)
-        or (bot_info.get("key") if isinstance(bot_info, dict) else None)
-        or (gateway.current_user() if hasattr(gateway, "current_user") else None)
-        or cfg.bot_user
-    )
     if not bot_user or not bot_user.strip():
         logger.warning(
             "Danh tính bot user trống, bỏ qua unfreeze để tránh gỡ nhầm nhãn."
@@ -1041,7 +1057,7 @@ def unfreeze_stale_issues(
 
     bot_user_lower = bot_user.strip().lower()
 
-    unfrozen_keys: list[str] = []
+    qualifying_parents: list[str] = []
 
     for raw in raw_issues:
         f_dict = raw.get("fields", {})
@@ -1086,11 +1102,6 @@ def unfreeze_stale_issues(
                     worklogs = full_worklogs
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Lấy full worklogs cho issue %s thất bại: %s", key, exc)
-        elif not worklogs and hasattr(gateway, "get_worklogs"):
-            try:
-                worklogs = gateway.get_worklogs(key)
-            except Exception:  # noqa: BLE001
-                worklogs = []
 
         freeze_dt: datetime | None = None
         for h in changelog:
@@ -1121,11 +1132,11 @@ def unfreeze_stale_issues(
                 "Issue %s: không có history thêm nhãn %s, dùng cutoff now - %sd",
                 key,
                 frozen_label,
-                days,
+                cutoff_days,
             )
             tz = ZoneInfo(cfg.timezone)
             now_aware = now if now.tzinfo is not None else now.replace(tzinfo=tz)
-            freeze_dt = now_aware - timedelta(days=days)
+            freeze_dt = now_aware - timedelta(days=cutoff_days)
             has_freeze_entry = False
         else:
             has_freeze_entry = True
@@ -1209,56 +1220,93 @@ def unfreeze_stale_issues(
                             break
 
         if should_unfreeze:
-            if not dry_run:
+            qualifying_parents.append(key)
+
+    if not qualifying_parents:
+        return []
+
+    unfrozen_keys: list[str] = []
+    already_unfrozen: set[str] = set()
+    batch_size = 50
+
+    for i in range(0, len(qualifying_parents), batch_size):
+        chunk = qualifying_parents[i : i + batch_size]
+        chunk_str = ", ".join(chunk)
+        sub_jql = f'parent in ({chunk_str}) AND labels = "{frozen_label}"'
+        try:
+            frozen_subtasks = gateway.search(
+                sub_jql, fields=["key", "labels", "parent"]
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Tìm kiếm subtasks bị đóng băng cho chunk thất bại: %s", exc)
+            continue
+
+        subtasks_by_parent: dict[str, list[str]] = {p: [] for p in chunk}
+        for st in frozen_subtasks:
+            st_key = st.get("key") or str(st.get("id"))
+            if not st_key:
+                continue
+            f_dict = st.get("fields", {}) if isinstance(st.get("fields"), dict) else {}
+            p_obj = f_dict.get("parent") or st.get("parent")
+            p_key = None
+            if isinstance(p_obj, dict):
+                p_key = p_obj.get("key")
+            elif isinstance(p_obj, str):
+                p_key = p_obj
+            if p_key and p_key in subtasks_by_parent:
+                if st_key not in subtasks_by_parent[p_key]:
+                    subtasks_by_parent[p_key].append(st_key)
+
+        for p_key in chunk:
+            sub_keys = subtasks_by_parent.get(p_key, [])
+            subtasks_success = True
+            subtasks_removed_for_parent: list[str] = []
+
+            for st_key in sub_keys:
+                if st_key in already_unfrozen:
+                    continue
+                if dry_run:
+                    subtasks_removed_for_parent.append(st_key)
+                    already_unfrozen.add(st_key)
+                else:
+                    try:
+                        gateway.remove_label(st_key, frozen_label, notify_users=False)
+                        subtasks_removed_for_parent.append(st_key)
+                        already_unfrozen.add(st_key)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "Gỡ nhãn %s cho sub-task %s thất bại: %s",
+                            frozen_label,
+                            st_key,
+                            exc,
+                        )
+                        subtasks_success = False
+                        break
+
+            if not subtasks_success:
+                unfrozen_keys.extend(subtasks_removed_for_parent)
+                continue
+
+            unfrozen_keys.extend(subtasks_removed_for_parent)
+
+            if p_key in already_unfrozen:
+                continue
+
+            if dry_run:
+                unfrozen_keys.append(p_key)
+                already_unfrozen.add(p_key)
+            else:
                 try:
-                    gateway.remove_label(key, frozen_label, notify_users=False)
+                    gateway.remove_label(p_key, frozen_label, notify_users=False)
+                    unfrozen_keys.append(p_key)
+                    already_unfrozen.add(p_key)
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(
                         "Gỡ nhãn %s cho issue %s thất bại: %s",
                         frozen_label,
-                        key,
+                        p_key,
                         exc,
                     )
-            unfrozen_keys.append(key)
-
-    if unfrozen_keys:
-        batch_size = 50
-        parent_candidates = list(unfrozen_keys)
-        subtasks_unfrozen: list[str] = []
-        for i in range(0, len(parent_candidates), batch_size):
-            chunk = parent_candidates[i : i + batch_size]
-            if len(chunk) == 1:
-                sub_jql = f'parent = {chunk[0]} AND labels = "{frozen_label}"'
-            else:
-                chunk_str = ", ".join(chunk)
-                sub_jql = f'parent in ({chunk_str}) AND labels = "{frozen_label}"'
-            try:
-                frozen_subtasks = gateway.search(sub_jql, fields=["key", "labels"])
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Tìm kiếm subtasks bị đóng băng thất bại: %s", exc)
-                frozen_subtasks = []
-
-            for st in frozen_subtasks:
-                st_key = st.get("key") or str(st.get("id"))
-                if (
-                    st_key
-                    and st_key not in unfrozen_keys
-                    and st_key not in subtasks_unfrozen
-                ):
-                    if not dry_run:
-                        try:
-                            gateway.remove_label(
-                                st_key, frozen_label, notify_users=False
-                            )
-                        except Exception as exc:  # noqa: BLE001
-                            logger.warning(
-                                "Gỡ nhãn %s cho sub-task %s thất bại: %s",
-                                frozen_label,
-                                st_key,
-                                exc,
-                            )
-                    subtasks_unfrozen.append(st_key)
-        unfrozen_keys.extend(subtasks_unfrozen)
 
     return unfrozen_keys
 
@@ -1355,8 +1403,8 @@ def main(
     p_freeze.add_argument(
         "--days",
         type=int,
-        default=30,
-        help="Số ngày không cập nhật để coi là stale (mặc định: 30)",
+        default=None,
+        help="Số ngày không cập nhật để coi là stale (mặc định: freeze_days)",
     )
     p_freeze.add_argument("--dry-run", action="store_true", help="Không ghi vào Jira")
 
@@ -1499,7 +1547,7 @@ def main(
                 gw,
                 cfg,
                 args.project,
-                days=args.days,
+                days=args.days if args.days is not None else cfg.thresholds.freeze_days,
                 now=now,
                 dry_run=args.dry_run,
             )

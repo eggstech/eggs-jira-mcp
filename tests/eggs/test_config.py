@@ -103,6 +103,7 @@ projects:
     assert cfg.thresholds.qc_flow_buffer == 1
     assert cfg.thresholds.unscheduled_window == 5
     assert cfg.thresholds.unfreeze_window_days == 4
+    assert cfg.thresholds.freeze_days == 30
 
 
 @pytest.mark.parametrize(

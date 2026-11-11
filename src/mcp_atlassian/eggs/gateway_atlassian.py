@@ -524,7 +524,16 @@ class AtlassianGateway(JiraGateway):
         if isinstance(res, dict):
             changelog = res.get("changelog")
             if isinstance(changelog, dict):
-                return list(changelog.get("histories", []))
+                histories = list(changelog.get("histories", []))
+                total = changelog.get("total", len(histories))
+                if total > len(histories):
+                    logger.warning(
+                        "Issue %s: changelog không đầy đủ (total: %s, returned: %s)",
+                        key,
+                        total,
+                        len(histories),
+                    )
+                return histories
         return []
 
     def user_exists(self, username: str) -> bool:

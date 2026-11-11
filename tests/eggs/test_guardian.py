@@ -2251,6 +2251,72 @@ def test_myself_failure_skips_unfreeze_and_evaluates_health(cfg: EggsConfig):
     assert len(remove_calls) == 0
     assert "legacy-frozen" in gw.issues["RFID-10"]["fields"]["labels"]
 
+    # Health evaluation ran: snapshot JQL was queried
+    assert any("statusCategory != Done OR resolved >= -7d" in q for q in gw.jql_queries)
+
+
+def test_bot_identity_current_user_raises_skips_unfreeze_and_evaluates_health(
+    cfg: EggsConfig,
+):
+    from unittest.mock import MagicMock
+
+    from mcp_atlassian.eggs.guardian import evaluate
+
+    cal = WorkCalendar(cfg.holidays)
+    now = datetime(2026, 11, 10, 10, 0, tzinfo=TZ)
+    issues = {
+        "RFID-10": {
+            "key": "RFID-10",
+            "fields": {
+                "summary": "Story with human worklog",
+                "issuetype": {"name": "Story"},
+                "status": {"name": "DEV To Do"},
+                "labels": ["legacy-frozen"],
+                "updated": "2026-11-10T09:30:00.000+0700",
+                "worklog": {
+                    "worklogs": [
+                        {
+                            "author": {"name": "alice"},
+                            "created": "2026-11-10T09:25:00.000+0700",
+                            "started": "2026-11-10T09:00:00.000+0700",
+                            "timeSpentSeconds": 1800,
+                        }
+                    ]
+                },
+            },
+            "changelog": {
+                "histories": [
+                    {
+                        "created": "2026-11-09T08:00:00.000+0700",
+                        "author": {"name": "bot"},
+                        "items": [
+                            {
+                                "field": "labels",
+                                "fromString": "",
+                                "toString": "legacy-frozen",
+                            }
+                        ],
+                    }
+                ]
+            },
+        }
+    }
+    gw = FakeGateway(issues=issues, user="bot")
+    gw.myself = MagicMock(return_value={})
+    gw.current_user = MagicMock(side_effect=RuntimeError("current_user failed"))
+
+    # evaluate returns normally
+    res = evaluate(gw, cfg, now, cal)
+    assert res.exit_code == 0
+
+    # removes no label
+    remove_calls = [c for c in gw.calls if c[0] == "remove_label"]
+    assert len(remove_calls) == 0
+    assert "legacy-frozen" in gw.issues["RFID-10"]["fields"]["labels"]
+
+    # still builds the health snapshot
+    assert any("statusCategory != Done OR resolved >= -7d" in q for q in gw.jql_queries)
+
 
 def test_empty_bot_user_skips_unfreeze(cfg: EggsConfig):
     from dataclasses import replace
@@ -2396,6 +2462,131 @@ def test_freeze_legacy_freezes_subtask_under_stale_story(cfg: EggsConfig):
     assert "legacy-frozen" in gw.issues["RFID-101"]["fields"]["labels"]
 
 
+def test_freeze_legacy_retry_freezes_subtask_when_parent_was_frozen_in_first_run(
+    cfg: EggsConfig,
+):
+    from unittest.mock import MagicMock
+
+    from mcp_atlassian.eggs.guardian import freeze_legacy
+
+    now = datetime(2026, 11, 10, 10, 0, tzinfo=TZ)
+    stale_date = "2026-09-01T10:00:00.000+0700"
+
+    issues = {
+        "RFID-100": {
+            "key": "RFID-100",
+            "fields": {
+                "summary": "Parent story",
+                "issuetype": {"name": "Story"},
+                "status": {"name": "DEV To Do"},
+                "labels": [],
+                "updated": stale_date,
+            },
+        },
+        "RFID-101": {
+            "key": "RFID-101",
+            "fields": {
+                "summary": "Dev task subtask",
+                "issuetype": {"name": "Dev Task", "subtask": True},
+                "status": {"name": "DEV To Do"},
+                "labels": [],
+                "updated": stale_date,
+                "parent": {"key": "RFID-100"},
+            },
+        },
+    }
+
+    def s_filter(jql: str, iss: dict) -> bool:
+        if "key in (" in jql:
+            # Active parent search: parent updated >= cutoff
+            return iss["fields"]["updated"] >= "2026-10-11"
+        if "parent in (" in jql:
+            return False
+        # Candidate search: updated < cutoff and not frozen
+        return (
+            iss["fields"]["updated"] < "2026-10-11"
+            and "legacy-frozen" not in iss["fields"]["labels"]
+        )
+
+    gw = FakeGateway(issues=issues, user="bot", search_filter=s_filter)
+    orig_add_label = gw.add_label
+
+    fail_subtask_label = True
+
+    def add_label_mock(key: str, label: str, *args, **kwargs):
+        nonlocal fail_subtask_label
+        if key == "RFID-101" and fail_subtask_label:
+            raise RuntimeError("failed to add label to RFID-101 in run 1")
+        # In real Jira, add_label updates the updated field to now
+        res = orig_add_label(key, label, *args, **kwargs)
+        gw.issues[key]["fields"]["updated"] = "2026-11-10T10:00:00.000+0700"
+        return res
+
+    gw.add_label = MagicMock(side_effect=add_label_mock)
+
+    # Run 1: freezes Story and fails add_label on sub-task
+    res1 = freeze_legacy(gw, cfg, "RFID", days=30, now=now)
+    assert "RFID-100" in [x[0] for x in res1.issues]
+    assert "legacy-frozen" in gw.issues["RFID-100"]["fields"]["labels"]
+    assert "legacy-frozen" not in gw.issues["RFID-101"]["fields"]["labels"]
+
+    # In FakeGateway, RFID-100's updated is now recent ("2026-11-10") and has "legacy-frozen"
+    assert gw.issues["RFID-100"]["fields"]["updated"] == "2026-11-10T10:00:00.000+0700"
+
+    # Run 2: retry freeze-legacy freezes the sub-task
+    fail_subtask_label = False
+    res2 = freeze_legacy(gw, cfg, "RFID", days=30, now=now)
+    assert "RFID-101" in [x[0] for x in res2.issues]
+    assert "legacy-frozen" in gw.issues["RFID-101"]["fields"]["labels"]
+
+
+def test_unfreeze_fallback_cutoff_follows_config_freeze_days(cfg: EggsConfig):
+    from dataclasses import replace
+    from datetime import timedelta
+
+    from mcp_atlassian.eggs.guardian import evaluate
+
+    cal = WorkCalendar(cfg.holidays)
+    now = datetime(2026, 11, 10, 10, 0, tzinfo=TZ)
+    # Comment 45 days ago: inside 60-day freeze_days window, but outside 30-day window
+    comment_dt = now - timedelta(days=45)
+    comment_time_str = comment_dt.isoformat()
+
+    issues = {
+        "RFID-1": {
+            "key": "RFID-1",
+            "fields": {
+                "summary": "Frozen issue with no label history",
+                "issuetype": {"name": "Story"},
+                "status": {"name": "DEV To Do"},
+                "labels": ["legacy-frozen"],
+                "updated": "2026-11-10T09:00:00.000+0700",
+                "comment": {
+                    "comments": [
+                        {
+                            "author": {"name": "alice"},
+                            "created": comment_time_str,
+                        }
+                    ]
+                },
+                "worklog": {"total": 0, "worklogs": []},
+            },
+            "changelog": {"histories": []},
+        }
+    }
+
+    # With freeze_days = 60
+    cfg_60 = replace(
+        cfg,
+        thresholds=replace(cfg.thresholds, freeze_days=60),
+    )
+    gw = FakeGateway(issues=issues, user="bot")
+
+    res = evaluate(gw, cfg_60, now, cal)
+    assert res.exit_code == 0
+    assert "legacy-frozen" not in gw.issues["RFID-1"]["fields"]["labels"]
+
+
 def test_unfreeze_story_also_unfreezes_frozen_subtask(cfg: EggsConfig):
     from mcp_atlassian.eggs.guardian import unfreeze_stale_issues
 
@@ -2460,6 +2651,178 @@ def test_unfreeze_story_also_unfreezes_frozen_subtask(cfg: EggsConfig):
     unfrozen = unfreeze_stale_issues(gw, cfg, now)
     assert "RFID-100" in unfrozen
     assert "RFID-101" in unfrozen
+    assert "legacy-frozen" not in gw.issues["RFID-100"]["fields"]["labels"]
+    assert "legacy-frozen" not in gw.issues["RFID-101"]["fields"]["labels"]
+    # Children first, parent last
+    remove_calls = [c[1][0] for c in gw.calls if c[0] == "remove_label"]
+    assert remove_calls == ["RFID-101", "RFID-100"]
+
+
+def test_unfreeze_subtask_search_raises_skips_chunk_parents_other_chunks_proceed(
+    cfg: EggsConfig,
+):
+    from unittest.mock import MagicMock
+
+    from mcp_atlassian.eggs.guardian import unfreeze_stale_issues
+
+    now = datetime(2026, 11, 10, 10, 0, tzinfo=TZ)
+    # Create 51 parent issues: 1..50 in chunk 1, 51 in chunk 2
+    issues = {}
+    for i in range(1, 52):
+        key = f"RFID-{i}"
+        issues[key] = {
+            "key": key,
+            "fields": {
+                "summary": f"Story {i}",
+                "issuetype": {"name": "Story"},
+                "status": {"name": "DEV To Do"},
+                "labels": ["legacy-frozen"],
+                "updated": "2026-11-10T09:30:00.000+0700",
+                "worklog": {
+                    "worklogs": [
+                        {
+                            "author": {"name": "alice"},
+                            "created": "2026-11-10T09:25:00.000+0700",
+                            "started": "2026-11-10T09:00:00.000+0700",
+                            "timeSpentSeconds": 1800,
+                        }
+                    ]
+                },
+            },
+            "changelog": {
+                "histories": [
+                    {
+                        "created": "2026-11-09T08:00:00.000+0700",
+                        "author": {"name": "bot"},
+                        "items": [
+                            {
+                                "field": "labels",
+                                "fromString": "",
+                                "toString": "legacy-frozen",
+                            }
+                        ],
+                    }
+                ]
+            },
+        }
+
+    def s_filter(jql: str, iss: dict) -> bool:
+        if "parent in (" in jql:
+            return False
+        return True
+
+    gw = FakeGateway(issues=issues, user="bot", search_filter=s_filter)
+    orig_search = gw.search
+
+    # Fail sub-task search for chunk 1 (containing RFID-1), but succeed for chunk 2 (RFID-51)
+    def search_mock(jql: str, *args, **kwargs):
+        if "parent in (" in jql and "RFID-1," in jql:
+            raise RuntimeError("sub-task search failed for chunk 1")
+        return orig_search(jql, *args, **kwargs)
+
+    gw.search = MagicMock(side_effect=search_mock)
+
+    unfrozen = unfreeze_stale_issues(gw, cfg, now)
+
+    # Chunk 1 parents stay frozen: no label removed
+    for i in range(1, 51):
+        assert f"RFID-{i}" not in unfrozen
+        assert "legacy-frozen" in gw.issues[f"RFID-{i}"]["fields"]["labels"]
+
+    # Chunk 2 parent proceeds and gets unfrozen
+    assert "RFID-51" in unfrozen
+    assert "legacy-frozen" not in gw.issues["RFID-51"]["fields"]["labels"]
+
+
+def test_unfreeze_subtask_remove_fails_leaves_parent_frozen_retried_next_run(
+    cfg: EggsConfig,
+):
+    from unittest.mock import MagicMock
+
+    from mcp_atlassian.eggs.guardian import unfreeze_stale_issues
+
+    now = datetime(2026, 11, 10, 10, 0, tzinfo=TZ)
+    issues = {
+        "RFID-100": {
+            "key": "RFID-100",
+            "fields": {
+                "summary": "Story getting unfrozen",
+                "issuetype": {"name": "Story"},
+                "status": {"name": "DEV To Do"},
+                "labels": ["legacy-frozen"],
+                "updated": "2026-11-10T09:30:00.000+0700",
+                "worklog": {
+                    "worklogs": [
+                        {
+                            "author": {"name": "alice"},
+                            "created": "2026-11-10T09:25:00.000+0700",
+                            "started": "2026-11-10T09:00:00.000+0700",
+                            "timeSpentSeconds": 1800,
+                        }
+                    ]
+                },
+            },
+            "changelog": {
+                "histories": [
+                    {
+                        "created": "2026-11-09T08:00:00.000+0700",
+                        "author": {"name": "bot"},
+                        "items": [
+                            {
+                                "field": "labels",
+                                "fromString": "",
+                                "toString": "legacy-frozen",
+                            }
+                        ],
+                    }
+                ]
+            },
+        },
+        "RFID-101": {
+            "key": "RFID-101",
+            "fields": {
+                "summary": "Frozen subtask",
+                "issuetype": {"name": "Dev Task", "subtask": True},
+                "status": {"name": "DEV To Do"},
+                "labels": ["legacy-frozen"],
+                "parent": {"key": "RFID-100"},
+            },
+        },
+    }
+
+    def s_filter(jql: str, iss: dict) -> bool:
+        if "parent" in jql and "legacy-frozen" in jql:
+            p_key = iss.get("fields", {}).get("parent", {}).get("key")
+            return p_key == "RFID-100" and "legacy-frozen" in iss.get("fields", {}).get(
+                "labels", []
+            )
+        return iss["key"] == "RFID-100"
+
+    gw = FakeGateway(issues=issues, user="bot", search_filter=s_filter)
+    orig_remove_label = gw.remove_label
+
+    fail_subtask_remove = True
+
+    def remove_label_mock(key: str, label: str, *args, **kwargs):
+        nonlocal fail_subtask_remove
+        if key == "RFID-101" and fail_subtask_remove:
+            raise RuntimeError("remove label failed for subtask")
+        return orig_remove_label(key, label, *args, **kwargs)
+
+    gw.remove_label = MagicMock(side_effect=remove_label_mock)
+
+    # Run 1: sub-task remove fails -> parent keeps label
+    unfrozen_1 = unfreeze_stale_issues(gw, cfg, now)
+    assert "RFID-100" not in unfrozen_1
+    assert "RFID-101" not in unfrozen_1
+    assert "legacy-frozen" in gw.issues["RFID-100"]["fields"]["labels"]
+    assert "legacy-frozen" in gw.issues["RFID-101"]["fields"]["labels"]
+
+    # Run 2: same fake state except remove now succeeds -> unfreezes both
+    fail_subtask_remove = False
+    unfrozen_2 = unfreeze_stale_issues(gw, cfg, now)
+    assert "RFID-101" in unfrozen_2
+    assert "RFID-100" in unfrozen_2
     assert "legacy-frozen" not in gw.issues["RFID-100"]["fields"]["labels"]
     assert "legacy-frozen" not in gw.issues["RFID-101"]["fields"]["labels"]
 
@@ -2808,6 +3171,53 @@ def test_unfreeze_when_no_freeze_history_entry_ignores_older_worklog(
     gw = FakeGateway(issues=issues, user="bot")
     unfrozen = unfreeze_stale_issues(gw, cfg, now, days=30)
     assert unfrozen == []
+
+
+def test_unfreeze_no_worklog_call_when_issue_has_none(cfg: EggsConfig):
+    from mcp_atlassian.eggs.guardian import unfreeze_stale_issues
+
+    now = datetime(2026, 11, 10, 10, 0, tzinfo=TZ)
+    # 100 frozen issues with worklog: {total: 0, worklogs: []}
+    issues = {}
+    for i in range(100):
+        key = f"RFID-{i + 1}"
+        issues[key] = {
+            "key": key,
+            "fields": {
+                "summary": f"Frozen issue {i}",
+                "labels": ["legacy-frozen"],
+                "updated": "2026-11-10T09:00:00.000+0700",
+                "worklog": {"total": 0, "worklogs": []},
+            },
+            "changelog": {"histories": []},
+        }
+
+    gw = FakeGateway(issues=issues, user="bot")
+    unfreeze_stale_issues(gw, cfg, now, days=30)
+    worklog_calls = [c for c in gw.calls if c[0] == "get_worklogs"]
+    assert len(worklog_calls) == 0
+
+    # One issue with total: 25 and 20 returned -> exactly one call
+    single_issue = {
+        "RFID-999": {
+            "key": "RFID-999",
+            "fields": {
+                "summary": "Frozen issue with truncated worklogs",
+                "labels": ["legacy-frozen"],
+                "updated": "2026-11-10T09:00:00.000+0700",
+                "worklog": {
+                    "total": 25,
+                    "worklogs": [{"started": "2026-11-01T00:00:00.000+0700"}] * 20,
+                },
+            },
+            "changelog": {"histories": []},
+        }
+    }
+    gw_single = FakeGateway(issues=single_issue, user="bot")
+    unfreeze_stale_issues(gw_single, cfg, now, days=30)
+    worklog_calls_single = [c for c in gw_single.calls if c[0] == "get_worklogs"]
+    assert len(worklog_calls_single) == 1
+    assert worklog_calls_single[0][1] == ("RFID-999",)
 
 
 def test_backfill_qc_owner_no_configured_types_stops_with_clear_message(
