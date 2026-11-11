@@ -383,7 +383,17 @@ def render_report(
     if on_track_count > 0:
         sections.append([f"✅ Đúng tiến độ: {on_track_count} workstream"])
 
-    return "\n\n".join("\n".join(sec) for sec in sections)
+    # 11/11: always say which day and scope, and say so when nothing needs
+    # attention (a quiet day used to render as an empty string).
+    scope = project or "Tất cả dự án"
+    header = f"📋 Báo cáo {snapshot.today:%d/%m/%Y} · {scope}"
+    has_issues = len(sections) > (1 if on_track_count > 0 else 0)
+    if not has_issues:
+        sections.insert(
+            0,
+            ["Không có leo thang, block, việc chờ duyệt hay người chưa cập nhật."],
+        )
+    return "\n\n".join([header] + ["\n".join(sec) for sec in sections])
 
 
 def render_workstream(snapshot: Snapshot, epic_key: str) -> str:

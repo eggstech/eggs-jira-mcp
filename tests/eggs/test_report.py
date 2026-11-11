@@ -1043,3 +1043,27 @@ def test_build_snapshot_jql_skips_old_done_issues(cfg, cal):
     search_calls2 = [c for c in fake2.calls if c[0] == "search"]
     jql2 = search_calls2[0][1][0]
     assert jql2 == "statusCategory != Done OR resolved >= -7d"
+
+
+# --- W9 (11/11): a quiet day still produces a report (was an empty string) ----
+def test_render_report_quiet_day_has_header_and_all_clear_line():
+    from mcp_atlassian.eggs.config import EggsConfig
+    from mcp_atlassian.eggs.report import Snapshot
+
+    cfg = EggsConfig(
+        lead_user="lead", jira_url="https://j", timezone="Asia/Ho_Chi_Minh"
+    )
+    snap = Snapshot(
+        issues={},
+        flags={},
+        escalations={},
+        flows={},
+        epics={},
+        not_updated=[],
+        today=date(2026, 11, 11),
+        worklogs=[],
+    )
+    text = render_report(snap, cfg, project="EGGSBOX")
+    assert text.startswith("📋 Báo cáo 11/11/2026 · EGGSBOX")
+    assert "Không có leo thang" in text
+    assert render_report(snap, cfg).startswith("📋 Báo cáo 11/11/2026 · Tất cả dự án")
