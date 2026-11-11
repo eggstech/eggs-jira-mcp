@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -338,6 +339,102 @@ def intents_for(identity: Identity) -> list[Intent]:
         user_roles.add("lead")
 
     return [it for it in INTENTS if bool(it.roles & user_roles)]
+
+
+_STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "ban",
+        "bi",
+        "cac",
+        "cai",
+        "cho",
+        "co",
+        "cua",
+        "de",
+        "den",
+        "di",
+        "do",
+        "duoc",
+        "giup",
+        "khong",
+        "la",
+        "len",
+        "ma",
+        "minh",
+        "mot",
+        "nay",
+        "nhe",
+        "nhu",
+        "nhung",
+        "o",
+        "ra",
+        "roi",
+        "the",
+        "thi",
+        "toi",
+        "tren",
+        "trong",
+        "tu",
+        "va",
+        "vao",
+        "voi",
+        "xuong",
+    }
+)
+
+
+def _fold(text: str) -> str:
+    """Lowercase Vietnamese text without diacritics or punctuation."""
+    lowered = text.lower().replace("đ", "d")
+    decomposed = unicodedata.normalize("NFD", lowered)
+    plain = "".join(c for c in decomposed if unicodedata.category(c) != "Mn")
+    return re.sub(r"[^a-z0-9]+", " ", plain).strip()
+
+
+def _tokens(text: str) -> set[str]:
+    return {word for word in _fold(text).split() if word and word not in _STOPWORDS}
+
+
+def match_intents(
+    text: str | None,
+    intents: list[Intent],
+    *,
+    report_key_count: int = 0,
+    limit: int = 3,
+) -> list[str]:
+    """Rank intent names by how well they match what the person wrote.
+
+    Deterministic: word overlap with the intent name and examples, a bonus for
+    the intent name or a whole example appearing in the text, and a nudge to
+    triage intents when the text mentions a User Report key.
+    """
+    if not text or not text.strip():
+        return []
+    text_fold = _fold(text)
+    tokens = _tokens(text)
+    scored: list[tuple[int, int, str]] = []
+    for index, intent in enumerate(intents):
+        name_text = intent.name.replace("_", " ")
+        words = _tokens(name_text + " " + " ".join(intent.examples))
+        if intent.tool:
+            words |= _tokens(intent.tool.replace("_", " "))
+        score = 2 * len(tokens & words)
+        name_phrase = _fold(name_text)
+        if name_phrase and name_phrase in text_fold:
+            score += 3
+        if any(
+            _fold(example) and _fold(example) in text_fold
+            for example in intent.examples
+        ):
+            score += 5
+        if report_key_count and intent.name.startswith("triage"):
+            score += 5 * report_key_count
+        if score > 0:
+            scored.append((-score, index, intent.name))
+    scored.sort()
+    return [name for _, _, name in scored[:limit]]
 
 
 def mentioned_keys(text: str, project_keys: set[str]) -> list[str]:

@@ -30,6 +30,7 @@ from mcp_atlassian.eggs.agenda import (
     Intent,
     build_agenda,
     intents_for,
+    match_intents,
     mentioned_keys,
 )
 from mcp_atlassian.eggs.calendar import WorkCalendar
@@ -535,6 +536,23 @@ def _parse_reported_at(value: str | None, tz_name: str) -> datetime | None:
     return parsed
 
 
+def _report_key_count(snapshot: Snapshot, cfg: EggsConfig, keys: list[str]) -> int:
+    """How many mentioned keys are User Report issues (triage hint)."""
+    raw_names = cfg.issue_types.get("report", [])
+    if isinstance(raw_names, str):
+        raw_names = [raw_names]
+    report_types = {str(name).strip().lower() for name in raw_names}
+    return sum(
+        1
+        for key in keys
+        if key in snapshot.issues
+        and (
+            snapshot.issues[key].type == "report"
+            or snapshot.issues[key].type in report_types
+        )
+    )
+
+
 def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
     """Register all 25 egg tools on the given FastMCP server."""
     if not force and not _is_eggs_enabled():
@@ -644,6 +662,12 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
             agenda = agenda[:10]
 
         intents = [intent_to_dict(i) for i in intents_for(ident)]
+        available_intents = intents_for(ident)
+        matched_intents = match_intents(
+            text,
+            available_intents,
+            report_key_count=_report_key_count(snapshot, cfg, mentioned),
+        )
 
         if not ident.roles and not ident.is_lead:
             hint = "Bạn chưa có vai trò trong dự án nào, báo Lead."
@@ -659,6 +683,7 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
             "agenda": [agenda_item_to_dict(it) for it in agenda],
             "mentioned": mentioned,
             "intents": intents,
+            "matched_intents": matched_intents,
             "hint": hint,
         }
         return json.dumps(data, indent=2, ensure_ascii=False)

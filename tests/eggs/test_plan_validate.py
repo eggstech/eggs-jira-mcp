@@ -1018,3 +1018,68 @@ def test_epic_key_still_checks_issue_type_and_project():
     messages = " | ".join(f.message for f in report.findings if f.level == "error")
     assert "không phải là Epic" in messages
     assert "không thuộc dự án" in messages
+
+
+PLAN_TYPOS_YAML = """
+schema: eggs-plan/v2
+project: HMKLOYAL
+stories:
+  - actor: CH
+epic: { summary: "Epic", due: 2026-11-27, owner: ba.user, ownr: ba.user }
+flows:
+  - code: CH-01
+    actor: CH
+    summary: "Check-in"
+    ac: ["Có mã đơn"]
+    parts:
+      - { part: BE, assignee: dev.user, estimate: 1d, summary: "Dev task summary" }
+"""
+
+
+def test_unknown_stories_key_suggests_flows():
+    from mcp_atlassian.eggs.plan import parse_plan
+
+    report = validate_plan(parse_plan(PLAN_TYPOS_YAML), make_context(), make_cfg())
+
+    assert not report.ok
+    finding = next(f for f in report.findings if f.path == "stories")
+    assert finding.message == 'Khóa không hợp lệ "stories" (đúng là "flows")'
+
+
+def test_unknown_epic_key_reports_near_match():
+    from mcp_atlassian.eggs.plan import parse_plan
+
+    report = validate_plan(parse_plan(PLAN_TYPOS_YAML), make_context(), make_cfg())
+
+    finding = next(f for f in report.findings if f.path == "epic.ownr")
+    assert finding.message == 'Khóa không hợp lệ "ownr" (đúng là "owner")'
+
+
+def test_unknown_part_key_reports_its_location():
+    from mcp_atlassian.eggs.plan import parse_plan
+
+    report = validate_plan(parse_plan(PLAN_TYPOS_YAML), make_context(), make_cfg())
+
+    finding = next(f for f in report.findings if f.path == "flows[0].parts[0].summary")
+    assert finding.message == 'Khóa không hợp lệ "summary" ở flows[0].parts[0]'
+
+
+def test_flow_without_actor_names_the_flow():
+    cfg = make_cfg()
+    ctx = make_context(components={"CH": "CH - CỬA HÀNG"})
+    plan = Plan(
+        project="HMK",
+        epic=PlanEpic(summary="Epic", due=date(2026, 11, 20), owner="ba.user"),
+        flows=[
+            PlanFlow(
+                code="CH-01",
+                summary="Flow without actor",
+                ac=["AC 1"],
+                parts=[PlanPart(part="BE", estimate="1d")],
+            )
+        ],
+    )
+    report = validate_plan(plan, ctx, cfg)
+
+    finding = next(f for f in report.findings if f.path == "flows[0].actor")
+    assert finding.message == "flows[0] chưa có actor (mã Component)"

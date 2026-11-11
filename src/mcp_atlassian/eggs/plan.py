@@ -59,6 +59,19 @@ class PlanTechTask:
 
 
 @dataclass
+class PlanUnknownKey:
+    """A key the parser did not understand, kept so validation can report it."""
+
+    key: str
+    location: str
+    allowed: tuple[str, ...]
+
+    @property
+    def path(self) -> str:
+        return f"{self.location}.{self.key}" if self.location else self.key
+
+
+@dataclass
 class Plan:
     project: str = ""
     epic: PlanEpic = field(default_factory=PlanEpic)
@@ -66,6 +79,48 @@ class Plan:
     tech_tasks: list[PlanTechTask] = field(default_factory=list)
     open_questions: list[str] = field(default_factory=list)
     other_issues: list[dict[str, Any]] = field(default_factory=list)
+    unknown_keys: list[PlanUnknownKey] = field(default_factory=list)
+
+
+_TOP_LEVEL_KEYS = frozenset(
+    {
+        "schema",
+        "project",
+        "epic",
+        "flows",
+        "tech_tasks",
+        "open_questions",
+        "other_issues",
+    }
+)
+_EPIC_KEYS = frozenset({"key", "existing", "summary", "due", "owner"})
+_FLOW_KEYS = frozenset(
+    {
+        "code",
+        "codes",
+        "actor",
+        "summary",
+        "ac",
+        "due",
+        "ba",
+        "qc",
+        "depends_on",
+        "parts",
+        "key",
+        "keep_description",
+    }
+)
+_PART_KEYS = frozenset({"part", "assignee", "estimate", "key"})
+
+
+def _collect_unknown(
+    raw: dict[str, Any], known: frozenset[str], location: str
+) -> list[PlanUnknownKey]:
+    return [
+        PlanUnknownKey(key=str(key), location=location, allowed=tuple(sorted(known)))
+        for key in raw
+        if key not in known
+    ]
 
 
 def _parse_date(val: Any, path: str) -> date | None:
@@ -157,10 +212,13 @@ def parse_plan(text: str) -> Plan:
 
     project = str(data.get("project") or "").strip()
 
+    unknown_keys = _collect_unknown(data, _TOP_LEVEL_KEYS, "")
+
     epic_raw = data.get("epic")
     if epic_raw is None:
         epic = PlanEpic()
     elif isinstance(epic_raw, dict):
+        unknown_keys.extend(_collect_unknown(epic_raw, _EPIC_KEYS, "epic"))
         epic = PlanEpic(
             key=epic_raw.get("key"),
             existing=epic_raw.get("existing"),
@@ -184,11 +242,17 @@ def parse_plan(text: str) -> Plan:
             raise PlanError(msg, path=f"flows[{i}]")
 
         path_flow = f"flows[{i}]"
+        unknown_keys.extend(_collect_unknown(raw_flow, _FLOW_KEYS, path_flow))
         raw_parts = raw_flow.get("parts") or []
         parts: list[PlanPart] = []
         if isinstance(raw_parts, list):
             for j, raw_part in enumerate(raw_parts):
                 if isinstance(raw_part, dict):
+                    unknown_keys.extend(
+                        _collect_unknown(
+                            raw_part, _PART_KEYS, f"{path_flow}.parts[{j}]"
+                        )
+                    )
                     est = raw_part.get("estimate")
                     parts.append(
                         PlanPart(
@@ -275,6 +339,7 @@ def parse_plan(text: str) -> Plan:
         tech_tasks=tech_tasks,
         open_questions=open_questions,
         other_issues=other_issues,
+        unknown_keys=unknown_keys,
     )
 
 

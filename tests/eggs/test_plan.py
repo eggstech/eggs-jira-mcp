@@ -98,3 +98,42 @@ def test_format_summary():
         format_summary(["CH-04", "CH-05"], "Thanh toán") == "[CH-04,CH-05] Thanh toán"
     )
     assert format_summary([], "Check-in") == "Check-in"
+
+
+TYPOS_YAML = """
+schema: eggs-plan/v2
+project: HMKLOYAL
+stories:
+  - actor: CH
+epic: { summary: "Epic", due: 2026-11-27, owner: ba.username, ownr: ba.username }
+flows:
+  - code: CH-01
+    actor: CH
+    summary: "Check-in"
+    ac: ["Có mã đơn"]
+    summary_note: "ghi chú lạ"
+    parts:
+      - { part: BE, assignee: huy.truong, estimate: 1d, summary: "Dev task summary" }
+"""
+
+
+def test_parse_collects_unknown_keys_at_every_level():
+    plan = parse_plan(TYPOS_YAML)
+
+    found = [(u.key, u.location) for u in plan.unknown_keys]
+    assert found == [
+        ("stories", ""),
+        ("ownr", "epic"),
+        ("summary_note", "flows[0]"),
+        ("summary", "flows[0].parts[0]"),
+    ]
+    assert plan.unknown_keys[0].path == "stories"
+    assert plan.unknown_keys[3].path == "flows[0].parts[0].summary"
+
+
+def test_unknown_keys_are_not_dumped():
+    plan = parse_plan(TYPOS_YAML)
+    dumped = dump_plan(plan)
+
+    assert "summary_note" not in dumped
+    assert "ownr" not in dumped

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import difflib
 import logging
 import re
 from dataclasses import dataclass, field
@@ -15,6 +16,41 @@ from .plan import Plan, split_codes, split_codes_exact
 logger = logging.getLogger(__name__)
 
 _PLATFORM_TITLE_RE = re.compile(r"^(FE|BE|APP|WEB|API)\b")
+
+# Keys people commonly use instead of the eggs-plan/v2 name.
+_KEY_ALIASES = {
+    "stories": "flows",
+    "story": "flows",
+    "flow": "flows",
+    "technical_tasks": "tech_tasks",
+    "tech_task": "tech_tasks",
+    "dependencies": "depends_on",
+    "dependency": "depends_on",
+    "depend": "depends_on",
+    "acceptance_criteria": "ac",
+}
+
+
+def _unknown_key_suggestion(key: str, allowed: tuple[str, ...]) -> str | None:
+    alias = _KEY_ALIASES.get(key)
+    if alias is not None and alias in allowed:
+        return alias
+    close = difflib.get_close_matches(key, list(allowed), n=1, cutoff=0.75)
+    return close[0] if close else None
+
+
+def _unknown_key_findings(plan: Plan) -> list[Finding]:
+    findings: list[Finding] = []
+    for unknown in plan.unknown_keys:
+        suggestion = _unknown_key_suggestion(unknown.key, unknown.allowed)
+        if suggestion is not None:
+            message = f'Khóa không hợp lệ "{unknown.key}" (đúng là "{suggestion}")'
+        elif unknown.location:
+            message = f'Khóa không hợp lệ "{unknown.key}" ở {unknown.location}'
+        else:
+            message = f'Khóa không hợp lệ "{unknown.key}"'
+        findings.append(Finding("error", unknown.path, message))
+    return findings
 
 
 @dataclass
@@ -347,7 +383,7 @@ def _creates_cycle(flow_code: str, graph: dict[str, list[str]]) -> bool:
 def validate_plan(plan: Plan, ctx: PlanContext, cfg: EggsConfig) -> ValidationReport:
     """Validate a plan against Jira context and business rules."""
     new_plan = copy.deepcopy(plan)
-    findings: list[Finding] = []
+    findings: list[Finding] = _unknown_key_findings(new_plan)
     questions: list[str] = list(new_plan.open_questions)
 
     story_children = _story_children(ctx, cfg)
@@ -517,7 +553,10 @@ def validate_plan(plan: Plan, ctx: PlanContext, cfg: EggsConfig) -> ValidationRe
         label = flow.code or flow.summary or f"flows[{i}]"
 
         # Actor
-        if not flow.actor or flow.actor not in ctx.components:
+        if not flow.actor:
+            msg = f"flows[{i}] chưa có actor (mã Component)"
+            findings.append(Finding("error", f"flows[{i}].actor", msg))
+        elif flow.actor not in ctx.components:
             allowed = ", ".join(sorted(ctx.components.keys()))
             msg = (
                 f"Chưa có Component {flow.actor} trong {plan.project}. "

@@ -1906,3 +1906,99 @@ class TestStructuredErrors:
         assert data["message"] == self.MISSING
         assert data["changes"] == []
         assert data["next_actions"] == []
+
+
+class TestNextMatchedIntents:
+    """B12: eggs_next ranks the intents that match what the person wrote."""
+
+    @staticmethod
+    async def _next(cfg: EggsConfig, text: str, issues: dict | None = None):
+        server = FastMCP("test_jira")
+        register_eggs_tools(server, force=True)
+        members = ["dev1"]
+        bot = FakeGateway(
+            user="eggsbot",
+            role_members={
+                "RFID": {
+                    "Business Analysts": members,
+                    "Testers": members,
+                    "Developers": members,
+                },
+                "CP": {
+                    "Business Analysts": members,
+                    "Testers": members,
+                    "Developers": members,
+                },
+            },
+        )
+        user = FakeGateway(user="dev1", issues=issues or {})
+        with (
+            patch("mcp_atlassian.eggs.tools.load_config", return_value=cfg),
+            patch(
+                "mcp_atlassian.eggs.tools.get_user_gateway",
+                AsyncMock(return_value=user),
+            ),
+            patch("mcp_atlassian.eggs.tools.get_roles_reader", return_value=bot),
+            patch("mcp_atlassian.eggs.tools.build_agenda", return_value=[]),
+        ):
+            res = await server.call_tool("eggs_next", {"text": text})
+        return json.loads(res.content[0].text)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("log work 2h cho RFID-10", "log_work"),
+            ("cập nhật cuối ngày", "end_day"),
+            ("RFID-10 bị block do đối tác", "block"),
+            ("kết luận phản ánh RFID-R12 là lỗi", "triage_close"),
+            ("tạo card từ tài liệu này", "plan_cards"),
+        ],
+    )
+    async def test_typical_sentences_rank_the_expected_intent(
+        self, cfg: EggsConfig, text: str, expected: str
+    ):
+        data = await self._next(cfg, text)
+
+        assert data["matched_intents"][0] == expected
+        assert 1 <= len(data["matched_intents"]) <= 3
+        intent_names = {i["name"] for i in data["intents"]}
+        assert set(data["matched_intents"]) <= intent_names
+
+    @pytest.mark.asyncio
+    async def test_user_report_key_favours_triage_intents(self, cfg: EggsConfig):
+        report = {
+            "key": "RFID-50",
+            "fields": {
+                "issuetype": {"name": "User Report"},
+                "summary": "Khách báo lỗi in",
+                "status": {"name": "Analyzing"},
+                "project": {"key": "RFID"},
+            },
+        }
+        data = await self._next(cfg, "xem RFID-50", {"RFID-50": report})
+
+        assert set(data["matched_intents"][:2]) == {"triage_open", "triage_close"}
+
+    @pytest.mark.asyncio
+    async def test_no_text_has_no_matched_intents(self, cfg: EggsConfig):
+        server = FastMCP("test_jira")
+        register_eggs_tools(server, force=True)
+        bot = FakeGateway(
+            user="eggsbot",
+            role_members={"RFID": {"Developers": ["dev1"]}},
+        )
+        user = FakeGateway(user="dev1", issues={})
+        with (
+            patch("mcp_atlassian.eggs.tools.load_config", return_value=cfg),
+            patch(
+                "mcp_atlassian.eggs.tools.get_user_gateway",
+                AsyncMock(return_value=user),
+            ),
+            patch("mcp_atlassian.eggs.tools.get_roles_reader", return_value=bot),
+            patch("mcp_atlassian.eggs.tools.build_agenda", return_value=[]),
+        ):
+            res = await server.call_tool("eggs_next", {})
+        data = json.loads(res.content[0].text)
+
+        assert data["matched_intents"] == []
