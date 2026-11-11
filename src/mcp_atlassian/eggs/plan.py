@@ -37,6 +37,7 @@ class PlanPart:
 @dataclass
 class PlanFlow:
     code: str | None = None
+    codes: list[str] = field(default_factory=list)
     actor: str | None = None
     summary: str = ""
     ac: list[str] = field(default_factory=list)
@@ -107,6 +108,22 @@ def split_codes(summary: str) -> tuple[list[str], str]:
     # Clean up whitespace
     cleaned = re.sub(r" +", " ", cleaned).strip()
     return codes, cleaned
+
+
+def split_codes_exact(summary: str) -> tuple[list[str], str]:
+    """Extract codes but keep the title byte-for-byte (no whitespace rewrite)."""
+    codes: list[str] = []
+
+    def repl(m: re.Match[str]) -> str:
+        inner = m.group(1).strip()
+        parts = [p.strip() for p in inner.split(",") if p.strip()]
+        if parts and all(re.match(r"^[A-Z]+-\d{2,}$", p) for p in parts):
+            codes.extend(parts)
+            return ""
+        return m.group(0)
+
+    cleaned = re.sub(r"\[([^\]]+)\]", repl, summary)
+    return codes, cleaned.strip()
 
 
 def format_summary(codes: list[str], title: str) -> str:
@@ -196,8 +213,21 @@ def parse_plan(text: str) -> Plan:
             [str(item) for item in raw_depends] if isinstance(raw_depends, list) else []
         )
 
+        raw_codes = raw_flow.get("codes")
+        codes = (
+            [str(c).strip() for c in raw_codes if str(c).strip()]
+            if isinstance(raw_codes, list)
+            else []
+        )
+        raw_code = raw_flow.get("code")
+        if not codes and raw_code:
+            codes = [str(raw_code).strip()]
+        elif codes and not raw_code:
+            raw_code = codes[0]
+
         flow = PlanFlow(
-            code=raw_flow.get("code"),
+            code=raw_code,
+            codes=codes,
             actor=raw_flow.get("actor"),
             summary=str(raw_flow.get("summary") or ""),
             ac=ac,
@@ -277,6 +307,10 @@ def dump_plan(plan: Plan) -> str:
 
         f_dict: dict[str, Any] = {
             "code": flow.code,
+        }
+        if len(flow.codes) > 1:
+            f_dict["codes"] = flow.codes
+        f_dict |= {
             "actor": flow.actor,
             "summary": flow.summary,
             "ac": flow.ac,

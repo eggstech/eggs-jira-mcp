@@ -89,6 +89,25 @@ def test_export_maps_story_fields():
                     "status": {"name": "Dev In Progress"},
                 },
             },
+            "HMK-101": {
+                "key": "HMK-101",
+                "fields": {
+                    "summary": "[BE] Check-in",
+                    "issuetype": {"name": "Dev Task"},
+                    "parent": {"key": "HMK-10"},
+                    "customfield_10701": {"value": "BE"},
+                    "assignee": {"name": "dev.user"},
+                    "timetracking": {"originalEstimate": "1d"},
+                },
+            },
+            "HMK-102": {
+                "key": "HMK-102",
+                "fields": {
+                    "summary": "Bug in check-in",
+                    "issuetype": {"name": "Bug"},
+                    "parent": {"key": "HMK-10"},
+                },
+            },
         }
     )
 
@@ -285,13 +304,24 @@ def test_export_apply_round_trip_noop():
                         {
                             "key": "HMK-101",
                             "fields": {
+                                "summary": "[BE] Check-in",
                                 "issuetype": {"name": "Dev Task"},
-                                "customfield_10701": {"value": "BE"},
-                                "assignee": {"name": "dev.user"},
-                                "timetracking": {"originalEstimate": "1d"},
+                                "status": {"name": "DEV To Do"},
                             },
                         }
                     ],
+                },
+            },
+            "HMK-101": {
+                "key": "HMK-101",
+                "fields": {
+                    "summary": "[BE] Check-in",
+                    "issuetype": {"name": "Dev Task"},
+                    "status": {"name": "DEV To Do"},
+                    "parent": {"key": "HMK-10"},
+                    "customfield_10701": {"value": "BE"},
+                    "assignee": {"name": "dev.user"},
+                    "timetracking": {"originalEstimate": "1d"},
                 },
             },
         },
@@ -305,3 +335,120 @@ def test_export_apply_round_trip_noop():
     assert res.ok
     # Dry run should report no changes because fields and subtasks are already matching
     assert res.changes == []
+
+
+# --- Batch R review fixes (items 1, 6) ---
+
+
+def test_export_reads_dev_tasks_with_a_parent_search():
+    cfg = make_cfg()
+    gateway = FakeGateway(
+        issues={
+            "HMK-1": {
+                "key": "HMK-1",
+                "fields": {
+                    "summary": "Epic",
+                    "project": {"key": "HMK"},
+                    "issuetype": {"name": "Epic"},
+                },
+            },
+            "HMK-10": {
+                "key": "HMK-10",
+                "fields": {
+                    "summary": "[CH-01] Check-in",
+                    "issuetype": {"name": "Story"},
+                    "components": [{"name": "CH - CỬA HÀNG"}],
+                    "duedate": "2026-11-20",
+                    "subtasks": [
+                        {
+                            "key": "HMK-101",
+                            "id": "101",
+                            "fields": {
+                                "summary": "[BE] Check-in",
+                                "issuetype": {"name": "Dev Task"},
+                                "status": {"name": "DEV To Do"},
+                            },
+                        }
+                    ],
+                },
+            },
+            "HMK-101": {
+                "key": "HMK-101",
+                "fields": {
+                    "summary": "[BE] Check-in",
+                    "issuetype": {"name": "Dev Task"},
+                    "status": {"name": "DEV To Do"},
+                    "parent": {"key": "HMK-10"},
+                    "customfield_10701": {"value": "BE"},
+                    "assignee": {"name": "dev.user"},
+                    "timetracking": {"originalEstimate": "1d"},
+                },
+            },
+        }
+    )
+
+    plan = export_epic(gateway, cfg, "HMK-1")
+
+    assert 'parent = "HMK-10"' in gateway.jql_queries
+    assert len(plan.flows[0].parts) == 1
+    part = plan.flows[0].parts[0]
+    assert part.key == "HMK-101"
+    assert part.part == "BE"
+    assert part.assignee == "dev.user"
+    assert part.estimate == "1d"
+
+
+def test_export_round_trip_keeps_multicode_multicomponent_and_spacing():
+    from mcp_atlassian.eggs.plan import dump_plan, parse_plan
+
+    cfg = make_cfg()
+    summary = "[CH-04,CH-05]  Double  space"
+    gateway = FakeGateway(
+        components_map={"HMK": ["CH - CỬA HÀNG", "OPS - KHÁC"]},
+        issues={
+            "HMK-1": {
+                "key": "HMK-1",
+                "fields": {
+                    "summary": "Epic",
+                    "project": {"key": "HMK"},
+                    "issuetype": {"name": "Epic"},
+                    "duedate": "2026-11-30",
+                    "assignee": {"name": "ba.user"},
+                },
+            },
+            "HMK-10": {
+                "key": "HMK-10",
+                "fields": {
+                    "summary": summary,
+                    "issuetype": {"name": "Story"},
+                    "status": {"name": "Analyzing"},
+                    "components": [
+                        {"name": "CH - CỬA HÀNG"},
+                        {"name": "OPS - KHÁC"},
+                    ],
+                    "duedate": "2026-11-20",
+                    "assignee": {"name": "ba.user"},
+                    "customfield_10110": {"name": "qc.user"},
+                    "description": "h2. Acceptance Criteria\n- old\n\nTail",
+                },
+            },
+        },
+    )
+    gateway.allowed_field_values = {("HMK", "Dev Task", "customfield_10701"): ["BE"]}
+
+    plan = export_epic(gateway, cfg, "HMK-1")
+    flow = plan.flows[0]
+    assert flow.code == "CH-04"
+    assert flow.codes == ["CH-04", "CH-05"]
+    assert flow.summary == "Double  space"
+
+    dumped = dump_plan(plan)
+    assert "codes:" in dumped
+    reloaded = parse_plan(dumped)
+    assert reloaded.flows[0].codes == ["CH-04", "CH-05"]
+
+    ctx = load_plan_context(gateway, cfg, reloaded, today=date(2026, 11, 10))
+    res = apply_plan(gateway, cfg, reloaded, ctx, dry_run=True)
+    assert res.ok, res.warnings
+    assert res.changes == []
+    assert gateway.issues["HMK-10"]["fields"]["summary"] == summary

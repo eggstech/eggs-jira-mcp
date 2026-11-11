@@ -105,6 +105,63 @@ def test_fake_gateway_search_filter():
     assert res[0]["key"] == "P-2"
 
 
+def test_search_returns_only_requested_fields():
+    fake = FakeGateway(
+        issues={
+            "P-1": {
+                "id": "1",
+                "key": "P-1",
+                "fields": {
+                    "summary": "Issue 1",
+                    "description": "Long text",
+                    "issuetype": {"name": "Story"},
+                },
+            }
+        }
+    )
+    res = fake.search("project = P", fields=["summary", "issuetype"])
+    assert res[0]["key"] == "P-1"
+    assert res[0]["fields"] == {"summary": "Issue 1", "issuetype": {"name": "Story"}}
+
+
+def test_get_subtasks_matches_jira_stub_shape():
+    fake = FakeGateway(
+        issues={
+            "P-1": {
+                "id": "1",
+                "key": "P-1",
+                "fields": {"summary": "Story", "issuetype": {"name": "Story"}},
+            }
+        }
+    )
+    key = fake.create_issue(
+        {
+            "project": {"key": "P"},
+            "parent": {"key": "P-1"},
+            "issuetype": {"name": "Dev Task"},
+            "summary": "[BE] Do it",
+            "customfield_10701": {"value": "BE"},
+            "assignee": {"name": "dev"},
+            "timetracking": {"originalEstimate": "1d"},
+        }
+    )
+
+    stub = fake.get_subtasks("P-1")[0]
+    assert stub["key"] == key
+    assert set(stub["fields"]) == {"summary", "status", "issuetype", "priority"}
+    assert "assignee" not in stub["fields"]
+    assert "timetracking" not in stub["fields"]
+    assert "customfield_10701" not in stub["fields"]
+
+
+def test_search_can_raise():
+    fake = FakeGateway(
+        issues={}, errors_on_search={'parent = "P-1"': JiraError("boom")}
+    )
+    with pytest.raises(JiraError, match="boom"):
+        fake.search('parent = "P-1"', fields=["key"])
+
+
 def test_fake_gateway_pagination_and_jql_recording():
     issues = {
         f"P-{i}": {"key": f"P-{i}", "fields": {"summary": f"Issue {i}"}}

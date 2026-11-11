@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import re
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -33,6 +34,7 @@ class FakeGateway(JiraGateway):
         existing_users: set[str] | None = None,
         allowed_field_values: dict[tuple[str, str, str], list[str]] | None = None,
         default_transitions: list[str] | None = None,
+        errors_on_search: dict[str, JiraError] | None = None,
     ) -> None:
         self.issues = dict(issues or {})
         self.worklogs = list(worklogs or [])
@@ -52,6 +54,7 @@ class FakeGateway(JiraGateway):
             set(existing_users) if existing_users is not None else None
         )
         self.allowed_field_values = dict(allowed_field_values or {})
+        self.errors_on_search = dict(errors_on_search or {})
         self.issue_properties: dict[tuple[str, str], Any] = {}
         self.links: list[tuple[str, str, str]] = []
         self.calls: list[tuple[str, tuple, dict[str, Any]]] = []
@@ -82,6 +85,9 @@ class FakeGateway(JiraGateway):
         """
         self._record("search", jql, fields, expand_changelog=expand_changelog)
         self.jql_queries.append(jql)
+        for needle, err in self.errors_on_search.items():
+            if needle in jql:
+                raise err
         if startAt is not None:
             start_at = startAt
         if maxResults is not None:
@@ -112,11 +118,38 @@ class FakeGateway(JiraGateway):
         else:
             results = list(self.issues.values())
 
+        projected = [
+            self._project_issue(iss, fields, expand_changelog=expand_changelog)
+            for iss in results
+        ]
         if max_results is not None:
-            return results[start_at : start_at + max_results]
+            return projected[start_at : start_at + max_results]
         if start_at > 0:
-            return results[start_at:]
-        return results
+            return projected[start_at:]
+        return projected
+
+    @staticmethod
+    def _project_issue(
+        issue: dict, fields: list[str], *, expand_changelog: bool = False
+    ) -> dict:
+        """Return an issue the way Jira search does: only the requested fields.
+
+        `key` and `id` are always present; `*all` returns everything.
+        """
+        if "*all" in fields or "*navigable" in fields:
+            return copy.deepcopy(issue)
+        out: dict[str, Any] = {
+            "id": issue.get("id"),
+            "key": issue.get("key"),
+            "fields": {
+                name: copy.deepcopy(issue.get("fields", {}).get(name))
+                for name in fields
+                if name not in ("id", "key") and name in issue.get("fields", {})
+            },
+        }
+        if expand_changelog and "changelog" in issue:
+            out["changelog"] = copy.deepcopy(issue["changelog"])
+        return out
 
     def get_issue(self, key: str) -> dict:
         self._record("get_issue", key)
@@ -266,17 +299,37 @@ class FakeGateway(JiraGateway):
                 .setdefault("subtasks", [])
             )
             p_subtasks.append(
-                {
-                    "id": str(self._next_id),
-                    "key": key,
-                    "fields": {
-                        "issuetype": fields.get("issuetype", {}),
-                        "status": {"name": "DEV To Do"},
-                        "summary": fields.get("summary", ""),
-                    },
-                }
+                self._subtask_stub(
+                    key,
+                    str(self._next_id),
+                    summary=fields.get("summary", ""),
+                    issuetype=fields.get("issuetype", {}),
+                    priority=fields.get("priority", {}),
+                )
             )
         return key
+
+    @staticmethod
+    def _subtask_stub(
+        key: str,
+        issue_id: str,
+        *,
+        summary: str = "",
+        status: dict | None = None,
+        issuetype: dict | None = None,
+        priority: dict | None = None,
+    ) -> dict:
+        """Jira only returns this stub shape for `fields.subtasks`."""
+        return {
+            "id": issue_id,
+            "key": key,
+            "fields": {
+                "summary": summary,
+                "status": status or {"name": "DEV To Do"},
+                "issuetype": issuetype or {},
+                "priority": priority or {},
+            },
+        }
 
     def link(self, link_type: str, inward_key: str, outward_key: str) -> None:
         self._record("link", link_type, inward_key, outward_key)
@@ -360,24 +413,34 @@ class FakeGateway(JiraGateway):
         return list(self.field_definitions)
 
     def get_subtasks(self, key: str) -> list[dict]:
+        """Return Jira's real stub shape: never Part, assignee or timetracking."""
         self._record("get_subtasks", key)
         subtasks = self.issues.get(key, {}).get("fields", {}).get("subtasks", [])
         if subtasks:
-            return list(subtasks)
+            return [
+                self._subtask_stub(
+                    st.get("key", ""),
+                    st.get("id", ""),
+                    summary=st.get("fields", {}).get("summary", ""),
+                    status=st.get("fields", {}).get("status"),
+                    issuetype=st.get("fields", {}).get("issuetype"),
+                    priority=st.get("fields", {}).get("priority"),
+                )
+                for st in subtasks
+            ]
         found = []
         for iss_key, iss_dict in self.issues.items():
             fields = iss_dict.get("fields", {})
             if fields.get("parent", {}).get("key") == key:
                 found.append(
-                    {
-                        "id": iss_dict.get("id", ""),
-                        "key": iss_key,
-                        "fields": {
-                            "issuetype": fields.get("issuetype", {}),
-                            "status": fields.get("status", {}),
-                            "summary": fields.get("summary", ""),
-                        },
-                    }
+                    self._subtask_stub(
+                        iss_key,
+                        iss_dict.get("id", ""),
+                        summary=fields.get("summary", ""),
+                        status=fields.get("status"),
+                        issuetype=fields.get("issuetype"),
+                        priority=fields.get("priority"),
+                    )
                 )
         return found
 
@@ -445,3 +508,7 @@ class FakeGateway(JiraGateway):
     def set_issue_property(self, key: str, name: str, value: Any) -> None:
         self._record("set_issue_property", key, name, value)
         self.issue_properties[(key, name)] = value
+
+    def get_issue_property(self, key: str, name: str) -> Any:
+        self._record("get_issue_property", key, name)
+        return self.issue_properties.get((key, name))

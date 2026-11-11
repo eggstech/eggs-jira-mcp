@@ -3,16 +3,20 @@ from __future__ import annotations
 import copy
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Literal
 
 from .actions import has_ac_heading
 from .config import EggsConfig
 from .gateway import JiraGateway
-from .plan import Plan, split_codes
+from .plan import Plan, split_codes, split_codes_exact
 
 logger = logging.getLogger(__name__)
+
+_PLATFORM_TITLE_RE = re.compile(
+    r"^(FE|BE|APP|WEB|API|CMS|POS|Backend|Frontend|Mobile)\b"
+)
 
 
 @dataclass
@@ -21,9 +25,17 @@ class PlanContext:
     components: dict[str, str]  # code -> full name
     part_options: list[str]
     epic_issue: dict[str, Any] | None
-    epic_stories: list[dict[str, Any]]
+    epic_stories: list[dict[str, Any]]  # every Epic child, with its type
     known_users: set[str]
     unknown_users: set[str]
+    epic_children_error: str | None = None
+    # flow index -> key of the existing Epic child the flow resolves to
+    resolved_flow_keys: dict[int, str] = field(default_factory=dict)
+    # existing child key -> eggs.flowCode read once per run
+    flow_codes: dict[str, str] = field(default_factory=dict)
+    # Story key -> Dev Task keys, only populated when a plan part carries a key
+    story_dev_task_keys: dict[str, set[str]] = field(default_factory=dict)
+    story_dev_task_errors: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -43,6 +55,135 @@ class ValidationReport:
     @property
     def ok(self) -> bool:
         return not any(f.level == "error" for f in self.findings)
+
+
+def _issuetype(issue: dict[str, Any]) -> str | None:
+    value = issue.get("fields", {}).get("issuetype", {}).get("name")
+    return value if isinstance(value, str) else None
+
+
+def _component_names(issue: dict[str, Any]) -> list[str]:
+    names: list[str] = []
+    for comp in issue.get("fields", {}).get("components") or []:
+        if isinstance(comp, dict):
+            name = comp.get("name")
+            if name:
+                names.append(name)
+    return names
+
+
+def _story_children(ctx: PlanContext, cfg: EggsConfig) -> list[dict[str, Any]]:
+    story_types = set(cfg.issue_types.get("story", ["Story"]))
+    return [
+        child
+        for child in ctx.epic_stories
+        if not _issuetype(child) or _issuetype(child) in story_types
+    ]
+
+
+def _adhoc_children(ctx: PlanContext, cfg: EggsConfig) -> list[dict[str, Any]]:
+    adhoc_types = set(cfg.issue_types.get("adhoc", ["Ad-hoc Task"]))
+    return [child for child in ctx.epic_stories if _issuetype(child) in adhoc_types]
+
+
+def _epic_jql(cfg: EggsConfig, epic_key: str) -> str:
+    epic_link_id = cfg.fields.get("epic_link")
+    if epic_link_id:
+        cf_match = re.search(r"\d+", epic_link_id)
+        cf_id = cf_match.group(0) if cf_match else epic_link_id
+        return f'cf[{cf_id}] = "{epic_key}"'
+    return f'"Epic Link" = "{epic_key}"'
+
+
+def _child_search_fields(cfg: EggsConfig) -> list[str]:
+    fields = [
+        "summary",
+        "components",
+        "duedate",
+        "issuetype",
+        "status",
+        "description",
+        "assignee",
+        "project",
+    ]
+    if cfg.fields.get("qc_owner"):
+        fields.append(cfg.fields["qc_owner"])
+    if cfg.fields.get("epic_link"):
+        fields.append(cfg.fields["epic_link"])
+    return fields
+
+
+def _read_flow_code(gateway: JiraGateway, key: str) -> str | None:
+    getter = getattr(gateway, "get_issue_property", None)
+    if getter is None:
+        return None
+    try:
+        value = getter(key, "eggs.flowCode")
+    except Exception:  # noqa: BLE001
+        return None
+    return value if isinstance(value, str) and value else None
+
+
+def _resolve_unkeyed_flows(
+    plan: Plan,
+    ctx_children: list[dict[str, Any]],
+    components: dict[str, str],
+    flow_codes: dict[str, str],
+    cfg: EggsConfig,
+) -> dict[int, str]:
+    """Match unkeyed flows to existing Epic Stories (item 5)."""
+    story_children = [
+        child
+        for child in ctx_children
+        if not _issuetype(child)
+        or _issuetype(child) in set(cfg.issue_types.get("story", ["Story"]))
+    ]
+    claimed = {flow.key for flow in plan.flows if flow.key}
+    resolved: dict[int, str] = {}
+
+    for idx, flow in enumerate(plan.flows):
+        if flow.key:
+            continue
+        child = None
+
+        if flow.code:
+            for candidate in story_children:
+                key = candidate.get("key", "")
+                if key in claimed:
+                    continue
+                summary_codes, _ = split_codes(
+                    candidate.get("fields", {}).get("summary", "")
+                )
+                if flow_codes.get(key) == flow.code or flow.code in summary_codes:
+                    child = candidate
+                    break
+
+        if child is None:
+            _, flow_title = split_codes_exact(flow.summary)
+            actor_component = components.get(flow.actor) if flow.actor else None
+            for candidate in story_children:
+                key = candidate.get("key", "")
+                if key in claimed:
+                    continue
+                _, candidate_title = split_codes_exact(
+                    candidate.get("fields", {}).get("summary", "")
+                )
+                if candidate_title != flow_title:
+                    continue
+                if actor_component and actor_component not in _component_names(
+                    candidate
+                ):
+                    continue
+                if not actor_component and _component_names(candidate):
+                    continue
+                child = candidate
+                break
+
+        if child is not None:
+            resolved[idx] = child.get("key", "")
+            claimed.add(child.get("key", ""))
+
+    return resolved
 
 
 def load_plan_context(
@@ -68,7 +209,8 @@ def load_plan_context(
     part_options = gateway.field_allowed_values(plan.project, dev_task_type, part_field)
 
     epic_issue: dict[str, Any] | None = None
-    epic_stories: list[dict[str, Any]] = []
+    epic_children: list[dict[str, Any]] = []
+    children_error: str | None = None
     epic_key = plan.epic.existing or plan.epic.key
     if epic_key:
         try:
@@ -77,42 +219,53 @@ def load_plan_context(
             epic_issue = None
 
         if epic_issue is not None:
-            epic_link_id = cfg.fields.get("epic_link")
-            if epic_link_id:
-                cf_match = re.search(r"\d+", epic_link_id)
-                cf_id = cf_match.group(0) if cf_match else epic_link_id
-                jql_epic = f'cf[{cf_id}] = "{epic_key}"'
-            else:
-                jql_epic = f'"Epic Link" = "{epic_key}"'
-
-            search_fields = [
-                "summary",
-                "components",
-                "duedate",
-                "subtasks",
-                "issuetype",
-                "status",
-                "description",
-                "assignee",
-            ]
-            if cfg.fields.get("qc_owner"):
-                search_fields.append(cfg.fields["qc_owner"])
-            if epic_link_id:
-                search_fields.append(epic_link_id)
-
             try:
-                children = gateway.search(jql_epic, fields=search_fields)
-            except Exception:  # noqa: BLE001
-                children = []
+                epic_children = gateway.search(
+                    _epic_jql(cfg, epic_key), fields=_child_search_fields(cfg)
+                )
+            except Exception as exc:  # noqa: BLE001
+                children_error = str(exc)
+                epic_children = []
 
-            story_types = set(cfg.issue_types.get("story", ["Story"]))
-            epic_stories = [
-                child
-                for child in children
-                if not child.get("fields", {}).get("issuetype")
-                or child.get("fields", {}).get("issuetype", {}).get("name")
-                in story_types
-            ]
+    flow_codes: dict[str, str] = {}
+    if any(not flow.key for flow in plan.flows):
+        story_types = set(cfg.issue_types.get("story", ["Story"]))
+        for child in epic_children:
+            it_name = _issuetype(child)
+            if it_name and it_name not in story_types:
+                continue
+            child_key = child.get("key")
+            if not child_key:
+                continue
+            flow_code = _read_flow_code(gateway, child_key)
+            if flow_code:
+                flow_codes[child_key] = flow_code
+
+    resolved = _resolve_unkeyed_flows(plan, epic_children, components, flow_codes, cfg)
+
+    story_dev_task_keys: dict[str, set[str]] = {}
+    story_dev_task_errors: dict[str, str] = {}
+    for idx, flow in enumerate(plan.flows):
+        effective_key = flow.key or resolved.get(idx)
+        if not effective_key or not any(part.key for part in flow.parts):
+            continue
+        if effective_key in story_dev_task_keys:
+            continue
+        try:
+            dev_tasks = gateway.search(
+                f'parent = "{effective_key}"',
+                fields=["key", "issuetype", "summary"],
+            )
+        except Exception as exc:  # noqa: BLE001
+            story_dev_task_errors[effective_key] = str(exc)
+            continue
+        dev_task_type_names = set(cfg.issue_types.get("dev_task", ["Dev Task"]))
+        story_dev_task_keys[effective_key] = {
+            task.get("key", "")
+            for task in dev_tasks
+            if task.get("key")
+            and (not _issuetype(task) or _issuetype(task) in dev_task_type_names)
+        }
 
     candidates: set[str] = set()
     if plan.epic.owner:
@@ -146,10 +299,30 @@ def load_plan_context(
         components=components,
         part_options=part_options,
         epic_issue=epic_issue,
-        epic_stories=epic_stories,
+        epic_stories=epic_children,
         known_users=known_users,
         unknown_users=unknown_users,
+        epic_children_error=children_error,
+        resolved_flow_keys=resolved,
+        flow_codes=flow_codes,
+        story_dev_task_keys=story_dev_task_keys,
+        story_dev_task_errors=story_dev_task_errors,
     )
+
+
+def _creates_cycle(flow_code: str, graph: dict[str, list[str]]) -> bool:
+    """True when following depends_on from flow_code returns to flow_code."""
+    stack = list(graph.get(flow_code, []))
+    seen: set[str] = set()
+    while stack:
+        code = stack.pop()
+        if code == flow_code:
+            return True
+        if code in seen:
+            continue
+        seen.add(code)
+        stack.extend(graph.get(code, []))
+    return False
 
 
 def validate_plan(plan: Plan, ctx: PlanContext, cfg: EggsConfig) -> ValidationReport:
@@ -157,6 +330,8 @@ def validate_plan(plan: Plan, ctx: PlanContext, cfg: EggsConfig) -> ValidationRe
     new_plan = copy.deepcopy(plan)
     findings: list[Finding] = []
     questions: list[str] = list(new_plan.open_questions)
+
+    story_children = _story_children(ctx, cfg)
 
     # 1. Epic validation
     if new_plan.epic.existing:
@@ -172,6 +347,48 @@ def validate_plan(plan: Plan, ctx: PlanContext, cfg: EggsConfig) -> ValidationRe
                     "không phải là Epic"
                 )
                 findings.append(Finding("error", "epic.existing", msg))
+
+            project_key = (
+                ctx.epic_issue.get("fields", {}).get("project", {}).get("key")
+                if isinstance(ctx.epic_issue.get("fields", {}).get("project"), dict)
+                else None
+            )
+            key_prefix = new_plan.epic.existing.split("-")[0]
+            if key_prefix.upper() != new_plan.project.upper() or (
+                project_key and project_key.upper() != new_plan.project.upper()
+            ):
+                msg = (
+                    f"Epic {new_plan.epic.existing} không thuộc dự án "
+                    f"{new_plan.project}"
+                )
+                findings.append(Finding("error", "epic.project", msg))
+
+            if ctx.epic_children_error:
+                msg = (
+                    f"Không tải được danh sách Story của Epic "
+                    f"{new_plan.epic.existing}: {ctx.epic_children_error}"
+                )
+                findings.append(Finding("error", "epic.children", msg))
+
+            raw_due = ctx.epic_issue.get("fields", {}).get("duedate")
+            raw_owner = ctx.epic_issue.get("fields", {}).get("assignee")
+            owner = raw_owner.get("name") if isinstance(raw_owner, dict) else raw_owner
+            if not new_plan.epic.due and not raw_due:
+                findings.append(
+                    Finding(
+                        "warning",
+                        "epic.due",
+                        f"Epic {new_plan.epic.existing} chưa có ngày hạn (due)",
+                    )
+                )
+            if not new_plan.epic.owner and not owner:
+                findings.append(
+                    Finding(
+                        "warning",
+                        "epic.owner",
+                        f"Epic {new_plan.epic.existing} chưa có người phụ trách",
+                    )
+                )
     else:
         if not new_plan.epic.due:
             msg = "Epic mới bắt buộc phải có ngày hạn (due)"
@@ -193,9 +410,22 @@ def validate_plan(plan: Plan, ctx: PlanContext, cfg: EggsConfig) -> ValidationRe
             except ValueError:
                 pass
 
-    # 2. Auto code generation for flows with code=None
+    # 2. Adopt existing Stories for unkeyed flows, then auto-code
+    for i, flow in enumerate(new_plan.flows):
+        if not flow.key and i in ctx.resolved_flow_keys:
+            flow.key = ctx.resolved_flow_keys[i]
+        if flow.key and not flow.code:
+            for child in story_children:
+                if child.get("key") != flow.key:
+                    continue
+                child_codes, _ = split_codes(child.get("fields", {}).get("summary", ""))
+                if child_codes:
+                    flow.codes = child_codes
+                    flow.code = child_codes[0]
+                break
+
     max_nn: dict[str, int] = {}
-    for story in ctx.epic_stories:
+    for story in story_children:
         ext_codes, _ = split_codes(story.get("fields", {}).get("summary", ""))
         for c in ext_codes:
             if "-" in c:
@@ -204,19 +434,22 @@ def validate_plan(plan: Plan, ctx: PlanContext, cfg: EggsConfig) -> ValidationRe
                     max_nn[prefix] = max(max_nn.get(prefix, 0), int(num))
 
     for flow in new_plan.flows:
-        if flow.code and "-" in flow.code:
-            prefix, num = flow.code.split("-", 1)
-            if num.isdigit():
-                max_nn[prefix] = max(max_nn.get(prefix, 0), int(num))
+        for code in flow.codes or ([flow.code] if flow.code else []):
+            if "-" in code:
+                prefix, num = code.split("-", 1)
+                if num.isdigit():
+                    max_nn[prefix] = max(max_nn.get(prefix, 0), int(num))
 
     for flow in new_plan.flows:
         if flow.code is None and flow.actor and flow.actor in ctx.components:
             curr = max_nn.get(flow.actor, 0) + 1
             max_nn[flow.actor] = curr
             flow.code = f"{flow.actor}-{curr:02d}"
+            flow.codes = [flow.code]
 
     # 3. Flow rules
     seen_plan_codes: dict[str, int] = {}
+    epic_child_keys = {child.get("key") for child in ctx.epic_stories}
     for i, flow in enumerate(new_plan.flows):
         label = flow.code or flow.summary or f"flows[{i}]"
 
@@ -230,60 +463,73 @@ def validate_plan(plan: Plan, ctx: PlanContext, cfg: EggsConfig) -> ValidationRe
             )
             findings.append(Finding("error", f"flows[{i}].actor", msg))
 
-        # Platform summary
-        _, title = split_codes(flow.summary)
-        if re.search(
-            r"^(FE|BE|APP|API|WEB|CMS|POS|Backend|Frontend|Mobile)\b",
-            title.strip(),
-            re.IGNORECASE,
-        ):
+        # Platform summary: uppercase tokens only; legacy keyed Stories are kept
+        _, title = split_codes_exact(flow.summary)
+        if _PLATFORM_TITLE_RE.match(title.strip()):
             lead_word = title.strip().split()[0] if title.strip() else ""
             msg = (
                 f"Luồng '{label}': Tên luồng được đặt theo nền tảng kỹ thuật "
                 f"({lead_word}), vui lòng đặt theo luồng nghiệp vụ"
             )
-            findings.append(Finding("error", f"flows[{i}].summary", msg))
+            level: Literal["error", "warning"] = "warning" if flow.key else "error"
+            findings.append(Finding(level, f"flows[{i}].summary", msg))
 
         # AC empty
         if not flow.ac and not flow.keep_description:
             msg = f"Luồng '{label}': Chưa có tiêu chí nghiệm thu (AC)"
             findings.append(Finding("error", f"flows[{i}].ac", msg))
 
-        # Code format & actor prefix
-        if flow.code:
-            if not re.match(r"^[A-Z]+-\d{2,}$", flow.code):
-                msg = f"Mã luồng '{flow.code}' không đúng định dạng ^[A-Z]+-\\d{{2,}}$"
+        # Code format & actor prefix, duplicates
+        codes_to_check = flow.codes or ([flow.code] if flow.code else [])
+        if flow.code and not flow.codes:
+            flow.codes = [flow.code]
+        for code in codes_to_check:
+            if not re.match(r"^[A-Z]+-\d{2,}$", code):
+                msg = f"Mã luồng '{code}' không đúng định dạng ^[A-Z]+-\\d{{2,}}$"
                 findings.append(Finding("error", f"flows[{i}].code", msg))
             else:
-                prefix = flow.code.split("-")[0]
+                prefix = code.split("-")[0]
                 if flow.actor and prefix != flow.actor:
                     msg = (
-                        f"Mã luồng '{flow.code}' có tiền tố không khớp với Actor "
+                        f"Mã luồng '{code}' có tiền tố không khớp với Actor "
                         f"'{flow.actor}'"
                     )
                     findings.append(Finding("error", f"flows[{i}].code", msg))
 
             # Duplicate inside plan
-            if flow.code in seen_plan_codes:
-                prev_i = seen_plan_codes[flow.code]
+            if code in seen_plan_codes:
+                prev_i = seen_plan_codes[code]
                 msg = (
-                    f"Mã luồng '{flow.code}' bị trùng lặp trong plan "
+                    f"Mã luồng '{code}' bị trùng lặp trong plan "
                     f"(trùng với flows[{prev_i}])"
                 )
                 findings.append(Finding("error", f"flows[{i}].code", msg))
             else:
-                seen_plan_codes[flow.code] = i
+                seen_plan_codes[code] = i
 
-            # Duplicate against Epic stories
-            for story in ctx.epic_stories:
+            # Duplicate against Epic Stories (same issue is not a duplicate)
+            for story in story_children:
                 ext_codes, _ = split_codes(story.get("fields", {}).get("summary", ""))
                 ext_key = story.get("key")
-                if flow.code in ext_codes and flow.key != ext_key:
+                if code in ext_codes and flow.key != ext_key:
                     msg = (
-                        f"Mã luồng '{flow.code}' bị trùng với Story đã có "
+                        f"Mã luồng '{code}' bị trùng với Story đã có "
                         f"{ext_key} trong Epic"
                     )
                     findings.append(Finding("error", f"flows[{i}].code", msg))
+
+        # Key must belong to this Epic
+        if (
+            flow.key
+            and ctx.epic_issue is not None
+            and not ctx.epic_children_error
+            and flow.key not in epic_child_keys
+        ):
+            msg = (
+                f"Luồng '{label}': Story {flow.key} không thuộc Epic "
+                f"{new_plan.epic.existing or new_plan.epic.key}"
+            )
+            findings.append(Finding("error", f"flows[{i}].key", msg))
 
         # Due before today for new flow
         if flow.key is None and flow.due is not None and flow.due < ctx.today:
@@ -334,6 +580,22 @@ def validate_plan(plan: Plan, ctx: PlanContext, cfg: EggsConfig) -> ValidationRe
                     Finding("error", f"flows[{i}].parts[{j}].assignee", msg)
                 )
 
+            if part.key:
+                if not flow.key:
+                    msg = (
+                        f"Luồng '{label}': Part có key {part.key} nhưng luồng "
+                        "chưa có Story key"
+                    )
+                    findings.append(Finding("error", f"flows[{i}].parts[{j}].key", msg))
+                elif flow.key in ctx.story_dev_task_errors:
+                    continue
+                elif part.key not in ctx.story_dev_task_keys.get(flow.key, set()):
+                    msg = (
+                        f"Luồng '{label}': Dev Task {part.key} không thuộc "
+                        f"Story {flow.key}"
+                    )
+                    findings.append(Finding("error", f"flows[{i}].parts[{j}].key", msg))
+
     # 4. Tech tasks
     for i, tt in enumerate(new_plan.tech_tasks):
         if tt.assignee and tt.assignee in ctx.unknown_users:
@@ -354,26 +616,34 @@ def validate_plan(plan: Plan, ctx: PlanContext, cfg: EggsConfig) -> ValidationRe
     for f in new_plan.flows:
         if f.code:
             valid_codes.add(f.code)
-    for story in ctx.epic_stories:
+        valid_codes.update(f.codes)
+    for story in story_children:
         c_list, _ = split_codes(story.get("fields", {}).get("summary", ""))
         valid_codes.update(c_list)
 
+    graph = {f.code: list(f.depends_on) for f in new_plan.flows if f.code}
     for i, flow in enumerate(new_plan.flows):
         label = flow.code or flow.summary or f"flows[{i}]"
         for dep in flow.depends_on:
-            if dep not in valid_codes:
+            if dep in flow.codes or dep == flow.code:
+                msg = f"Luồng '{label}': Không thể phụ thuộc vào chính nó ({dep})"
+                findings.append(Finding("error", f"flows[{i}].depends_on", msg))
+            elif dep not in valid_codes:
                 msg = (
                     f"Luồng '{label}': Phụ thuộc vào mã '{dep}' không tồn tại "
                     "trong plan hay Epic"
                 )
                 findings.append(Finding("error", f"flows[{i}].depends_on", msg))
+        if flow.code and _creates_cycle(flow.code, graph):
+            msg = f"Luồng '{label}': Phụ thuộc tạo vòng (cycle) giữa các luồng"
+            findings.append(Finding("error", f"flows[{i}].depends_on", msg))
 
     # 6. Warnings
     for i, flow in enumerate(new_plan.flows):
         label = flow.code or flow.summary or f"flows[{i}]"
-        # TBD in AC
+        # TBD in AC (case-insensitive)
         for ac_item in flow.ac:
-            if ac_item.strip().startswith("TBD"):
+            if ac_item.strip().upper().startswith("TBD"):
                 msg = (
                     f"Luồng '{label}': AC có mục TBD ('{ac_item}'), "
                     "Story sẽ chưa sang Ready For Dev"

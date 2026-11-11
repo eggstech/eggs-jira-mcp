@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime
 from typing import Any
+from urllib.parse import quote
 
 from requests.exceptions import HTTPError
 
@@ -588,7 +590,9 @@ class AtlassianGateway(JiraGateway):
     def user_exists(self, username: str) -> bool:
         """Check if user exists via GET rest/api/2/user?username=."""
         try:
-            res = self.client.get(f"rest/api/2/user?username={username}")
+            res = self.client.get(
+                f"rest/api/2/user?username={quote(username, safe='')}"
+            )
             return bool(res and isinstance(res, dict) and res.get("name"))
         except HTTPError as e:
             if e.response is not None and e.response.status_code == 404:
@@ -637,8 +641,26 @@ class AtlassianGateway(JiraGateway):
         return []
 
     def set_issue_property(self, key: str, name: str, value: Any) -> None:
-        """Set an issue property via PUT rest/api/2/issue/{key}/properties/{name}."""
+        """Set an issue property via PUT rest/api/2/issue/{key}/properties/{name}.
+
+        The value is sent as a JSON document (a code becomes `"CH-01"`).
+        """
         try:
-            self.client.put(f"rest/api/2/issue/{key}/properties/{name}", data=value)
+            self.client.put(
+                f"rest/api/2/issue/{key}/properties/{name}",
+                data=json.dumps(value),
+            )
         except HTTPError as e:
             raise _handle_http_error(e) from e
+
+    def get_issue_property(self, key: str, name: str) -> Any:
+        """Read an issue property; returns None when it is not set."""
+        try:
+            res = self.client.get(f"rest/api/2/issue/{key}/properties/{name}")
+        except HTTPError as e:
+            if e.response is not None and e.response.status_code == 404:
+                return None
+            raise _handle_http_error(e) from e
+        if isinstance(res, dict):
+            return res.get("value")
+        return None

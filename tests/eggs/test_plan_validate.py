@@ -1,6 +1,7 @@
 from datetime import date
 
 from mcp_atlassian.eggs.config import EggsConfig
+from mcp_atlassian.eggs.gateway import JiraError
 from mcp_atlassian.eggs.plan import (
     Plan,
     PlanEpic,
@@ -591,3 +592,288 @@ def test_auto_code_continues_existing():
     assert report.ok
     assert report.plan.flows[0].code == "CH-08"
     assert "[CH-08]" in report.tree
+
+
+# --- Batch R review fixes (items 3, 5, 6, 10, 12) ---
+
+
+def _epic_issue(key: str = "HMK-1", **fields) -> dict:
+    base_fields = {
+        "summary": "Epic",
+        "issuetype": {"name": "Epic"},
+        "project": {"key": "HMK"},
+        "duedate": "2026-11-30",
+        "assignee": {"name": "ba.user"},
+    }
+    base_fields.update(fields)
+    return {"key": key, "fields": base_fields}
+
+
+def test_epic_children_search_failure_is_an_error():
+    cfg = make_cfg()
+    gateway = FakeGateway(
+        issues={"HMK-1": _epic_issue()},
+        errors_on_search={"cf[10100]": JiraError("JQL unavailable")},
+    )
+    plan = Plan(project="HMK", epic=PlanEpic(existing="HMK-1"), flows=[])
+
+    ctx = load_plan_context(gateway, cfg, plan, today=date(2026, 11, 10))
+    assert ctx.epic_children_error is not None
+
+    report = validate_plan(plan, ctx, cfg)
+    assert not report.ok
+    assert any(
+        f.path == "epic.children" and "JQL unavailable" in f.message
+        for f in report.findings
+        if f.level == "error"
+    )
+
+
+def test_epic_must_belong_to_plan_project():
+    cfg = make_cfg()
+    gateway = FakeGateway(issues={"HMK-1": _epic_issue(project={"key": "OTHER"})})
+    plan = Plan(project="HMK", epic=PlanEpic(existing="HMK-1"), flows=[])
+
+    ctx = load_plan_context(gateway, cfg, plan, today=date(2026, 11, 10))
+    report = validate_plan(plan, ctx, cfg)
+    assert not report.ok
+    assert any(f.path == "epic.project" for f in report.findings)
+
+    # Key prefix is checked even when Jira does not return the project field.
+    gateway2 = FakeGateway(issues={"OTHER-1": _epic_issue("OTHER-1", project=None)})
+    plan2 = Plan(project="HMK", epic=PlanEpic(existing="OTHER-1"), flows=[])
+    ctx2 = load_plan_context(gateway2, cfg, plan2, today=date(2026, 11, 10))
+    report2 = validate_plan(plan2, ctx2, cfg)
+    assert any(f.path == "epic.project" for f in report2.findings)
+
+
+def test_epic_existing_without_due_or_owner_warns():
+    cfg = make_cfg()
+    epic = _epic_issue()
+    del epic["fields"]["duedate"]
+    del epic["fields"]["assignee"]
+    gateway = FakeGateway(issues={"HMK-1": epic})
+    plan = Plan(project="HMK", epic=PlanEpic(existing="HMK-1"), flows=[])
+    ctx = load_plan_context(gateway, cfg, plan, today=date(2026, 11, 10))
+
+    report = validate_plan(plan, ctx, cfg)
+    assert report.ok
+    warnings = {f.path for f in report.findings if f.level == "warning"}
+    assert "epic.due" in warnings
+    assert "epic.owner" in warnings
+
+
+def test_platform_title_is_case_sensitive_and_warns_for_keyed_flow():
+    cfg = make_cfg()
+    ctx = make_context(
+        epic_stories=[
+            {
+                "key": "HMK-10",
+                "fields": {
+                    "summary": "[CH-01] FE viết màn hình",
+                    "issuetype": {"name": "Story"},
+                    "components": [{"name": "CH - CỬA HÀNG"}],
+                },
+            }
+        ]
+    )
+    plan = Plan(
+        project="HMK",
+        epic=PlanEpic(summary="Epic", due=date(2026, 11, 20), owner="ba.user"),
+        flows=[
+            PlanFlow(
+                code="CH-01",
+                actor="CH",
+                summary="FE viết màn hình",
+                ac=["AC 1"],
+                key="HMK-10",
+                parts=[PlanPart(part="BE", estimate="1d")],
+            )
+        ],
+    )
+    report = validate_plan(plan, ctx, cfg)
+    assert report.ok
+    assert any(
+        f.path == "flows[0].summary" and f.level == "warning" for f in report.findings
+    )
+
+    # Lowercase "fe" is not a platform token anymore.
+    ctx2 = make_context()
+    plan2 = Plan(
+        project="HMK",
+        epic=PlanEpic(summary="Epic", due=date(2026, 11, 20), owner="ba.user"),
+        flows=[
+            PlanFlow(
+                code="CH-01",
+                actor="CH",
+                summary="fe check-in",
+                ac=["AC 1"],
+                parts=[PlanPart(part="BE", estimate="1d")],
+            )
+        ],
+    )
+    report2 = validate_plan(plan2, ctx2, cfg)
+    assert not any(f.path == "flows[0].summary" for f in report2.findings)
+
+
+def test_tbd_check_is_case_insensitive():
+    cfg = make_cfg()
+    ctx = make_context()
+    plan = Plan(
+        project="HMK",
+        epic=PlanEpic(summary="Epic", due=date(2026, 11, 20), owner="ba.user"),
+        flows=[
+            PlanFlow(
+                code="CH-01",
+                actor="CH",
+                summary="Flow",
+                ac=["tbd: chưa chốt"],
+                parts=[PlanPart(part="BE", estimate="1d")],
+            )
+        ],
+    )
+    report = validate_plan(plan, ctx, cfg)
+    assert report.ok
+    assert any(
+        f.path == "flows[0].ac" and f.level == "warning" for f in report.findings
+    )
+
+
+def test_depends_on_self_reference_and_cycle_are_errors():
+    cfg = make_cfg()
+    ctx = make_context()
+    plan = Plan(
+        project="HMK",
+        epic=PlanEpic(summary="Epic", due=date(2026, 11, 20), owner="ba.user"),
+        flows=[
+            PlanFlow(
+                code="CH-01",
+                actor="CH",
+                summary="One",
+                ac=["AC 1"],
+                depends_on=["CH-01"],
+                parts=[PlanPart(part="BE", estimate="1d")],
+            ),
+            PlanFlow(
+                code="CH-02",
+                actor="CH",
+                summary="Two",
+                ac=["AC 1"],
+                depends_on=["CH-03"],
+                parts=[PlanPart(part="BE", estimate="1d")],
+            ),
+            PlanFlow(
+                code="CH-03",
+                actor="CH",
+                summary="Three",
+                ac=["AC 1"],
+                depends_on=["CH-02"],
+                parts=[PlanPart(part="BE", estimate="1d")],
+            ),
+        ],
+    )
+    report = validate_plan(plan, ctx, cfg)
+    assert not report.ok
+    assert any(
+        f.path == "flows[0].depends_on" and "chính nó" in f.message
+        for f in report.findings
+    )
+    cycle = [f for f in report.findings if "vòng" in f.message]
+    assert cycle
+
+
+def test_flow_key_and_part_key_must_belong_to_epic_and_story():
+    cfg = make_cfg()
+    gateway = FakeGateway(
+        components_map={"HMK": ["CH - CỬA HÀNG"]},
+        issues={
+            "HMK-1": _epic_issue(),
+            "HMK-10": {
+                "key": "HMK-10",
+                "fields": {
+                    "summary": "[CH-01] Story",
+                    "issuetype": {"name": "Story"},
+                    "components": [{"name": "CH - CỬA HÀNG"}],
+                    "customfield_10100": "HMK-1",
+                },
+            },
+            "HMK-101": {
+                "key": "HMK-101",
+                "fields": {
+                    "summary": "[BE] Dev task",
+                    "issuetype": {"name": "Dev Task"},
+                    "parent": {"key": "HMK-10"},
+                },
+            },
+        },
+    )
+    gateway.allowed_field_values = {("HMK", "Dev Task", "customfield_10701"): ["BE"]}
+    plan = Plan(
+        project="HMK",
+        epic=PlanEpic(existing="HMK-1"),
+        flows=[
+            PlanFlow(
+                code="CH-01",
+                actor="CH",
+                summary="Story",
+                ac=["AC 1"],
+                key="HMK-10",
+                parts=[PlanPart(part="BE", estimate="1d", key="HMK-999")],
+            ),
+            PlanFlow(
+                code="CH-02",
+                actor="CH",
+                summary="Other",
+                ac=["AC 2"],
+                key="HMK-999",
+                parts=[PlanPart(part="BE", estimate="1d")],
+            ),
+        ],
+    )
+    ctx = load_plan_context(gateway, cfg, plan, today=date(2026, 11, 10))
+    report = validate_plan(plan, ctx, cfg)
+    assert not report.ok
+    assert any(
+        f.path == "flows[0].parts[0].key" and "HMK-999" in f.message
+        for f in report.findings
+    )
+    assert any(f.path == "flows[1].key" for f in report.findings)
+
+
+def test_unkeyed_flow_resolves_to_existing_story_and_does_not_duplicate_code():
+    cfg = make_cfg()
+    gateway = FakeGateway(
+        components_map={"HMK": ["CH - CỬA HÀNG"]},
+        issues={
+            "HMK-1": _epic_issue(),
+            "HMK-10": {
+                "key": "HMK-10",
+                "fields": {
+                    "summary": "[CH-01] Check-in",
+                    "issuetype": {"name": "Story"},
+                    "status": {"name": "Analyzing"},
+                    "components": [{"name": "CH - CỬA HÀNG"}],
+                },
+            },
+        },
+    )
+    gateway.issue_properties[("HMK-10", "eggs.flowCode")] = "CH-01"
+    gateway.allowed_field_values = {("HMK", "Dev Task", "customfield_10701"): ["BE"]}
+    plan = Plan(
+        project="HMK",
+        epic=PlanEpic(existing="HMK-1"),
+        flows=[
+            PlanFlow(
+                code="CH-01",
+                actor="CH",
+                summary="Check-in",
+                ac=["AC 1"],
+                parts=[PlanPart(part="BE", estimate="1d")],
+            )
+        ],
+    )
+    ctx = load_plan_context(gateway, cfg, plan, today=date(2026, 11, 10))
+    assert ctx.resolved_flow_keys.get(0) == "HMK-10"
+    report = validate_plan(plan, ctx, cfg)
+    assert report.ok
+    assert report.plan.flows[0].key == "HMK-10"

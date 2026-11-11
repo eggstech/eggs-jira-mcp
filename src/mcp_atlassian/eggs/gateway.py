@@ -174,3 +174,7 @@ class JiraGateway(Protocol):
     def set_issue_property(self, key: str, name: str, value: Any) -> None:
         """Set an issue property via PUT rest/api/2/issue/{key}/properties/{name}."""
         ...
+
+    def get_issue_property(self, key: str, name: str) -> Any:
+        """Read an issue property, or None when it is not set."""
+        ...

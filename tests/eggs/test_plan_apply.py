@@ -648,3 +648,650 @@ def test_story_without_qc_stays_open_but_gets_due_date_and_open_warning():
     assert "ở lại trạng thái Open" in warn[0]
     assert "Analyzed" not in warn[0]
     assert "thiếu QC Owner" in warn[0]
+
+
+# --- Batch R review fixes (items 1, 2, 4, 5, 7, 8, 9, 11) ---
+
+READY_STATUSES = {"Analysis Done": "Analyzing", "Ready For Dev": "Ready For Dev"}
+
+
+def _epic(key: str = "HMK-1", **fields) -> dict:
+    base = {
+        "summary": "Epic",
+        "issuetype": {"name": "Epic"},
+        "project": {"key": "HMK"},
+        "duedate": "2026-11-30",
+        "assignee": {"name": "ba.user"},
+    }
+    base.update(fields)
+    return {"key": key, "fields": base}
+
+
+def _story(key: str, summary: str, **fields) -> dict:
+    base = {
+        "summary": summary,
+        "issuetype": {"name": "Story"},
+        "status": {"name": "Dev In Progress"},
+        "components": [{"name": "CH - CỬA HÀNG"}],
+    }
+    base.update(fields)
+    return {"key": key, "fields": base}
+
+
+def _flow(code: str, summary: str = "Flow", **kwargs) -> PlanFlow:
+    base: dict = {
+        "code": code,
+        "actor": "CH",
+        "summary": summary,
+        "ac": ["AC 1"],
+        "due": date(2026, 11, 25),
+        "ba": "ba.user",
+        "qc": "qc.user",
+        "parts": [PlanPart(part="BE", assignee="dev.user", estimate="1d")],
+    }
+    base.update(kwargs)
+    return PlanFlow(**base)
+
+
+def test_dev_task_matching_uses_parent_search_and_writes_only_differences():
+    cfg = make_cfg()
+    gateway = FakeGateway(
+        components_map={"HMK": ["CH - CỬA HÀNG"]},
+        issues={
+            "HMK-1": _epic(),
+            "HMK-10": _story(
+                "HMK-10",
+                "[CH-01] Check-in",
+                customfield_10100="HMK-1",
+                customfield_10110={"name": "qc.user"},
+                duedate="2026-11-25",
+                description="h2. Acceptance Criteria\n- AC 1",
+                subtasks=[
+                    {
+                        "id": "101",
+                        "key": "HMK-101",
+                        "fields": {"summary": "[BE] Check-in"},
+                    }
+                ],
+            ),
+            "HMK-101": {
+                "key": "HMK-101",
+                "fields": {
+                    "summary": "[BE] Check-in",
+                    "issuetype": {"name": "Dev Task"},
+                    "parent": {"key": "HMK-10"},
+                    "customfield_10701": {"value": "BE"},
+                    "assignee": {"name": "dev.user"},
+                    "timetracking": {"originalEstimate": "1d"},
+                },
+            },
+        },
+        default_transitions=DEFAULT_FLOW_TRANSITIONS,
+    )
+    gateway.allowed_field_values = {("HMK", "Dev Task", "customfield_10701"): ["BE"]}
+    plan = Plan(
+        project="HMK",
+        epic=PlanEpic(existing="HMK-1"),
+        flows=[
+            _flow(
+                "CH-01",
+                "Check-in",
+                key="HMK-10",
+                parts=[PlanPart(part="BE", assignee="dev.user", estimate="2d")],
+            )
+        ],
+    )
+    ctx = load_plan_context(gateway, cfg, plan, today=date(2026, 11, 10))
+    res = apply_plan(gateway, cfg, plan, ctx, dry_run=False)
+
+    assert res.ok
+    assert 'parent = "HMK-10"' in gateway.jql_queries
+    updates = [
+        c for c in gateway.calls if c[0] == "update_fields" and c[1][0] == "HMK-101"
+    ]
+    assert len(updates) == 1
+    assert updates[0][1][1] == {"timetracking": {"originalEstimate": "2d"}}
+    dev_creates = [
+        c
+        for c in gateway.calls
+        if c[0] == "create_issue"
+        and c[1][0].get("issuetype", {}).get("name") == "Dev Task"
+    ]
+    assert dev_creates == []
+
+
+def test_one_existing_dev_task_is_claimed_by_at_most_one_part():
+    cfg = make_cfg()
+    gateway = FakeGateway(
+        components_map={"HMK": ["CH - CỬA HÀNG"]},
+        issues={
+            "HMK-1": _epic(),
+            "HMK-10": _story("HMK-10", "[CH-01] Check-in", customfield_10100="HMK-1"),
+            "HMK-101": {
+                "key": "HMK-101",
+                "fields": {
+                    "summary": "[BE] Check-in",
+                    "issuetype": {"name": "Dev Task"},
+                    "parent": {"key": "HMK-10"},
+                    "customfield_10701": {"value": "BE"},
+                    "assignee": {"name": "dev.user"},
+                    "timetracking": {"originalEstimate": "1d"},
+                },
+            },
+        },
+        default_transitions=DEFAULT_FLOW_TRANSITIONS,
+    )
+    gateway.allowed_field_values = {("HMK", "Dev Task", "customfield_10701"): ["BE"]}
+    plan = Plan(
+        project="HMK",
+        epic=PlanEpic(existing="HMK-1"),
+        flows=[
+            _flow(
+                "CH-01",
+                "Check-in",
+                key="HMK-10",
+                parts=[
+                    PlanPart(part="BE", assignee="dev.user", estimate="1d"),
+                    PlanPart(part="BE", assignee="dev.user", estimate="1d"),
+                ],
+            )
+        ],
+    )
+    ctx = load_plan_context(gateway, cfg, plan, today=date(2026, 11, 10))
+    res = apply_plan(gateway, cfg, plan, ctx, dry_run=False)
+
+    assert res.ok
+    created = [
+        c
+        for c in gateway.calls
+        if c[0] == "create_issue"
+        and c[1][0].get("issuetype", {}).get("name") == "Dev Task"
+    ]
+    assert len(created) == 1
+    assert res.plan.flows[0].parts[0].key == "HMK-101"
+    assert res.plan.flows[0].parts[1].key != "HMK-101"
+
+
+def test_adhoc_tech_task_matches_existing_by_exact_summary():
+    cfg = make_cfg()
+    gateway = FakeGateway(
+        components_map={"HMK": ["CH - CỬA HÀNG"]},
+        issues={
+            "HMK-1": _epic(),
+            "HMK-20": {
+                "key": "HMK-20",
+                "fields": {
+                    "summary": "Setup DB",
+                    "issuetype": {"name": "Ad-hoc Task"},
+                    "status": {"name": "Dev In Progress"},
+                },
+            },
+        },
+    )
+    gateway.allowed_field_values = {("HMK", "Dev Task", "customfield_10701"): ["BE"]}
+    plan = Plan(
+        project="HMK",
+        epic=PlanEpic(existing="HMK-1"),
+        flows=[],
+        tech_tasks=[PlanTechTask(summary="Setup DB")],
+    )
+    ctx = load_plan_context(gateway, cfg, plan, today=date(2026, 11, 10))
+    pre_count = len(gateway.issues)
+    res = apply_plan(gateway, cfg, plan, ctx, dry_run=False)
+
+    assert res.ok
+    assert res.created == []
+    assert len(gateway.issues) == pre_count
+    assert res.plan.tech_tasks[0].key == "HMK-20"
+
+
+def test_epic_children_search_failure_writes_nothing():
+    cfg = make_cfg()
+    gateway = FakeGateway(
+        components_map={"HMK": ["CH - CỬA HÀNG"]},
+        issues={"HMK-1": _epic()},
+        errors_on_search={"cf[10100]": JiraError("JQL unavailable")},
+        default_transitions=DEFAULT_FLOW_TRANSITIONS,
+    )
+    gateway.allowed_field_values = {("HMK", "Dev Task", "customfield_10701"): ["BE"]}
+    plan = Plan(
+        project="HMK",
+        epic=PlanEpic(existing="HMK-1"),
+        flows=[_flow("CH-01")],
+    )
+    ctx = load_plan_context(gateway, cfg, plan, today=date(2026, 11, 10))
+    res = apply_plan(gateway, cfg, plan, ctx, dry_run=False)
+
+    assert not res.ok
+    assert res.created == []
+    write_methods = {
+        "create_issue",
+        "update_fields",
+        "transition",
+        "link",
+        "set_issue_property",
+    }
+    assert [c[0] for c in gateway.calls if c[0] in write_methods] == []
+
+
+def test_flow_error_isolated_and_links_ready_for_dev_run_for_successful_flows():
+    cfg = make_cfg()
+    gateway = FakeGateway(
+        components_map={"HMK": ["CH - CỬA HÀNG"]},
+        default_transitions=DEFAULT_FLOW_TRANSITIONS,
+        status_after=READY_STATUSES,
+    )
+    gateway.allowed_field_values = {("HMK", "Dev Task", "customfield_10701"): ["BE"]}
+    original_create = gateway.create_issue
+
+    def fail_flow_three(fields):
+        summary = fields.get("summary", "")
+        if "[CH-03] Flow 3" in summary:
+            raise JiraError("Jira temporarily unavailable")
+        return original_create(fields)
+
+    gateway.create_issue = fail_flow_three
+
+    plan = Plan(
+        project="HMK",
+        epic=PlanEpic(summary="Workstream", due=date(2026, 11, 30), owner="ba.user"),
+        flows=[
+            _flow("CH-01", "Flow 1"),
+            _flow("CH-02", "Flow 2", depends_on=["CH-01"]),
+            _flow("CH-03", "Flow 3"),
+            _flow("CH-04", "Flow 4", depends_on=["CH-01"]),
+            _flow("CH-05", "Flow 5", depends_on=["CH-01"]),
+        ],
+    )
+    ctx = load_plan_context(gateway, cfg, plan, today=date(2026, 11, 10))
+    res1 = apply_plan(gateway, cfg, plan, ctx, dry_run=False)
+
+    assert not res1.ok
+    assert [e["code"] for e in res1.errors] == ["CH-03"]
+    assert res1.errors[0]["error"] == "Jira temporarily unavailable"
+    keys = {f.code: f.key for f in res1.plan.flows}
+    assert keys["CH-03"] is None
+    for code in ("CH-01", "CH-02", "CH-04", "CH-05"):
+        key = keys[code]
+        assert key
+        transitions = [
+            args[1]
+            for name, args, _ in gateway.calls
+            if name == "transition" and args[0] == key
+        ]
+        assert "Ready For Dev" in transitions
+    linked = {(inward, outward) for _t, inward, outward in gateway.links}
+    for code in ("CH-02", "CH-04", "CH-05"):
+        assert (keys["CH-01"], keys[code]) in linked
+
+    gateway.create_issue = original_create
+    mark = len(gateway.calls)
+    ctx2 = load_plan_context(gateway, cfg, res1.plan, today=date(2026, 11, 10))
+    res2 = apply_plan(gateway, cfg, res1.plan, ctx2, dry_run=False)
+
+    assert res2.ok
+    flow_three_key = res2.plan.flows[2].key
+    assert flow_three_key is not None
+    later_writes = [
+        c
+        for c in gateway.calls[mark:]
+        if c[0] in {"update_fields", "transition", "link", "set_issue_property"}
+        and c[1][0] != flow_three_key
+    ]
+    assert later_writes == []
+    later_creates = [c[0] for c in gateway.calls[mark:] if c[0] == "create_issue"]
+    assert len(later_creates) == 2  # flow 3: Story + Dev Task
+
+
+def test_applying_original_unkeyed_plan_twice_creates_nothing():
+    cfg = make_cfg()
+    gateway = FakeGateway(
+        components_map={"HMK": ["CH - CỬA HÀNG"]},
+        default_transitions=DEFAULT_FLOW_TRANSITIONS,
+        status_after=READY_STATUSES,
+    )
+    gateway.allowed_field_values = {("HMK", "Dev Task", "customfield_10701"): ["BE"]}
+    gateway.issues["HMK-1"] = _epic()
+    plan = Plan(
+        project="HMK",
+        epic=PlanEpic(existing="HMK-1"),
+        flows=[_flow("CH-01", "Check-in")],
+    )
+    ctx1 = load_plan_context(gateway, cfg, plan, today=date(2026, 11, 10))
+    res1 = apply_plan(gateway, cfg, plan, ctx1, dry_run=False)
+    assert res1.ok
+
+    mark = len(gateway.calls)
+    ctx2 = load_plan_context(gateway, cfg, plan, today=date(2026, 11, 10))
+    res2 = apply_plan(gateway, cfg, plan, ctx2, dry_run=False)
+
+    assert res2.ok
+    assert res2.created == []
+    assert res2.plan.flows[0].key == res1.plan.flows[0].key
+    assert [
+        c
+        for c in gateway.calls[mark:]
+        if c[0]
+        in {"create_issue", "update_fields", "transition", "link", "set_issue_property"}
+    ] == []
+
+
+def test_existing_due_date_difference_warns_and_writes_nothing():
+    cfg = make_cfg()
+    gateway = FakeGateway(
+        components_map={"HMK": ["CH - CỬA HÀNG"]},
+        issues={
+            "HMK-1": _epic(),
+            "HMK-10": _story(
+                "HMK-10",
+                "[CH-01] Check-in",
+                customfield_10100="HMK-1",
+                duedate="2026-11-20",
+                customfield_10110={"name": "qc.user"},
+            ),
+        },
+        default_transitions=DEFAULT_FLOW_TRANSITIONS,
+    )
+    gateway.allowed_field_values = {("HMK", "Dev Task", "customfield_10701"): ["BE"]}
+    plan = Plan(
+        project="HMK",
+        epic=PlanEpic(existing="HMK-1"),
+        flows=[_flow("CH-01", "Check-in", key="HMK-10", due=date(2026, 11, 25))],
+    )
+    ctx = load_plan_context(gateway, cfg, plan, today=date(2026, 11, 10))
+    res = apply_plan(gateway, cfg, plan, ctx, dry_run=False)
+
+    assert res.ok
+    assert any(
+        "HMK-10: Due Date đang là 2026-11-20, plan là 2026-11-25" in w
+        and "eggs_request_reschedule" in w
+        for w in res.warnings
+    )
+    due_calls = [
+        args
+        for name, args, _ in gateway.calls
+        if name == "transition" and args[0] == "HMK-10" and args[1] == "Set Due Date"
+    ]
+    assert due_calls == []
+    assert not any(
+        c[0] == "update_fields" and "duedate" in c[1][1] for c in gateway.calls
+    )
+
+
+def test_missing_set_due_date_transition_is_a_warning_not_an_error():
+    cfg = make_cfg()
+    gateway = FakeGateway(
+        components_map={"HMK": ["CH - CỬA HÀNG"]},
+        issues={
+            "HMK-1": _epic(),
+            "HMK-10": _story(
+                "HMK-10",
+                "[CH-01] Check-in",
+                customfield_10100="HMK-1",
+                customfield_10110={"name": "qc.user"},
+            ),
+        },
+        default_transitions=["Analysis Done", "Ready For Dev"],
+    )
+    gateway.allowed_field_values = {("HMK", "Dev Task", "customfield_10701"): ["BE"]}
+    plan = Plan(
+        project="HMK",
+        epic=PlanEpic(existing="HMK-1"),
+        flows=[_flow("CH-01", "Check-in", key="HMK-10")],
+    )
+    ctx = load_plan_context(gateway, cfg, plan, today=date(2026, 11, 10))
+    res = apply_plan(gateway, cfg, plan, ctx, dry_run=False)
+
+    assert res.ok
+    assert any("Set Due Date" in w and "HMK-10" in w for w in res.warnings)
+
+
+def test_dry_run_returns_plan_without_placeholder_keys_and_lists_would_create():
+    from mcp_atlassian.eggs.plan import dump_plan
+
+    cfg = make_cfg()
+    gateway = FakeGateway(
+        components_map={"HMK": ["CH - CỬA HÀNG"]},
+        default_transitions=DEFAULT_FLOW_TRANSITIONS,
+        status_after=READY_STATUSES,
+    )
+    gateway.allowed_field_values = {("HMK", "Dev Task", "customfield_10701"): ["BE"]}
+    plan = Plan(
+        project="HMK",
+        epic=PlanEpic(summary="Workstream", due=date(2026, 11, 30), owner="ba.user"),
+        flows=[
+            _flow("CH-01", "Flow 1"),
+            _flow("CH-02", "Flow 2", depends_on=["CH-01"]),
+        ],
+        tech_tasks=[PlanTechTask(summary="Setup DB")],
+    )
+    ctx = load_plan_context(gateway, cfg, plan, today=date(2026, 11, 10))
+    res = apply_plan(gateway, cfg, plan, ctx, dry_run=True)
+
+    assert res.ok
+    dumped = dump_plan(res.plan)
+    assert "DRYRUN" not in dumped
+    assert res.plan.epic.key is None
+    assert all(f.key is None for f in res.plan.flows)
+    assert all(p.key is None for f in res.plan.flows for p in f.parts)
+    assert res.plan.tech_tasks[0].key is None
+    types = {item["type"] for item in res.would_create}
+    assert {"Epic", "Story", "Dev Task", "Ad-hoc Task", "Link"} <= types
+    assert any("CH-01 blocks CH-02" in c for c in res.changes)
+
+
+def test_link_search_failure_is_an_error_for_that_flow():
+    cfg = make_cfg()
+    gateway = FakeGateway(
+        components_map={"HMK": ["CH - CỬA HÀNG"]},
+        issues={
+            "HMK-1": _epic(),
+            "HMK-10": _story("HMK-10", "[CH-01] One", customfield_10100="HMK-1"),
+            "HMK-11": _story("HMK-11", "[CH-02] Two", customfield_10100="HMK-1"),
+        },
+        errors_on_search={"linkedIssues(": JiraError("link search down")},
+        default_transitions=DEFAULT_FLOW_TRANSITIONS,
+    )
+    gateway.allowed_field_values = {("HMK", "Dev Task", "customfield_10701"): ["BE"]}
+    plan = Plan(
+        project="HMK",
+        epic=PlanEpic(existing="HMK-1"),
+        flows=[
+            _flow("CH-01", "One", key="HMK-10"),
+            _flow("CH-02", "Two", key="HMK-11", depends_on=["CH-01"]),
+        ],
+    )
+    ctx = load_plan_context(gateway, cfg, plan, today=date(2026, 11, 10))
+    res = apply_plan(gateway, cfg, plan, ctx, dry_run=False)
+
+    assert not res.ok
+    assert any(e["code"] == "CH-02" for e in res.errors)
+    assert gateway.links == []
+
+
+def test_property_is_skipped_when_current_code_matches():
+    cfg = make_cfg()
+    gateway = FakeGateway(
+        components_map={"HMK": ["CH - CỬA HÀNG"]},
+        issues={
+            "HMK-1": _epic(),
+            "HMK-10": _story(
+                "HMK-10",
+                "[CH-01] Check-in",
+                customfield_10100="HMK-1",
+                customfield_10110={"name": "qc.user"},
+                description="h2. Acceptance Criteria\n- AC 1",
+                duedate="2026-11-25",
+            ),
+        },
+        default_transitions=DEFAULT_FLOW_TRANSITIONS,
+    )
+    gateway.issue_properties[("HMK-10", "eggs.flowCode")] = "CH-01"
+    gateway.allowed_field_values = {("HMK", "Dev Task", "customfield_10701"): ["BE"]}
+    plan = Plan(
+        project="HMK",
+        epic=PlanEpic(existing="HMK-1"),
+        flows=[_flow("CH-01", "Check-in", key="HMK-10")],
+    )
+    ctx = load_plan_context(gateway, cfg, plan, today=date(2026, 11, 10))
+    apply_plan(gateway, cfg, plan, ctx, dry_run=False)
+
+    assert [c for c in gateway.calls if c[0] == "set_issue_property"] == []
+
+
+def test_existing_description_only_its_ac_section_is_replaced():
+    cfg = make_cfg()
+    original = "Intro paragraph\n\nh2. Acceptance Criteria\n- old item\n\nh2. Notes\nFooter notes"
+    gateway = FakeGateway(
+        components_map={"HMK": ["CH - CỬA HÀNG"]},
+        issues={
+            "HMK-1": _epic(),
+            "HMK-10": _story(
+                "HMK-10",
+                "[CH-01] Check-in",
+                customfield_10100="HMK-1",
+                description=original,
+            ),
+        },
+        default_transitions=DEFAULT_FLOW_TRANSITIONS,
+    )
+    gateway.allowed_field_values = {("HMK", "Dev Task", "customfield_10701"): ["BE"]}
+    plan = Plan(
+        project="HMK",
+        epic=PlanEpic(existing="HMK-1"),
+        flows=[_flow("CH-01", "Check-in", key="HMK-10", ac=["new item"])],
+    )
+    ctx = load_plan_context(gateway, cfg, plan, today=date(2026, 11, 10))
+    apply_plan(gateway, cfg, plan, ctx, dry_run=False)
+
+    desc = gateway.issues["HMK-10"]["fields"]["description"]
+    assert desc.startswith("Intro paragraph")
+    assert "Footer notes" in desc
+    assert "- new item" in desc
+    assert "- old item" not in desc
+    assert "h2. Acceptance Criteria" in desc
+
+
+def test_existing_summary_keeps_all_codes_and_extra_components():
+    cfg = make_cfg()
+    summary = "[CH-04,CH-05]  Double  space"
+    gateway = FakeGateway(
+        components_map={"HMK": ["CH - CỬA HÀNG", "OPS - KHÁC"]},
+        issues={
+            "HMK-1": _epic(),
+            "HMK-10": _story(
+                "HMK-10",
+                summary,
+                customfield_10100="HMK-1",
+                components=[
+                    {"name": "CH - CỬA HÀNG"},
+                    {"name": "OPS - KHÁC"},
+                ],
+            ),
+        },
+        default_transitions=DEFAULT_FLOW_TRANSITIONS,
+    )
+    gateway.allowed_field_values = {("HMK", "Dev Task", "customfield_10701"): ["BE"]}
+    plan = Plan(
+        project="HMK",
+        epic=PlanEpic(existing="HMK-1"),
+        flows=[
+            _flow(
+                "CH-05",
+                "Double space",
+                key="HMK-10",
+                ac=[],
+                keep_description=True,
+                due=None,
+                qc=None,
+                ba=None,
+                parts=[],
+            )
+        ],
+    )
+    ctx = load_plan_context(gateway, cfg, plan, today=date(2026, 11, 10))
+    res = apply_plan(gateway, cfg, plan, ctx, dry_run=False)
+
+    assert res.ok
+    assert gateway.issues["HMK-10"]["fields"]["summary"] == summary
+    assert gateway.issues["HMK-10"]["fields"]["components"] == [
+        {"name": "CH - CỬA HÀNG"},
+        {"name": "OPS - KHÁC"},
+    ]
+    assert not any(
+        c[0] == "update_fields" and ({"summary", "components"} & set(c[1][1]))
+        for c in gateway.calls
+    )
+
+
+def test_existing_ac_section_compare_ignores_crlf_and_trailing_newline():
+    cfg = make_cfg()
+    gateway = FakeGateway(
+        components_map={"HMK": ["CH - CỬA HÀNG"]},
+        issues={
+            "HMK-1": _epic(),
+            "HMK-10": _story(
+                "HMK-10",
+                "[CH-01] Check-in",
+                customfield_10100="HMK-1",
+                customfield_10110={"name": "qc.user"},
+                components=[{"name": "CH - CỬA HÀNG"}],
+                description=("Intro\r\n\r\nh2. Acceptance Criteria\r\n- AC 1\r\n"),
+            ),
+        },
+        default_transitions=DEFAULT_FLOW_TRANSITIONS,
+    )
+    gateway.allowed_field_values = {("HMK", "Dev Task", "customfield_10701"): ["BE"]}
+    plan = Plan(
+        project="HMK",
+        epic=PlanEpic(existing="HMK-1"),
+        flows=[_flow("CH-01", "Check-in", key="HMK-10", due=None, parts=[])],
+    )
+    ctx = load_plan_context(gateway, cfg, plan, today=date(2026, 11, 10))
+    apply_plan(gateway, cfg, plan, ctx, dry_run=False)
+
+    desc_updates = [
+        c for c in gateway.calls if c[0] == "update_fields" and "description" in c[1][1]
+    ]
+    assert desc_updates == []
+
+
+def test_original_plan_without_codes_applied_twice_creates_nothing():
+    cfg = make_cfg()
+    gateway = FakeGateway(
+        components_map={"HMK": ["CH - CỬA HÀNG"]},
+        issues={"HMK-1": _epic()},
+        default_transitions=DEFAULT_FLOW_TRANSITIONS,
+        status_after=READY_STATUSES,
+    )
+    gateway.allowed_field_values = {("HMK", "Dev Task", "customfield_10701"): ["BE"]}
+    uncoded_flow = _flow(
+        "CH-01",
+        "Check-in",
+        parts=[PlanPart(part="BE", assignee="dev.user", estimate="1d")],
+    )
+    uncoded_flow.code = None
+    uncoded_flow.codes = []
+    plan = Plan(
+        project="HMK",
+        epic=PlanEpic(existing="HMK-1"),
+        flows=[uncoded_flow],
+    )
+    ctx1 = load_plan_context(gateway, cfg, plan, today=date(2026, 11, 10))
+    res1 = apply_plan(gateway, cfg, plan, ctx1, dry_run=False)
+    assert res1.ok
+    assert res1.plan.flows[0].code == "CH-01"
+
+    mark = len(gateway.calls)
+    ctx2 = load_plan_context(gateway, cfg, plan, today=date(2026, 11, 10))
+    res2 = apply_plan(gateway, cfg, plan, ctx2, dry_run=False)
+
+    assert res2.ok
+    assert res2.created == []
+    assert res2.plan.flows[0].code == "CH-01"
+    assert [
+        c
+        for c in gateway.calls[mark:]
+        if c[0]
+        in {"create_issue", "update_fields", "transition", "link", "set_issue_property"}
+    ] == []
