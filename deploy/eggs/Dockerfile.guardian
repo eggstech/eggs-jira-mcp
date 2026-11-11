@@ -33,5 +33,5 @@ RUN set -eux; \
 
 USER app
 
-ENTRYPOINT ["supercronic"]
+ENTRYPOINT ["/usr/local/bin/supercronic"]
 CMD ["/deploy/crontab"]

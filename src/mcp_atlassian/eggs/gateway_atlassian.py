@@ -542,8 +542,8 @@ class AtlassianGateway(JiraGateway):
             changelog = res.get("changelog")
             if isinstance(changelog, dict):
                 histories = list(changelog.get("histories", []))
-                total = changelog.get("total", len(histories))
-                if total > len(histories):
+                total = changelog.get("total")
+                if isinstance(total, int) and total > len(histories):
                     logger.warning(
                         "Issue %s: changelog không đầy đủ (total: %s, returned: %s)",
                         key,

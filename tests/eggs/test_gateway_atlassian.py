@@ -533,3 +533,11 @@ def test_project_role_members_project_list_failure_raises(mock_client):
 
     with pytest.raises(Exception, match="403 Forbidden"):
         gateway.project_role_members("PROJ", role_names=["Developers"])
+
+
+def test_get_changelog_null_total_does_not_crash(mock_client):
+    gateway = AtlassianGateway(mock_client)
+    mock_client.get.return_value = {
+        "changelog": {"histories": [{"id": "1"}], "total": None}
+    }
+    assert gateway.get_changelog("PROJ-1") == [{"id": "1"}]
