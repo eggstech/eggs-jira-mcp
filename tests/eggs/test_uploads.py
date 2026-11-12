@@ -69,6 +69,7 @@ class TestTickets:
         assert uploads.safe_filename("../../etc/passwd") == "passwd"
         assert uploads.safe_filename("C:\\Users\\a\\shot.png") == "shot.png"
         assert uploads.safe_filename("") == "file"
+        assert uploads.safe_filename("a|b]!{x}^\n.png") == "a_b___x___.png"
 
 
 class TestAttachFiles:
@@ -84,7 +85,7 @@ class TestAttachFiles:
     def test_attaches_and_comments_with_inline_image(self):
         gw = FakeGateway(issues={"EGG-1": _issue()})
         res = uploads.attach_files(
-            gw,
+            lambda: gw,
             self._ticket("Bằng chứng test"),
             [("shot.png", b"png"), ("log.txt", b"log")],
         )
@@ -97,22 +98,48 @@ class TestAttachFiles:
 
     def test_no_comment_means_attach_only(self):
         gw = FakeGateway(issues={"EGG-1": _issue()})
-        res = uploads.attach_files(gw, self._ticket(), [("a.png", b"x")])
+        res = uploads.attach_files(lambda: gw, self._ticket(), [("a.png", b"x")])
         assert res["ok"] is True
         assert "comment" not in gw.issues["EGG-1"]["fields"]
 
     def test_rejects_empty_and_too_big(self, monkeypatch: pytest.MonkeyPatch):
         gw = FakeGateway(issues={"EGG-1": _issue()})
-        assert uploads.attach_files(gw, self._ticket(), [])["ok"] is False
+        assert uploads.attach_files(lambda: gw, self._ticket(), [])["ok"] is False
         monkeypatch.setattr(uploads, "MAX_FILE_BYTES", 3)
-        res = uploads.attach_files(gw, self._ticket(), [("big.png", b"1234")])
+        res = uploads.attach_files(lambda: gw, self._ticket(), [("big.png", b"1234")])
         assert res["ok"] is False and "big.png" in res["message"]
 
     def test_unknown_issue_reports_jira_refusal(self):
         gw = FakeGateway(issues={})
-        res = uploads.attach_files(gw, self._ticket(), [("a.png", b"x")])
+        res = uploads.attach_files(lambda: gw, self._ticket(), [("a.png", b"x")])
         assert res["ok"] is False
         assert "EGG-1" in res["message"]
+
+
+class TestAttachErrors:
+    def test_comment_failure_reports_attached_files(self):
+        from mcp_atlassian.eggs.gateway import JiraError
+
+        gw = FakeGateway(issues={"EGG-1": _issue()})
+
+        def boom(key: str, body: str) -> None:
+            raise JiraError("forbidden", status_code=403)
+
+        gw.add_comment = boom  # type: ignore[method-assign]
+        ticket = uploads.UploadTicket("pat", "u", "EGG-1", "note", 1e12)
+        res = uploads.attach_files(lambda: gw, ticket, [("a.png", b"x")])
+        assert res["ok"] is False
+        assert res["status"] == 403
+        assert res["attached"] == ["a.png"]
+        assert "không có quyền" in res["message"]
+
+    def test_factory_failure_is_reported(self):
+        def factory() -> FakeGateway:
+            raise ValueError("bad config")
+
+        ticket = uploads.UploadTicket("pat", "u", "EGG-1", None, 1e12)
+        res = uploads.attach_files(factory, ticket, [("a.png", b"x")])
+        assert res["ok"] is False and res["status"] == 502
 
 
 class TestUploadRoute:
@@ -141,6 +168,32 @@ class TestUploadRoute:
         assert seen == ["user-pat"]
         r2 = client.post(f"/upload/{tok}", files={"file": ("s.png", b"img")})
         assert r2.status_code == 403
+
+    def test_rejected_upload_keeps_link_usable(self):
+        gw = FakeGateway(issues={"EGG-1": _issue()})
+        uploads.set_gateway_factory(lambda _t: gw)
+        tok = uploads.create_ticket(
+            user_token="p", username="qc", key="EGG-1", comment=None
+        )
+        client = self._client()
+        r = client.post(f"/upload/{tok}", files={"file": ("e.png", b"")})
+        assert r.status_code == 400
+        r2 = client.post(f"/upload/{tok}", files={"file": ("e.png", b"ok")})
+        assert r2.status_code == 200, r2.text
+
+    def test_oversized_content_length_is_413(self):
+        tok = uploads.create_ticket(
+            user_token="p", username="qc", key="EGG-1", comment=None
+        )
+        r = self._client().post(
+            f"/upload/{tok}",
+            content=b"x",
+            headers={
+                "content-type": "multipart/form-data; boundary=b",
+                "content-length": str(10**10),
+            },
+        )
+        assert r.status_code == 413
 
     def test_bad_token_is_403(self):
         r = self._client().post("/upload/nope", files={"file": ("s.png", b"x")})
