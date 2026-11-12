@@ -53,6 +53,9 @@ create_roles:
     - qc
     - lead_ba
     - dev
+  dev_task:  # Dev tự chia việc dưới Story / Ad-hoc Task / Bug stand-alone
+    - dev
+    - lead_ba
 
 component_roles:
   - lead_ba

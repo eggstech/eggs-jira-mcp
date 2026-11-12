@@ -2389,7 +2389,12 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         project: Annotated[str, Field(description="Mã dự án (ví dụ 'RFID')")],
         issue_type: Annotated[
             str,
-            Field(description="Loại issue: 'bug', 'story', 'adhoc', hoặc 'bug_sub'"),
+            Field(
+                description=(
+                    "Loại issue: 'bug', 'story', 'adhoc', 'bug_sub', hoặc 'dev_task' "
+                    "(Dev tự chia việc dưới Story/Ad-hoc Task/Bug stand-alone)"
+                )
+            ),
         ],
         summary: Annotated[str, Field(description="Tiêu đề tóm tắt issue")],
         description: Annotated[
@@ -2448,16 +2453,45 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
         parent: Annotated[
             str | None,
             Field(
-                description="Mã Story hoặc Ad-hoc Task cha (dành riêng cho bug_sub)",
+                description=(
+                    "Issue cha: Story hoặc Ad-hoc Task (bug_sub); Story, Ad-hoc "
+                    "Task hoặc Bug stand-alone (dev_task)"
+                ),
+                default=None,
+            ),
+        ] = None,
+        part: Annotated[
+            str | None,
+            Field(description="Part của Dev Task (BE, FE APP, ...)", default=None),
+        ] = None,
+        estimate: Annotated[
+            str | None,
+            Field(
+                description="Original Estimate của Dev Task, vd. 2h, 1d 4h",
                 default=None,
             ),
         ] = None,
         *,
+        confirm_reopen: Annotated[
+            bool,
+            Field(
+                description=(
+                    "dev_task dưới Story đang QC TO DO/Test In Progress/Ready For "
+                    "UAT: true sau khi người dùng đồng ý đưa Story về Dev In Progress"
+                ),
+                default=False,
+            ),
+        ] = False,
         dry_run: Annotated[
             bool, Field(description="Chạy thử nghiệm không ghi", default=False)
         ] = False,
     ) -> str:
-        """Tạo mới Bug stand-alone, Story hoặc Ad-hoc Task trong dự án."""
+        """Tạo Bug stand-alone, Story, Ad-hoc Task, Bug con, hoặc Dev Task.
+
+        Dev Task (issue_type='dev_task'): Dev tự chia phần việc của mình dưới
+        Story, Ad-hoc Task hoặc Bug stand-alone; cần parent, part, estimate.
+        Người làm mặc định là người tạo.
+        """
         cfg = await asyncio.to_thread(load_config)
         user_gw = await get_user_gateway(ctx, write=True)
         roles_gw = await asyncio.to_thread(get_roles_reader, cfg)
@@ -2485,6 +2519,9 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
             is_lead=ident.is_lead,
             parent=parent,
             dry_run=dry_run,
+            part=part,
+            estimate=estimate,
+            confirm_reopen=confirm_reopen,
         )
         if res.ok and not dry_run:
             now = datetime.now(ZoneInfo(cfg.timezone))

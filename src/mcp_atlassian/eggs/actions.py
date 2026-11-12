@@ -4,7 +4,7 @@ import difflib
 import re
 import unicodedata
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
@@ -2811,11 +2811,20 @@ class Actions:
         summary: str,
         creator: str | None = None,
         parent_key: str | None = None,
+        assignee: str | None = None,
     ) -> str | None:
         try:
             jql = f'project = "{project}" AND created >= "-10m"'
             raw_issues = self.gateway.search(
-                jql, fields=["summary", "creator", "reporter", "created", "parent"]
+                jql,
+                fields=[
+                    "summary",
+                    "creator",
+                    "reporter",
+                    "created",
+                    "parent",
+                    "assignee",
+                ],
             )
             for raw in raw_issues:
                 fields = raw.get("fields", {})
@@ -2825,6 +2834,11 @@ class Actions:
                 if parent_key:
                     p = fields.get("parent") or {}
                     if p.get("key") != parent_key:
+                        continue
+                if assignee:
+                    r_asg = fields.get("assignee")
+                    asg = r_asg.get("name") if isinstance(r_asg, dict) else r_asg
+                    if (asg or "").lower() != assignee.lower():
                         continue
                 r_rep = fields.get("reporter")
                 rep_name = r_rep.get("name") if isinstance(r_rep, dict) else r_rep
@@ -2856,8 +2870,26 @@ class Actions:
         is_lead: bool = False,
         parent: str | None = None,
         dry_run: bool = False,
+        part: str | None = None,
+        estimate: str | None = None,
+        confirm_reopen: bool = False,
     ) -> ActionResult:
-        """Tạo issue mới: Bug stand-alone, Story, hoặc Ad-hoc Task."""
+        """Tạo issue mới: Bug stand-alone, Story, Ad-hoc Task, Bug con, Dev Task."""
+        if issue_type == "dev_task" and project in self.cfg.projects:
+            return self.create_dev_task(
+                project=project,
+                parent=parent,
+                summary=summary,
+                part=part,
+                estimate=estimate,
+                description=description,
+                assignee=assignee,
+                creator=creator,
+                creator_roles=creator_roles,
+                is_lead=is_lead,
+                confirm_reopen=confirm_reopen,
+                dry_run=dry_run,
+            )
         if project not in self.cfg.projects:
             return ActionResult(
                 ok=False,
@@ -2872,7 +2904,7 @@ class Actions:
                 ok=False,
                 message=(
                     f"Loại issue '{issue_type}' không hợp lệ. "
-                    "Chọn: bug, story, adhoc, bug_sub."
+                    "Chọn: bug, story, adhoc, bug_sub, dev_task."
                 ),
                 changes=[],
                 next_actions=[],
@@ -3332,6 +3364,251 @@ class Actions:
             message=f"Đã tạo thành công {created_key}.",
             changes=changes,
             next_actions=[],
+        )
+
+    def create_dev_task(
+        self,
+        project: str,
+        parent: str | None,
+        summary: str,
+        part: str | None,
+        estimate: str | None,
+        description: str | None = None,
+        assignee: str | None = None,
+        *,
+        creator: str | None = None,
+        creator_roles: set[str] | None = None,
+        is_lead: bool = False,
+        confirm_reopen: bool = False,
+        dry_run: bool = False,
+    ) -> ActionResult:
+        """Dev tự chia việc: tạo Dev Task dưới Story, Ad-hoc Task hoặc Bug stand-alone.
+
+        Story: được tạo ở Open, Analyzed, Ready For Dev, Dev In Progress; ở QC TO DO,
+        Test In Progress, Ready For UAT phải xác nhận (Story tự quay về Dev In
+        Progress); Wait For Review, Done, Cancelled thì không. Ad-hoc Task và Bug
+        stand-alone: chỉ ở DEV To Do và Dev In Progress.
+        """
+
+        def refuse(message: str, missing: list[str] | None = None) -> ActionResult:
+            return ActionResult(
+                ok=False,
+                message=message,
+                changes=[],
+                next_actions=[],
+                missing=missing,
+            )
+
+        allowed_roles = set(self.cfg.create_roles.get("dev_task", ["dev", "lead_ba"]))
+        if not is_lead and not (set(creator_roles or []) & allowed_roles):
+            return refuse(
+                f"Bạn không có quyền tạo Dev Task trong dự án {project}. "
+                f"Cần vai trò: {', '.join(sorted(allowed_roles))}."
+            )
+        if not parent:
+            return refuse(
+                "Dev Task cần issue cha: Story, Ad-hoc Task hoặc Bug stand-alone.",
+                ["parent"],
+            )
+        try:
+            parent_issue = self._get_issue(parent)
+        except Exception:  # noqa: BLE001
+            return refuse(f"Không tìm thấy issue cha {parent}.")
+        if parent_issue.project.upper() != project.upper():
+            return refuse(f"{parent} phải thuộc cùng dự án {project}.")
+        if parent_issue.type not in ("story", "adhoc", "bug"):
+            return refuse(
+                f"{parent} không phải Story, Ad-hoc Task hay Bug stand-alone "
+                "nên không chia Dev Task được."
+            )
+
+        status = self.cfg.status_logical(parent_issue.status) or parent_issue.status
+        # Issue.status is the logical code; show people the Jira status name.
+        shown = self.cfg.statuses.get(status) or parent_issue.status
+        parent_issue = replace(parent_issue, status=shown)
+        warning: str | None = None
+        if parent_issue.type == "story":
+            if status in ("open", "analyzing"):
+                warning = (
+                    f"Story {parent} đang {parent_issue.status}: Dev Task tạo trước "
+                    "được, nhưng chỉ Start được khi BA chuyển Story sang Ready For Dev."
+                )
+            elif status in ("ready_for_qc", "testing", "ready_for_uat"):
+                if not confirm_reopen:
+                    return refuse(
+                        f"Story {parent} đang {parent_issue.status}. Thêm Dev Task "
+                        "sẽ đưa Story về Dev In Progress và QC phải chờ phần mới. "
+                        "Nếu là lỗi thì tạo Bug con (issue_type='bug_sub'), Story "
+                        "giữ nguyên. Nếu đúng là thiếu phần việc, hỏi người dùng "
+                        "rồi gọi lại với confirm_reopen=true.",
+                        ["confirm_reopen"],
+                    )
+                warning = (
+                    f"Story {parent} sẽ tự quay về Dev In Progress vì có Dev Task mới."
+                )
+            elif status == "client_uat":
+                return refuse(
+                    f"Story {parent} đang chờ khách ký UAT (Wait For Review): không "
+                    "thêm Dev Task. Khách báo lỗi thì Lead/BA chạy UAT Fail kèm Bug "
+                    "con; khách yêu cầu thêm thì BA tạo Story mới, relates tới "
+                    f"{parent}."
+                )
+            elif status in ("done", "cancelled"):
+                return refuse(
+                    f"Story {parent} đã {parent_issue.status}. Việc mới thì tạo Story "
+                    f"hoặc Ad-hoc Task mới, relates tới {parent}."
+                )
+            elif status not in ("ready_for_dev", "in_progress"):
+                return refuse(
+                    f"Story {parent} đang ở trạng thái {parent_issue.status}, "
+                    "không chia Dev Task được."
+                )
+        else:
+            parent_label = (
+                "Ad-hoc Task" if parent_issue.type == "adhoc" else ("Bug stand-alone")
+            )
+            if status in ("ready_for_qc", "testing"):
+                hint = (
+                    " Nếu là lỗi thì tạo Bug con (issue_type='bug_sub')."
+                    if parent_issue.type == "adhoc"
+                    else ""
+                )
+                return refuse(
+                    f"{parent_label} {parent} đang {parent_issue.status}: không "
+                    "thêm Dev Task khi đang QC. QC Fail để trả về Dev In Progress "
+                    f"rồi chia thêm.{hint}"
+                )
+            if status in ("done", "cancelled"):
+                return refuse(
+                    f"{parent_label} {parent} đã {parent_issue.status}. Việc mới "
+                    f"thì tạo issue mới, relates tới {parent}."
+                )
+            if status not in ("todo", "in_progress"):
+                return refuse(
+                    f"{parent_label} {parent} đang ở trạng thái "
+                    f"{parent_issue.status}, không chia Dev Task được."
+                )
+
+        if not summary or not summary.strip():
+            return refuse("Summary không được để trống.", ["summary"])
+
+        dev_task_type = self.cfg.issue_types.get("dev_task", ["Dev Task"])[0]
+        part_field = self.cfg.fields.get("part", "customfield_10701")
+        options: list[str] = []
+        if hasattr(self.gateway, "field_allowed_values"):
+            try:
+                options = self.gateway.field_allowed_values(
+                    project, dev_task_type, part_field
+                )
+            except Exception:  # noqa: BLE001 - Jira validates on create anyway
+                options = []
+        if not part or not part.strip():
+            opts = f" Chọn: {', '.join(options)}." if options else ""
+            return refuse(f"Dev Task cần Part.{opts}", ["part"])
+        part = part.strip()
+        if options:
+            match = next((o for o in options if o.lower() == part.lower()), None)
+            if match is None:
+                return refuse(
+                    f"Part '{part}' không có. Chọn: {', '.join(options)}.", ["part"]
+                )
+            part = match
+        if not estimate or not re.match(r"^(\d+[wdhm]\s*)+$", estimate.strip()):
+            return refuse("Dev Task cần Estimate dạng 2h, 1d 4h, 30m.", ["estimate"])
+        estimate = estimate.strip()
+
+        effective_assignee = assignee or creator
+        if not effective_assignee:
+            return refuse("Cần chỉ định người làm Dev Task.", ["assignee"])
+        if hasattr(self.gateway, "user_exists") and not self.gateway.user_exists(
+            effective_assignee
+        ):
+            return refuse(f"User {effective_assignee} không tồn tại trên Jira.")
+
+        clean = summary.strip()
+        effective_summary = clean if clean.startswith("[") else f"[{part}] {clean}"
+
+        duplicates: list[str] = []
+        try:
+            for raw in self.gateway.search(
+                f'parent = "{parent_issue.key}"',
+                fields=["issuetype", "status", "assignee", part_field, "parent"],
+            ):
+                f = raw.get("fields", {})
+                if (f.get("parent") or {}).get("key") != parent_issue.key:
+                    continue
+                if (f.get("issuetype") or {}).get("name") != dev_task_type:
+                    continue
+                st = self.cfg.status_logical((f.get("status") or {}).get("name", ""))
+                if st in ("done", "cancelled"):
+                    continue
+                raw_part = f.get(part_field)
+                p_val = (
+                    raw_part.get("value") if isinstance(raw_part, dict) else raw_part
+                )
+                raw_a = f.get("assignee")
+                a_val = raw_a.get("name") if isinstance(raw_a, dict) else raw_a
+                if (
+                    str(p_val or "").lower() == part.lower()
+                    and a_val
+                    and a_val.lower() == effective_assignee.lower()
+                ):
+                    duplicates.append(str(raw.get("key")))
+        except Exception:  # noqa: BLE001 - the check is only a hint
+            duplicates = []
+
+        notes = [n for n in [warning] if n]
+        if duplicates:
+            notes.append(
+                f"Lưu ý: {effective_assignee} đã có Dev Task {part} đang mở dưới "
+                f"{parent}: {', '.join(duplicates)}."
+            )
+        changes = [
+            f"Parent: {parent_issue.key}",
+            f"Summary: {effective_summary}",
+            f"Part: {part}",
+            f"Estimate: {estimate}",
+            f"Assignee: {effective_assignee}",
+        ]
+
+        if dry_run:
+            return ActionResult(
+                ok=True,
+                message=" ".join(
+                    [f"[Dry-run] Sẽ tạo Dev Task dưới {parent_issue.key}.", *notes]
+                ),
+                changes=changes,
+                next_actions=[],
+            )
+
+        created_key = self._find_recently_created_issue(
+            project,
+            effective_summary,
+            creator,
+            parent_key=parent_issue.key,
+            assignee=effective_assignee,
+        )
+        if not created_key:
+            fields: dict[str, Any] = {
+                "project": {"key": project},
+                "parent": {"key": parent_issue.key},
+                "issuetype": {"name": dev_task_type},
+                "summary": effective_summary,
+                part_field: {"value": part},
+                "assignee": {"name": effective_assignee},
+                "timetracking": {"originalEstimate": estimate},
+            }
+            if description:
+                fields["description"] = description
+            created_key = self.gateway.create_issue(fields)
+
+        return ActionResult(
+            ok=True,
+            message=" ".join(
+                [f"Đã tạo Dev Task {created_key} dưới {parent_issue.key}.", *notes]
+            ),
+            changes=[f"Đã tạo Dev Task {created_key}", *changes],
+            next_actions=["schedule"],
         )
 
     def create_component(
