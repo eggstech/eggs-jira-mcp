@@ -3511,6 +3511,37 @@ class Actions:
         """Liệt kê các Component trong dự án kèm số lượng Story đang mở."""
         return get_components_summary(self.gateway, project)
 
+    def add_comment(
+        self, key: str, text: str, *, dry_run: bool = False
+    ) -> ActionResult:
+        """Ghi comment vào bất kỳ issue nào người dùng xem được."""
+        body = (text or "").strip()
+        if not body:
+            return ActionResult(
+                ok=False,
+                message="Nội dung comment đang trống.",
+                changes=[],
+                next_actions=[],
+                missing=["text"],
+            )
+        self._get_issue(key)
+        preview = body if len(body) <= 120 else body[:117] + "..."
+        changes = [f'Ghi comment vào {key}: "{preview}"']
+        if dry_run:
+            return ActionResult(
+                ok=True,
+                message=f"[Dry-run] Sẽ ghi comment vào {key}.",
+                changes=changes,
+                next_actions=[],
+            )
+        self.gateway.add_comment(key, body)
+        return ActionResult(
+            ok=True,
+            message=f"Đã ghi comment vào {key}.",
+            changes=changes,
+            next_actions=[],
+        )
+
     def update_description(
         self,
         key: str,

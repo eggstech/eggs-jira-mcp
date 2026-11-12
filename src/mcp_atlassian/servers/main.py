@@ -1059,3 +1059,10 @@ async def _health_check_route(request: Request) -> JSONResponse:
 
 
 logger.info("Added /healthz endpoint for Kubernetes probes")
+
+
+@main_mcp.custom_route("/upload/{token}", methods=["POST"], include_in_schema=False)
+async def _eggs_upload_route(request: Request) -> JSONResponse:
+    from mcp_atlassian.eggs.uploads import handle_upload
+
+    return await handle_upload(request)

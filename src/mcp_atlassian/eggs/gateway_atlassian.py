@@ -225,6 +225,18 @@ class AtlassianGateway(JiraGateway):
         """Add a comment to an issue."""
         self.client.post(f"rest/api/2/issue/{key}/comment", data={"body": body})
 
+    def add_attachment(self, key: str, filename: str, content: bytes) -> list[dict]:
+        """Attach a file to an issue; returns Jira's attachment records."""
+        try:
+            res = self.client.post(
+                f"rest/api/2/issue/{key}/attachments",
+                headers={"X-Atlassian-Token": "no-check"},
+                files={"file": (filename, content)},
+            )
+        except HTTPError as e:
+            raise _handle_http_error(e) from e
+        return res if isinstance(res, list) else []
+
     def add_worklog(
         self,
         key: str,

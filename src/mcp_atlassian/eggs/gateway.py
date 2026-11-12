@@ -89,6 +89,10 @@ class JiraGateway(Protocol):
         """Add a comment to an issue."""
         ...
 
+    def add_attachment(self, key: str, filename: str, content: bytes) -> list[dict]:
+        """Attach a file to an issue; returns Jira's attachment records."""
+        ...
+
     def add_worklog(
         self,
         key: str,

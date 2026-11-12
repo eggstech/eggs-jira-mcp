@@ -236,6 +236,16 @@ class FakeGateway(JiraGateway):
             if label in labels:
                 labels.remove(label)
 
+    def add_attachment(self, key: str, filename: str, content: bytes) -> list[dict]:
+        self._record("add_attachment", key, filename, len(content))
+        if key not in self.issues:
+            msg = f"Issue {key} does not exist"
+            raise JiraError(msg, status_code=404)
+        fields = self.issues[key].setdefault("fields", {})
+        att = {"filename": filename, "size": len(content)}
+        fields.setdefault("attachment", []).append(att)
+        return [att]
+
     def add_comment(self, key: str, body: str) -> None:
         self._record("add_comment", key, body)
         if key in self.issues:

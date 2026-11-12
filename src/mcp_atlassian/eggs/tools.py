@@ -102,6 +102,8 @@ WRITE_EGGS_TOOL_NAMES = frozenset(
         "eggs_create_issue",
         "eggs_create_component",
         "eggs_update_description",
+        "eggs_comment",
+        "eggs_attach_url",
     }
 )
 
@@ -2495,6 +2497,91 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
                 _attach_next_agenda_item, res, user_gw, ident, cfg, cal, now
             )
         return json.dumps(action_result_to_dict(res), indent=2, ensure_ascii=False)
+
+    @server.tool(tags=write_tags, annotations={"title": "EGGS Comment"})
+    @eggs_check_write_access
+    @eggs_structured_errors
+    async def eggs_comment(
+        ctx: Context,
+        key: Annotated[str, Field(description="Mã issue (ticket nào cũng được)")],
+        text: Annotated[str, Field(description="Nội dung comment")],
+        *,
+        dry_run: Annotated[
+            bool, Field(description="Chạy thử nghiệm không ghi", default=False)
+        ] = False,
+    ) -> str:
+        """Ghi comment vào một issue bất kỳ mà người dùng xem được."""
+        cfg = await asyncio.to_thread(load_config)
+        user_gw = await get_user_gateway(ctx, write=True)
+        actions = Actions(user_gw, cfg, WorkCalendar(cfg.holidays))
+        res = await asyncio.to_thread(
+            actions.add_comment, key.strip().upper(), text, dry_run=dry_run
+        )
+        return json.dumps(action_result_to_dict(res), indent=2, ensure_ascii=False)
+
+    @server.tool(tags=write_tags, annotations={"title": "EGGS Attach URL"})
+    @eggs_check_write_access
+    @eggs_structured_errors
+    async def eggs_attach_url(
+        ctx: Context,
+        key: Annotated[
+            str, Field(description="Mã issue cần đính kèm (ticket nào cũng được)")
+        ],
+        comment: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "Comment ghi kèm sau khi tải file lên (ảnh hiện ngay trong "
+                    "comment). Bỏ trống nếu chỉ đính kèm."
+                ),
+                default=None,
+            ),
+        ] = None,
+    ) -> str:
+        """Tạo link tải file lên một lần (10 phút) để đính kèm file vào issue.
+
+        Chạy trong terminal: curl -sS -F file=@<đường dẫn> "<url>" (lặp -F
+        file=@... cho nhiều file, tối đa 10 file, 20 MB mỗi file). Kết quả JSON
+        có ok/message. Link chỉ dùng được một lần.
+        """
+        from .uploads import UPLOAD_TTL_SECONDS, create_ticket, public_base_url
+
+        user_gw = await get_user_gateway(ctx, write=True)
+        issue_key = key.strip().upper()
+        raw = await asyncio.to_thread(user_gw.get_issue, issue_key)
+        summary = (raw.get("fields") or {}).get("summary", "")
+        req_ctx = getattr(ctx, "request_context", None)
+        request = getattr(req_ctx, "request", None) if req_ctx else None
+        state = getattr(request, "state", None) if request is not None else None
+        user_token = getattr(state, "user_atlassian_token", None) if state else None
+        if not user_token:
+            raise ToolError(
+                "Đính kèm cần token cá nhân (PAT) của người dùng trong "
+                "Authorization header."
+            )
+        username = await asyncio.to_thread(user_gw.current_user)
+        ticket = create_ticket(
+            user_token=user_token, username=username, key=issue_key, comment=comment
+        )
+        url = f"{public_base_url()}/upload/{ticket}"
+        return json.dumps(
+            {
+                "ok": True,
+                "message": (
+                    f"Link đính kèm cho {issue_key} ({summary}) dùng một lần, "
+                    f"hết hạn sau {UPLOAD_TTL_SECONDS // 60} phút."
+                ),
+                "url": url,
+                "command": f'curl -sS -F file=@<đường_dẫn_file> "{url}"',
+                "changes": [
+                    f"Đính kèm file vào {issue_key}"
+                    + (" và ghi comment" if comment else "")
+                ],
+                "next_actions": [],
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
 
     @server.tool(tags=write_tags, annotations={"title": "EGGS Update Description"})
     @eggs_check_write_access
