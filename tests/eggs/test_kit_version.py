@@ -19,6 +19,7 @@ def test_version_in_skill_text():
         ("2026.11.9.1", "2026.11.12.1", True),  # numeric, not text compare
         (None, "2026.11.12.1", True),  # old skill that sends no version
         ("2026.11.12.1", None, False),  # GitHub unreachable
+        ("<Kit version above>", "2026.11.12.1", False),  # placeholder, not nag
     ],
 )
 def test_update_info(current: str | None, latest: str | None, outdated: bool):  # noqa: FBT001

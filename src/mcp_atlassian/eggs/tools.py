@@ -692,6 +692,18 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
     ) -> str:
         """Cửa vào duy nhất: Trả về agenda việc cần làm và danh mục ý định."""
         latest_kit = asyncio.create_task(asyncio.to_thread(latest_kit_version))
+        try:
+            return await _eggs_next_body(ctx, text, kit, latest_kit)
+        finally:
+            if not latest_kit.done():
+                latest_kit.cancel()
+
+    async def _eggs_next_body(
+        ctx: Context,
+        text: str | None,
+        kit: str | None,
+        latest_kit: asyncio.Task[str | None],
+    ) -> str:
         cfg = await asyncio.to_thread(load_config)
         user_gw = await get_user_gateway(ctx, write=False)
         roles_gw = await asyncio.to_thread(get_roles_reader, cfg)

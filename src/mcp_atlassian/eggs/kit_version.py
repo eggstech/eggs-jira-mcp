@@ -80,6 +80,8 @@ def update_info(current: str | None, latest: str | None) -> dict[str, Any] | Non
     if newest is None:
         return None
     mine = parse_version(current)
+    if current and current.strip() and mine is None:
+        return None  # agent sent something that is not a version: do not nag
     if mine is not None and mine >= newest:
         return None
     return {
