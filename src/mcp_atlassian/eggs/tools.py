@@ -39,6 +39,8 @@ from mcp_atlassian.eggs.config import EggsConfig, load_config
 from mcp_atlassian.eggs.gateway import JiraError, JiraGateway
 from mcp_atlassian.eggs.gateway_atlassian import AtlassianGateway, _handle_http_error
 from mcp_atlassian.eggs.identity import Identity, IdentityCache, resolve_identity
+from mcp_atlassian.eggs.kit_version import latest_version as latest_kit_version
+from mcp_atlassian.eggs.kit_version import update_info as kit_update_info
 from mcp_atlassian.eggs.links import enrich_result
 from mcp_atlassian.eggs.plan import PlanError, dump_plan, parse_plan
 from mcp_atlassian.eggs.plan_apply import apply_plan, export_epic
@@ -677,8 +679,19 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
                 default=None,
             ),
         ] = None,
+        kit: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "Phiên bản skill /eggs của agent (dòng 'Kit version' trong "
+                    "SKILL.md); có bản mới hơn thì kết quả có kit_update"
+                ),
+                default=None,
+            ),
+        ] = None,
     ) -> str:
         """Cửa vào duy nhất: Trả về agenda việc cần làm và danh mục ý định."""
+        latest_kit = asyncio.create_task(asyncio.to_thread(latest_kit_version))
         cfg = await asyncio.to_thread(load_config)
         user_gw = await get_user_gateway(ctx, write=False)
         roles_gw = await asyncio.to_thread(get_roles_reader, cfg)
@@ -730,6 +743,9 @@ def register_eggs_tools(server: FastMCP, *, force: bool = False) -> None:
             "matched_intents": matched_intents,
             "hint": hint,
         }
+        kit_update = kit_update_info(kit, await latest_kit)
+        if kit_update:
+            data["kit_update"] = kit_update
         return json.dumps(data, indent=2, ensure_ascii=False)
 
     @server.tool(
