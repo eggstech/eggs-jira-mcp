@@ -39,6 +39,7 @@ from mcp_atlassian.eggs.config import EggsConfig, load_config
 from mcp_atlassian.eggs.gateway import JiraError, JiraGateway
 from mcp_atlassian.eggs.gateway_atlassian import AtlassianGateway, _handle_http_error
 from mcp_atlassian.eggs.identity import Identity, IdentityCache, resolve_identity
+from mcp_atlassian.eggs.links import enrich_result
 from mcp_atlassian.eggs.plan import PlanError, dump_plan, parse_plan
 from mcp_atlassian.eggs.plan_apply import apply_plan, export_epic
 from mcp_atlassian.eggs.plan_validate import load_plan_context, validate_plan
@@ -319,6 +320,24 @@ def _safe_exception_text(exc: BaseException) -> str:
     return re.sub(r"https?://\S+", "<url>", text)
 
 
+async def _with_issue_links(result: Any) -> Any:
+    """Add a link and the issue type for every issue key in a JSON result."""
+    if not isinstance(result, str) or not result.lstrip().startswith("{"):
+        return result
+    try:
+        cfg = await asyncio.to_thread(load_config)
+        return await asyncio.to_thread(
+            enrich_result,
+            result,
+            jira_url=os.getenv("EGGS_BROWSE_URL") or cfg.jira_url,
+            project_keys=list(cfg.projects),
+            gateway_getter=lambda: get_roles_reader(cfg),
+        )
+    except Exception as exc:  # noqa: BLE001 - never lose the real result
+        logger.info("Không gắn được link issue: %s", _safe_exception_text(exc))
+        return result
+
+
 def eggs_structured_errors(func: Any) -> Any:
     """Turn Jira/parse exceptions into a Vietnamese ActionResult.
 
@@ -329,6 +348,9 @@ def eggs_structured_errors(func: Any) -> Any:
 
     @wraps(func)
     async def wrapper(ctx: Context, *args: Any, **kwargs: Any) -> Any:
+        return await _with_issue_links(await _call(ctx, *args, **kwargs))
+
+    async def _call(ctx: Context, *args: Any, **kwargs: Any) -> Any:
         try:
             return await func(ctx, *args, **kwargs)
         except (JiraError, HTTPError) as raw:
